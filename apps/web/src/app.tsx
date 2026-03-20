@@ -27,7 +27,6 @@ type DetailView = 'transcript' | 'commands' | 'changes' | 'activity';
 
 interface TranscriptEvent {
   kind: TranscriptEventKind;
-  title: string;
   body: string;
   markdown: boolean;
 }
@@ -57,13 +56,6 @@ const STATUS_LABELS: Record<SessionStatus, string> = {
   stale: 'Stale',
 };
 
-const EVENT_LABELS: Record<TranscriptEventKind, string> = {
-  user: 'User',
-  assistant: 'Assistant',
-  tool: 'Tool',
-  status: 'Status',
-};
-
 const CLOUDFLARE_STATE_LABELS = {
   idle: 'Idle',
   connecting: 'Connecting',
@@ -79,11 +71,10 @@ function shortThreadId(threadId: string) {
   return threadId.slice(0, 8);
 }
 
-function itemToEvent(item: CodexThreadItem): TranscriptEvent {
+function itemToEvent(item: CodexThreadItem): TranscriptEvent | null {
   if (item.type === 'userMessage') {
     return {
       kind: 'user',
-      title: 'Prompt',
       body: item.content
         .filter((entry) => entry.type === 'text')
         .map((entry) => entry.text)
@@ -95,62 +86,22 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
   if (item.type === 'agentMessage') {
     return {
       kind: 'assistant',
-      title: item.phase === 'commentary' ? 'Commentary' : 'Answer',
       body: item.text,
       markdown: true,
     };
   }
 
-  if (item.type === 'plan') {
-    return {
-      kind: 'assistant',
-      title: 'Plan',
-      body: item.text,
-      markdown: true,
-    };
-  }
-
-  if (item.type === 'reasoning') {
-    return {
-      kind: 'assistant',
-      title: 'Reasoning',
-      body: [...item.summary, ...item.content].join('\n'),
-      markdown: true,
-    };
-  }
-
-  if (item.type === 'commandExecution') {
-    return {
-      kind: 'tool',
-      title: item.command,
-      body: item.aggregatedOutput || item.status,
-      markdown: false,
-    };
-  }
-
-  if (item.type === 'fileChange') {
-    return {
-      kind: 'tool',
-      title: 'File changes',
-      body: item.changes
-        .map((change) => `${change.kind?.type ?? 'update'} ${change.path}`)
-        .join('\n'),
-      markdown: false,
-    };
-  }
-
-  const fallback = item as never;
-  return {
-    kind: 'status',
-    title: 'Item',
-    body: JSON.stringify(fallback, null, 2),
-    markdown: false,
-  };
+  return null;
 }
 
 function flattenThread(thread: CodexThread | null) {
   if (!thread) return [];
-  return thread.turns.flatMap((turn) => turn.items.map(itemToEvent));
+  return thread.turns.flatMap((turn) =>
+    turn.items.flatMap((item) => {
+      const event = itemToEvent(item);
+      return event ? [event] : [];
+    }),
+  );
 }
 
 function collectCommands(thread: CodexThread | null): CommandEvent[] {
@@ -464,39 +415,6 @@ export function App() {
           {detail ? (
             <div className="transcript-layout">
               <div className="transcript-scroll">
-                <div className="detail-meta">
-                  <span>{detail.session.workspace}</span>
-                  <span>{detail.session.securityProfile}</span>
-                  <span>{detail.session.networkEnabled ? 'Network enabled' : 'Network disabled'}</span>
-                  <span>{sessionIsStale ? 'stale session' : threadStatus}</span>
-                </div>
-
-                <section className="detail-summary-grid">
-                  <article className="summary-card">
-                    <p className="eyebrow">Session</p>
-                    <strong>{detail.session.title}</strong>
-                    <p>{detail.session.workspace}</p>
-                  </article>
-                  <article className="summary-card">
-                    <p className="eyebrow">Thread</p>
-                    <strong>{shortThreadId(detail.session.threadId)}</strong>
-                    <p>{detail.thread?.path ?? 'Fresh thread or not yet loaded'}</p>
-                  </article>
-                  <article className="summary-card">
-                    <p className="eyebrow">Git</p>
-                    <strong>{sessionGitLabel}</strong>
-                    <p>{detail.thread?.gitInfo?.originUrl ?? 'No remote reported yet'}</p>
-                  </article>
-                  <article className="summary-card">
-                    <p className="eyebrow">Runtime</p>
-                    <strong>{detail.thread?.modelProvider ?? 'codex'}</strong>
-                    <p>
-                      {detail.thread?.source ?? 'local host'}
-                      {detail.thread?.cliVersion ? ` · CLI ${detail.thread.cliVersion}` : ''}
-                    </p>
-                  </article>
-                </section>
-
                 <div className="view-tabs">
                   <button type="button" className={detailView === 'transcript' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('transcript')}>
                     Transcript
@@ -529,8 +447,45 @@ export function App() {
                   </section>
                 ) : null}
 
+                {detailView !== 'transcript' ? (
+                  <>
+                    <div className="detail-meta">
+                      <span>{detail.session.workspace}</span>
+                      <span>{detail.session.securityProfile}</span>
+                      <span>{detail.session.networkEnabled ? 'Network enabled' : 'Network disabled'}</span>
+                      <span>{sessionIsStale ? 'stale session' : threadStatus}</span>
+                    </div>
+
+                    <section className="detail-summary-grid">
+                      <article className="summary-card">
+                        <p className="eyebrow">Session</p>
+                        <strong>{detail.session.title}</strong>
+                        <p>{detail.session.workspace}</p>
+                      </article>
+                      <article className="summary-card">
+                        <p className="eyebrow">Thread</p>
+                        <strong>{shortThreadId(detail.session.threadId)}</strong>
+                        <p>{detail.thread?.path ?? 'Fresh thread or not yet loaded'}</p>
+                      </article>
+                      <article className="summary-card">
+                        <p className="eyebrow">Git</p>
+                        <strong>{sessionGitLabel}</strong>
+                        <p>{detail.thread?.gitInfo?.originUrl ?? 'No remote reported yet'}</p>
+                      </article>
+                      <article className="summary-card">
+                        <p className="eyebrow">Runtime</p>
+                        <strong>{detail.thread?.modelProvider ?? 'codex'}</strong>
+                        <p>
+                          {detail.thread?.source ?? 'local host'}
+                          {detail.thread?.cliVersion ? ` · CLI ${detail.thread.cliVersion}` : ''}
+                        </p>
+                      </article>
+                    </section>
+                  </>
+                ) : null}
+
                 {detailView === 'transcript' ? (
-                  <div className="event-list">
+                  <div className="chat-list">
                     {threadEvents.length === 0 ? (
                       <article className="event-card event-status">
                         <div className="event-meta">
@@ -545,13 +500,9 @@ export function App() {
                       </article>
                     ) : (
                       threadEvents.map((event, index) => (
-                        <article key={`${event.title}-${index}`} className={`event-card event-${event.kind}`}>
-                          <div className="event-meta">
-                            <span>{EVENT_LABELS[event.kind]}</span>
-                            <strong>{event.title}</strong>
-                          </div>
+                        <article key={`${event.kind}-${index}`} className={`chat-message chat-${event.kind}`}>
                           {event.markdown ? (
-                            <div className="markdown-body">
+                            <div className="markdown-body chat-body">
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {event.body}
                               </ReactMarkdown>
