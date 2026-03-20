@@ -45,6 +45,12 @@ export async function disconnectCloudflareTunnel() {
   return response.cloudflare;
 }
 
+export async function logout() {
+  return requestJson<{ ok: true }>('/api/auth/logout', {
+    method: 'POST',
+  });
+}
+
 export function fetchSessionDetail(sessionId: string) {
   return requestJson<SessionDetailResponse>(`/api/sessions/${sessionId}`);
 }

@@ -40,6 +40,25 @@ Phase 1 now ships the first Cloudflare integration slice:
 - existing named tunnels in `~/.cloudflared/config.yml` are auto-detected when they already map a hostname to the local host port
 - managed tunnels are supported through environment variables
 
+## Owner auth
+
+The public surface is now owner-gated by default.
+
+- unauthenticated browser requests are redirected to `/login`
+- password login sets an HTTP-only cookie
+- `?token=...` links still work as a fallback and are cleaned back to `/` after the cookie is set
+- credentials live in `~/.config/remote-vibe-coding/auth.json`
+
+The first startup generates a local owner auth record automatically:
+
+```json
+{
+  "username": "owner",
+  "password": "...generated locally...",
+  "token": "...generated locally..."
+}
+```
+
 For a single-origin remote build:
 
 ```bash

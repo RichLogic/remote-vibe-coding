@@ -2,10 +2,12 @@ import { stat } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
+import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 
+import { AUTH_COOKIE_NAME, loadOrCreateOwnerAuth, loginPageHtml, verifyPassword, verifyToken } from './auth.js';
 import { buildBootstrapPayload } from './bootstrap.js';
 import { CloudflareTunnelManager } from './cloudflare.js';
 import { CodexAppServerClient, type JsonRpcNotification, type JsonRpcServerRequest } from './codex-app-server.js';
@@ -97,16 +99,47 @@ async function ensureWorkspaceExists(cwd: string) {
   }
 }
 
+function requestPath(url: string) {
+  return url.split('?')[0] ?? url;
+}
+
+function isAssetPath(path: string) {
+  return path.startsWith('/assets/') || path === '/favicon.ico';
+}
+
+function clearTokenFromUrl(url: string) {
+  const parsed = new URL(url, 'http://127.0.0.1');
+  parsed.searchParams.delete('token');
+  const query = parsed.searchParams.toString();
+  return `${parsed.pathname}${query ? `?${query}` : ''}`;
+}
+
+function cookieIsSecure(request: FastifyRequest) {
+  const protoHeader = request.headers['x-forwarded-proto'];
+  const forwardedProto = Array.isArray(protoHeader) ? protoHeader[0] : protoHeader;
+  const protocol = typeof forwardedProto === 'string' ? forwardedProto : request.protocol;
+  const hostname = request.hostname ?? '';
+
+  if (hostname === '127.0.0.1' || hostname === 'localhost') {
+    return false;
+  }
+
+  return protocol === 'https';
+}
+
 const app = Fastify({
   logger: true,
+  trustProxy: true,
 });
 
 await app.register(cors, {
   origin: true,
 });
+await app.register(fastifyCookie);
 
 const store = new SessionStore();
 await store.load();
+const ownerAuth = await loadOrCreateOwnerAuth();
 
 const codex = new CodexAppServerClient();
 await codex.ensureStarted();
@@ -187,6 +220,84 @@ async function handleServerRequest(message: JsonRpcServerRequest) {
   });
   await store.updateSession(session.id, { status: 'needs-approval' });
 }
+
+app.addHook('onRequest', async (request, reply) => {
+  const path = requestPath(request.url);
+  const tokenFromQuery = typeof (request.query as { token?: unknown } | undefined)?.token === 'string'
+    ? (request.query as { token?: string }).token
+    : null;
+  const cookieToken = request.cookies[AUTH_COOKIE_NAME];
+  const authorization = request.headers.authorization;
+  const bearerToken = typeof authorization === 'string' && authorization.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length).trim()
+    : null;
+
+  const matchingToken = [tokenFromQuery, cookieToken, bearerToken].find((value) => verifyToken(ownerAuth, value));
+
+  if (matchingToken) {
+    if (cookieToken !== ownerAuth.token) {
+      reply.setCookie(AUTH_COOKIE_NAME, ownerAuth.token, {
+        path: '/',
+        httpOnly: true,
+        sameSite: 'lax',
+        secure: cookieIsSecure(request),
+      });
+    }
+
+    if (tokenFromQuery && request.method === 'GET' && !path.startsWith('/api/')) {
+      return reply.redirect(clearTokenFromUrl(request.url));
+    }
+
+    return;
+  }
+
+  if (
+    path === '/login' ||
+    path === '/api/auth/login' ||
+    path === '/api/health' ||
+    isAssetPath(path)
+  ) {
+    return;
+  }
+
+  if (path.startsWith('/api/')) {
+    reply.code(401).send({ error: 'Authentication required' });
+    return reply;
+  }
+
+  return reply.redirect('/login');
+});
+
+app.get('/login', async (request, reply) => {
+  reply.type('text/html; charset=utf-8');
+  return loginPageHtml();
+});
+
+app.post('/api/auth/login', async (request, reply) => {
+  const body = request.body as { username?: string; password?: string } | undefined;
+  const username = body?.username?.trim() ?? '';
+  const password = body?.password ?? '';
+
+  if (!verifyPassword(ownerAuth, username, password)) {
+    reply.code(401);
+    return { error: 'Invalid username or password' };
+  }
+
+  reply.setCookie(AUTH_COOKIE_NAME, ownerAuth.token, {
+    path: '/',
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: cookieIsSecure(request),
+  });
+  return { ok: true, username: ownerAuth.username };
+});
+
+app.post('/api/auth/logout', async (request, reply) => {
+  reply.clearCookie(AUTH_COOKIE_NAME, {
+    path: '/',
+  });
+  return { ok: true };
+});
 
 app.get('/api/health', async () => ({
   ok: true,

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 export const DATA_DIR = join(homedir(), '.config', 'remote-vibe-coding');
 export const SESSIONS_FILE = join(DATA_DIR, 'sessions.json');
+export const AUTH_FILE = join(DATA_DIR, 'auth.json');
 export const PORT = Number.parseInt(process.env.PORT ?? '8787', 10);
 export const HOST = process.env.HOST ?? '127.0.0.1';
 

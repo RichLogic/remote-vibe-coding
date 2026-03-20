@@ -108,6 +108,11 @@ code {
   font-size: 0.88rem;
 }
 
+.topbar-button {
+  border: 0;
+  cursor: pointer;
+}
+
 .eyebrow {
   margin: 0 0 8px;
   text-transform: uppercase;

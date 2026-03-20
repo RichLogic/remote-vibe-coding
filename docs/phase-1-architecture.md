@@ -55,6 +55,15 @@ It should feel closer to `Codex` than to RemoteLab:
 - approvals as a first-class side surface
 - diff/log/file context as support panels, not as the product center
 
+### 2.5. Owner auth boundary
+
+Phase 1 is still single-owner first.
+
+- unauthenticated browser traffic should never land directly on the coding surface
+- `/login` is the browser entrypoint for password auth
+- long random token links remain a fallback for mobile/open-in-browser flows
+- successful auth upgrades the browser into an owner cookie session
+
 ### 3. Permission boundary
 
 There are two separate permission layers:
@@ -102,6 +111,7 @@ The first remote-access slice is intentionally narrow:
 - if `CLOUDFLARE_TUNNEL_TOKEN` is set, the host uses a managed tunnel instead
 - if `CLOUDFLARE_PUBLIC_URL` is set, the browser shows the stable hostname instead of waiting for a quick-tunnel URL
 - if the built web client does not exist, the tunnel manager can fall back to the local Vite dev server on `127.0.0.1:5173`
+- public access should still be owner-gated by login or token; a tunnel is transport, not auth
 
 ## Codex integration choice
 

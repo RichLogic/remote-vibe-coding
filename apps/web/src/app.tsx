@@ -6,6 +6,7 @@ import {
   disconnectCloudflareTunnel,
   fetchBootstrap,
   fetchSessionDetail,
+  logout,
   resolveApproval,
   startTurn,
 } from './api';
@@ -262,6 +263,15 @@ export function App() {
     }
   }
 
+  async function handleLogout() {
+    setBusy('logout');
+    try {
+      await logout();
+    } finally {
+      window.location.href = '/login';
+    }
+  }
+
   const threadEvents = flattenThread(detail?.thread ?? null);
   const cloudflare = bootstrap?.cloudflare;
   const cloudflareManagedBySystem = cloudflare?.activeSource === 'system';
@@ -291,6 +301,9 @@ export function App() {
           <span>{bootstrap?.defaults.defaultSecurityProfile ?? 'repo-write'}</span>
           <span>{bootstrap?.defaults.networkEnabledByDefault ? 'Network on' : 'Network off'}</span>
           <span>{bootstrap?.defaults.transcriptMode ?? 'app-server'}</span>
+          <button type="button" className="button-secondary topbar-button" onClick={() => void handleLogout()} disabled={busy === 'logout'}>
+            {busy === 'logout' ? 'Signing out...' : 'Sign out'}
+          </button>
         </div>
       </header>
 
