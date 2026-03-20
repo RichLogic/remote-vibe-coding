@@ -1319,36 +1319,35 @@ export function App() {
               </div>
 
               <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
-                {detail ? (
-                  <div className="composer-config-row">
-                    <label className="composer-config-field">
-                      <span>{copy.model}</span>
-                      <select
-                        value={sessionModel}
-                        onChange={(event) => handleSessionModelChange(event.target.value)}
-                        disabled={busy === 'update-session-preferences' || availableModels.length === 0}
-                      >
-                        {availableModels.map((option) => (
-                          <option key={option.id} value={option.model}>{option.displayName}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="composer-config-field">
-                      <span>{copy.thinking}</span>
-                      <select
-                        value={sessionEffort}
-                        onChange={(event) => handleSessionEffortChange(event.target.value as ReasoningEffort)}
-                        disabled={busy === 'update-session-preferences'}
-                      >
-                        {currentSessionEfforts.map((effort) => (
-                          <option key={effort} value={effort}>{effort}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                ) : null}
-                <label className="field">
-                  <span>{copy.prompt}</span>
+                <div className="composer-shell">
+                  {detail ? (
+                    <div className="composer-config-row">
+                      <label className="composer-config-field">
+                        <span>{copy.model}</span>
+                        <select
+                          value={sessionModel}
+                          onChange={(event) => handleSessionModelChange(event.target.value)}
+                          disabled={busy === 'update-session-preferences' || availableModels.length === 0}
+                        >
+                          {availableModels.map((option) => (
+                            <option key={option.id} value={option.model}>{option.displayName}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="composer-config-field">
+                        <span>{copy.thinking}</span>
+                        <select
+                          value={sessionEffort}
+                          onChange={(event) => handleSessionEffortChange(event.target.value as ReasoningEffort)}
+                          disabled={busy === 'update-session-preferences'}
+                        >
+                          {currentSessionEfforts.map((effort) => (
+                            <option key={effort} value={effort}>{effort}</option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
                   <div className="composer-row">
                     <textarea
                       value={prompt}
@@ -1384,7 +1383,7 @@ export function App() {
                       </button>
                     </div>
                   </div>
-                </label>
+                </div>
               </form>
             </div>
           ) : (

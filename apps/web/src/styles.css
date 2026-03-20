@@ -878,18 +878,15 @@ code {
 
 .composer-docked {
   margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(246, 241, 231, 0), rgba(246, 241, 231, 0.92) 16%, rgba(246, 241, 231, 0.98) 100%);
+  padding-top: 0;
   flex-shrink: 0;
 }
 
-.composer-docked .field {
-  gap: 6px;
-}
-
-.composer-docked .field > span {
-  display: none;
+.composer-shell {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 250, 240, 0.95);
+  overflow: hidden;
 }
 
 .composer-config-row {
@@ -897,7 +894,8 @@ code {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
-  margin-bottom: 6px;
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--line);
 }
 
 .composer-config-field {
@@ -927,9 +925,6 @@ code {
   align-items: flex-end;
   gap: 8px;
   padding: 8px 10px 8px 14px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: rgba(255, 250, 240, 0.95);
 }
 
 .composer-row textarea {
@@ -1150,6 +1145,7 @@ code {
 
   .composer-config-row {
     align-items: flex-start;
+    padding: 8px 10px 6px;
   }
 
   .composer-config-field {
