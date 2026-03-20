@@ -28,6 +28,33 @@ npm run dev:web
 Host defaults to `http://localhost:8787`.
 Web defaults to `http://localhost:5173`.
 
+In development the Vite client proxies `/api` to the host, so the browser shell uses same-origin API calls.
+
+## Cloudflare tunnel slice
+
+Phase 1 now ships the first Cloudflare integration slice:
+
+- the host can serve the built web client from the same origin as the API
+- the browser can connect and disconnect a local `cloudflared` tunnel
+- quick tunnels work out of the box when `cloudflared` is installed
+- managed tunnels are supported through environment variables
+
+For a single-origin remote build:
+
+```bash
+npm install
+npm run build
+npm run start:host
+```
+
+Then open `http://127.0.0.1:8787`, use the Cloudflare card in the browser shell, and connect the tunnel.
+
+Optional environment variables:
+
+- `CLOUDFLARE_TUNNEL_TOKEN` — run a pre-created managed tunnel instead of a quick tunnel
+- `CLOUDFLARE_PUBLIC_URL` — stable public URL to display in the UI when using a managed tunnel
+- `CLOUDFLARE_TARGET_URL` — override the local target the tunnel should expose
+
 ## Current scope
 
 This repo currently ships the phase-1 runtime foundation:
@@ -36,4 +63,4 @@ This repo currently ships the phase-1 runtime foundation:
 - a host service that bridges into the real Codex app-server protocol
 - a browser shell that can create sessions, send prompts, render thread history, and surface approval requests
 
-It still does not ship Cloudflare access, Flutter, or the full long-running orchestration model yet.
+It still does not ship Cloudflare Access auth, Flutter, or the full long-running orchestration model yet.

@@ -41,6 +41,8 @@ The host service runs on the owner machine and owns:
 - audit logging
 - workspace policy
 - transport to the browser client
+- single-origin serving for the built web shell
+- local Cloudflare tunnel orchestration
 
 ### 2. Browser Coding Surface
 
@@ -80,12 +82,25 @@ Phase 1 now exposes a minimal but real host contract:
 
 - `GET /api/health`
 - `GET /api/bootstrap`
+- `GET /api/cloudflare/status`
 - `GET /api/sessions/:sessionId`
+- `POST /api/cloudflare/connect`
+- `POST /api/cloudflare/disconnect`
 - `POST /api/sessions`
 - `POST /api/sessions/:sessionId/turns`
 - `POST /api/sessions/:sessionId/approvals/:approvalId`
 
-The browser uses these routes to create sessions, start turns, read full thread history, and respond to Codex approval requests.
+The browser uses these routes to create sessions, start turns, read full thread history, respond to Codex approval requests, and manage the local Cloudflare tunnel.
+
+## Cloudflare slice
+
+The first remote-access slice is intentionally narrow:
+
+- when the built web client exists, the host serves it directly from the same origin as the API
+- the host can launch `cloudflared` quick tunnels without extra config
+- if `CLOUDFLARE_TUNNEL_TOKEN` is set, the host uses a managed tunnel instead
+- if `CLOUDFLARE_PUBLIC_URL` is set, the browser shows the stable hostname instead of waiting for a quick-tunnel URL
+- if the built web client does not exist, the tunnel manager can fall back to the local Vite dev server on `127.0.0.1:5173`
 
 ## Codex integration choice
 
@@ -100,6 +115,7 @@ It uses `codex app-server`, because:
 ## What phase 1 does not do yet
 
 - Flutter client
+- Cloudflare Access auth or owner login flows
 - hard sandboxing
 - multi-executor abstraction
 - rich diff/file browser beyond the shell contract

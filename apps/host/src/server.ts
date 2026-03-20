@@ -4,9 +4,12 @@ import { randomUUID } from 'node:crypto';
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import fastifyStatic from '@fastify/static';
 
 import { buildBootstrapPayload } from './bootstrap.js';
+import { CloudflareTunnelManager } from './cloudflare.js';
 import { CodexAppServerClient, type JsonRpcNotification, type JsonRpcServerRequest } from './codex-app-server.js';
+import { HOST, PORT, WEB_DIST_DIR } from './config.js';
 import { SessionStore } from './store.js';
 import type {
   CodexThread,
@@ -18,9 +21,6 @@ import type {
   SessionRecord,
   SecurityProfile,
 } from './types.js';
-
-const port = Number.parseInt(process.env.PORT ?? '8787', 10);
-const host = process.env.HOST ?? '127.0.0.1';
 
 function approvalTitle(method: string): string {
   switch (method) {
@@ -110,6 +110,7 @@ await store.load();
 
 const codex = new CodexAppServerClient();
 await codex.ensureStarted();
+const cloudflare = new CloudflareTunnelManager();
 
 codex.on('debug', (message) => {
   app.log.info(message);
@@ -193,7 +194,41 @@ app.get('/api/health', async () => ({
 }));
 
 app.get('/api/bootstrap', async () => {
-  return buildBootstrapPayload(store.listSessions(), store.getAllApprovals());
+  return buildBootstrapPayload(
+    store.listSessions(),
+    store.getAllApprovals(),
+    await cloudflare.getStatus(),
+  );
+});
+
+app.get('/api/cloudflare/status', async () => ({
+  cloudflare: await cloudflare.getStatus(),
+}));
+
+app.post('/api/cloudflare/connect', async (request, reply) => {
+  try {
+    return {
+      cloudflare: await cloudflare.connect(),
+    };
+  } catch (error) {
+    reply.code(500);
+    return {
+      error: error instanceof Error ? error.message : 'Failed to connect Cloudflare tunnel',
+    };
+  }
+});
+
+app.post('/api/cloudflare/disconnect', async (request, reply) => {
+  try {
+    return {
+      cloudflare: await cloudflare.disconnect(),
+    };
+  } catch (error) {
+    reply.code(500);
+    return {
+      error: error instanceof Error ? error.message : 'Failed to disconnect Cloudflare tunnel',
+    };
+  }
 });
 
 app.get('/api/sessions/:sessionId', async (request, reply) => {
@@ -318,21 +353,51 @@ app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply
   return { ok: true };
 });
 
+const hasBuiltWeb = await stat(WEB_DIST_DIR)
+  .then((info) => info.isDirectory())
+  .catch(() => false);
+
+if (hasBuiltWeb) {
+  await app.register(fastifyStatic, {
+    root: WEB_DIST_DIR,
+    prefix: '/',
+  });
+}
+
+app.setNotFoundHandler(async (request, reply) => {
+  if (request.url.startsWith('/api/')) {
+    reply.code(404);
+    return { error: 'Not found' };
+  }
+
+  if (hasBuiltWeb) {
+    return reply.sendFile('index.html');
+  }
+
+  reply.code(404);
+  return {
+    error: 'Web client is not built yet. Run `npm run build` or use `npm run dev:web` for local development.',
+  };
+});
+
 const shutdown = async () => {
+  await cloudflare.disconnect();
   await codex.stop();
+  await app.close();
 };
 
 process.on('SIGINT', () => {
-  void shutdown();
+  void shutdown().finally(() => process.exit(0));
 });
 process.on('SIGTERM', () => {
-  void shutdown();
+  void shutdown().finally(() => process.exit(0));
 });
 
 try {
-  await app.listen({ host, port });
+  await app.listen({ host: HOST, port: PORT });
 } catch (error) {
   app.log.error(error);
+  await cloudflare.disconnect();
   await codex.stop();
   process.exit(1);
 }

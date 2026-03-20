@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 
 import {
+  connectCloudflareTunnel,
   createSession,
+  disconnectCloudflareTunnel,
   fetchBootstrap,
   fetchSessionDetail,
   resolveApproval,
@@ -30,6 +32,13 @@ const EVENT_LABELS: Record<TranscriptEventKind, string> = {
   tool: 'Tool',
   status: 'Status',
 };
+
+const CLOUDFLARE_STATE_LABELS = {
+  idle: 'Idle',
+  connecting: 'Connecting',
+  connected: 'Connected',
+  error: 'Error',
+} as const;
 
 function itemToEvent(item: CodexThreadItem): { kind: TranscriptEventKind; title: string; body: string } {
   if (item.type === 'userMessage') {
@@ -227,7 +236,34 @@ export function App() {
     }
   }
 
+  async function handleConnectCloudflare() {
+    setBusy('connect-cloudflare');
+    try {
+      await connectCloudflareTunnel();
+      setBootstrap(await fetchBootstrap());
+      setError(null);
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : 'Failed to connect Cloudflare tunnel');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDisconnectCloudflare() {
+    setBusy('disconnect-cloudflare');
+    try {
+      await disconnectCloudflareTunnel();
+      setBootstrap(await fetchBootstrap());
+      setError(null);
+    } catch (disconnectError) {
+      setError(disconnectError instanceof Error ? disconnectError.message : 'Failed to disconnect Cloudflare tunnel');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const threadEvents = flattenThread(detail?.thread ?? null);
+  const cloudflare = bootstrap?.cloudflare;
 
   if (error && !bootstrap) {
     return (
@@ -278,6 +314,68 @@ export function App() {
             <span className="hero-label">Pending approvals</span>
             <strong>{bootstrap?.approvals.length ?? 0}</strong>
           </div>
+        </div>
+      </section>
+
+      <section className="remote-access-card">
+        <div className="remote-access-copy">
+          <div>
+            <p className="eyebrow">Cloudflare remote access</p>
+            <h2>
+              {cloudflare
+                ? `${CLOUDFLARE_STATE_LABELS[cloudflare.state]} tunnel`
+                : 'Tunnel status unavailable'}
+            </h2>
+          </div>
+          <p>
+            {cloudflare?.installed
+              ? `Targeting ${cloudflare.targetUrl} from ${cloudflare.targetSource}.`
+              : 'cloudflared is not installed on this machine yet.'}
+          </p>
+          {cloudflare?.publicUrl ? (
+            <p className="remote-access-url">
+              <a href={cloudflare.publicUrl} target="_blank" rel="noreferrer">
+                {cloudflare.publicUrl}
+              </a>
+            </p>
+          ) : (
+            <p className="remote-access-note">
+              {cloudflare?.mode === 'token'
+                ? 'Set CLOUDFLARE_PUBLIC_URL to surface the stable hostname in the UI.'
+                : 'Quick tunnel mode will surface a temporary trycloudflare.com URL here.'}
+            </p>
+          )}
+          {cloudflare?.lastError ? <p className="remote-access-error">{cloudflare.lastError}</p> : null}
+        </div>
+        <div className="remote-access-actions">
+          <div className="remote-status-row">
+            <span>{cloudflare?.version ?? 'cloudflared missing'}</span>
+            <span>{cloudflare?.mode ?? 'not connected'}</span>
+          </div>
+          <div className="remote-button-row">
+            <button
+              type="button"
+              onClick={() => void handleConnectCloudflare()}
+              disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'}
+            >
+              {busy === 'connect-cloudflare' || cloudflare?.state === 'connecting' ? 'Connecting...' : 'Connect tunnel'}
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={() => void handleDisconnectCloudflare()}
+              disabled={!cloudflare?.installed || !cloudflare?.publicUrl || busy === 'disconnect-cloudflare'}
+            >
+              {busy === 'disconnect-cloudflare' ? 'Disconnecting...' : 'Disconnect'}
+            </button>
+          </div>
+          {cloudflare?.recentLogs.length ? (
+            <div className="remote-log-list">
+              {cloudflare.recentLogs.slice(-4).map((line, index) => (
+                <p key={`${line}-${index}`}>{line}</p>
+              ))}
+            </div>
+          ) : null}
         </div>
       </section>
 
@@ -360,7 +458,7 @@ export function App() {
                     <p>Start the first prompt from the composer below.</p>
                   </article>
                 ) : (
-                  threadEvents.map((event, index) => (
+                  threadEvents.map((event: ReturnType<typeof itemToEvent>, index: number) => (
                     <article key={`${event.title}-${index}`} className={`event-card event-${event.kind}`}>
                       <div className="event-meta">
                         <span>{EVENT_LABELS[event.kind]}</span>

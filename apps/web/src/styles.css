@@ -123,6 +123,72 @@ code {
   margin-bottom: 24px;
 }
 
+.remote-access-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(280px, 0.7fr);
+  gap: 20px;
+  padding: 24px;
+  margin-bottom: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow);
+}
+
+.remote-access-card h2 {
+  margin: 0;
+  font-size: clamp(1.4rem, 2vw, 1.9rem);
+}
+
+.remote-access-copy,
+.remote-access-actions,
+.remote-log-list {
+  display: grid;
+  gap: 12px;
+}
+
+.remote-access-copy p,
+.remote-log-list p {
+  margin: 0;
+}
+
+.remote-access-url a {
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.remote-access-note {
+  color: var(--muted);
+}
+
+.remote-access-error {
+  color: #b91c1c;
+}
+
+.remote-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.remote-status-row span,
+.remote-log-list {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--surface-strong);
+  padding: 12px 14px;
+}
+
+.remote-button-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .hero-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -282,7 +348,8 @@ code {
 
 .approval-actions button,
 .create-form button,
-.composer-form button {
+.composer-form button,
+.remote-button-row button {
   border: 0;
   border-radius: 999px;
   padding: 10px 14px;
@@ -294,7 +361,8 @@ code {
 
 .approval-actions button:hover,
 .create-form button:hover,
-.composer-form button:hover {
+.composer-form button:hover,
+.remote-button-row button:hover {
   transform: translateY(-1px);
   opacity: 0.92;
 }
@@ -386,6 +454,10 @@ code {
 @media (max-width: 1120px) {
   .hero-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .remote-access-card {
+    grid-template-columns: 1fr;
   }
 
   .workspace {

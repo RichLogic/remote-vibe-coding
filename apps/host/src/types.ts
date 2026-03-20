@@ -1,6 +1,9 @@
 export type SecurityProfile = 'repo-write' | 'full-host';
 export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'idle' | 'running' | 'needs-approval' | 'error';
+export type CloudflareTunnelState = 'idle' | 'connecting' | 'connected' | 'error';
+export type CloudflareTunnelMode = 'quick' | 'token';
+export type CloudflareTargetSource = 'host' | 'dev-web' | 'override';
 
 export interface ProductDefaults {
   executor: 'codex';
@@ -10,6 +13,19 @@ export interface ProductDefaults {
   fullHostAvailable: boolean;
   approvalScopes: ApprovalScope[];
   primaryClient: 'web';
+}
+
+export interface CloudflareStatus {
+  installed: boolean;
+  version: string | null;
+  state: CloudflareTunnelState;
+  mode: CloudflareTunnelMode | null;
+  publicUrl: string | null;
+  targetUrl: string;
+  targetSource: CloudflareTargetSource;
+  startedAt: string | null;
+  lastError: string | null;
+  recentLogs: string[];
 }
 
 export interface SessionRecord {
@@ -146,6 +162,7 @@ export interface BootstrapPayload {
   productName: string;
   subtitle: string;
   defaults: ProductDefaults;
+  cloudflare: CloudflareStatus;
   sessions: SessionSummary[];
   approvals: PendingApproval[];
   updatedAt: string;

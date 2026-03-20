@@ -8,6 +8,7 @@
     "build": "npm run build --workspace @rvc/host && npm run build --workspace @rvc/web",
     "typecheck": "npm run typecheck --workspace @rvc/host && npm run typecheck --workspace @rvc/web",
     "dev:host": "npm run dev --workspace @rvc/host",
-    "dev:web": "npm run dev --workspace @rvc/web"
+    "dev:web": "npm run dev --workspace @rvc/web",
+    "start:host": "npm run start --workspace @rvc/host"
   }
 }

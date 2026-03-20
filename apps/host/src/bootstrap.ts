@@ -1,5 +1,6 @@
 import type {
   BootstrapPayload,
+  CloudflareStatus,
   PendingApproval,
   SessionRecord,
   SessionStatus,
@@ -31,6 +32,7 @@ export function toSessionSummary(session: SessionRecord, approvalCount: number):
 export function buildBootstrapPayload(
   sessions: SessionRecord[],
   approvals: PendingApproval[],
+  cloudflare: CloudflareStatus,
 ): BootstrapPayload {
   const approvalCounts = new Map<string, number>();
   for (const approval of approvals) {
@@ -56,6 +58,7 @@ export function buildBootstrapPayload(
       approvalScopes: ['once', 'session'],
       primaryClient: 'web',
     },
+    cloudflare,
     sessions: summaries,
     approvals,
     updatedAt: new Date().toISOString(),
