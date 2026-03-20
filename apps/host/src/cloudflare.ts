@@ -26,15 +26,24 @@ interface NamedTunnelConfig {
   tunnelName: string;
 }
 
+interface TunnelInfoResponse {
+  conns?: Array<{
+    conns?: Array<unknown>;
+  }>;
+}
+
 function createInitialStatus(): CloudflareStatus {
   return {
     installed: false,
     version: null,
     state: 'idle',
     mode: null,
+    tunnelName: null,
     publicUrl: null,
     targetUrl: localHostUrl(),
     targetSource: 'host',
+    connectorCount: 0,
+    activeSource: null,
     startedAt: null,
     lastError: null,
     recentLogs: [],
@@ -127,25 +136,46 @@ export class CloudflareTunnelManager {
 
   async getStatus() {
     await this.refreshInstallation();
-    if (!this.process) {
-      const target = await this.resolveTarget();
-      const namedTunnel = await this.resolveNamedTunnel(target.url);
-      const runtime = cloudflareRuntimeConfig();
-      this.status.targetUrl = target.url;
-      this.status.targetSource = target.source;
-      if (this.status.state !== 'error') {
-        if (runtime.tunnelToken) {
-          this.status.mode = 'token';
-          this.status.publicUrl = runtime.publicUrl;
-        } else if (namedTunnel) {
-          this.status.mode = 'named';
-          this.status.publicUrl = namedTunnel.publicUrl;
-        } else {
-          this.status.mode = null;
-          this.status.publicUrl = null;
-        }
+    const target = await this.resolveTarget();
+    const namedTunnel = await this.resolveNamedTunnel(target.url);
+    const runtime = cloudflareRuntimeConfig();
+    this.status.targetUrl = target.url;
+    this.status.targetSource = target.source;
+
+    if (!this.process && this.status.state !== 'error') {
+      if (runtime.tunnelToken) {
+        this.status.mode = 'token';
+        this.status.publicUrl = runtime.publicUrl;
+        this.status.tunnelName = null;
+      } else if (namedTunnel) {
+        this.status.mode = 'named';
+        this.status.publicUrl = namedTunnel.publicUrl;
+        this.status.tunnelName = namedTunnel.tunnelName;
+      } else {
+        this.status.mode = null;
+        this.status.publicUrl = null;
+        this.status.tunnelName = null;
       }
     }
+
+    if (namedTunnel) {
+      const tunnelInfo = await this.readTunnelInfo(namedTunnel.tunnelName);
+      const connectorCount = tunnelInfo?.conns?.reduce((count, connector) => count + (connector.conns?.length ?? 0), 0) ?? 0;
+      this.status.connectorCount = connectorCount;
+
+      if (!this.process) {
+        this.status.activeSource = connectorCount > 0 ? 'system' : null;
+        if (this.status.state !== 'error') {
+          this.status.state = connectorCount > 0 ? 'connected' : 'idle';
+        }
+      } else {
+        this.status.activeSource = 'local-manager';
+      }
+    } else if (!this.process) {
+      this.status.connectorCount = 0;
+      this.status.activeSource = null;
+    }
+
     return this.snapshot();
   }
 
@@ -219,9 +249,12 @@ export class CloudflareTunnelManager {
       ...this.status,
       state: 'connecting',
       mode,
+      tunnelName: namedTunnel?.tunnelName ?? null,
       publicUrl: stablePublicUrl,
       targetUrl: target.url,
       targetSource: target.source,
+      connectorCount: 0,
+      activeSource: mode === 'named' ? 'local-manager' : null,
       startedAt: new Date().toISOString(),
       lastError: null,
       recentLogs: [],
@@ -257,6 +290,7 @@ export class CloudflareTunnelManager {
           const error = new Error('Timed out while waiting for cloudflared to establish the tunnel');
           this.status.state = 'error';
           this.status.lastError = error.message;
+          this.status.activeSource = null;
           reject(error);
         });
       }, 20000);
@@ -266,6 +300,7 @@ export class CloudflareTunnelManager {
         this.status.state = 'connected';
         this.status.publicUrl = publicUrl;
         this.status.lastError = null;
+        this.status.activeSource = mode === 'named' ? 'local-manager' : this.status.activeSource;
         settle(() => resolve(this.snapshot()));
       };
 
@@ -299,6 +334,7 @@ export class CloudflareTunnelManager {
         this.process = null;
         this.status.state = 'error';
         this.status.lastError = error.message;
+        this.status.activeSource = null;
         settle(() => reject(error));
       });
 
@@ -313,6 +349,7 @@ export class CloudflareTunnelManager {
         const message = `cloudflared exited before the tunnel was ready (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
         this.status.state = 'error';
         this.status.lastError = message;
+        this.status.activeSource = null;
         settle(() => reject(new Error(message)));
       });
     });
@@ -399,6 +436,15 @@ export class CloudflareTunnelManager {
       service: matchingEntry.service,
       tunnelName: parsed.tunnelName,
     };
+  }
+
+  private async readTunnelInfo(tunnelName: string) {
+    try {
+      const { stdout } = await execFile('cloudflared', ['tunnel', 'info', '--output', 'json', tunnelName]);
+      return JSON.parse(stdout) as TunnelInfoResponse;
+    } catch {
+      return null;
+    }
   }
 
   private snapshot(): CloudflareStatus {

@@ -21,9 +21,12 @@ export interface CloudflareStatus {
   version: string | null;
   state: CloudflareTunnelState;
   mode: CloudflareTunnelMode | null;
+  tunnelName: string | null;
   publicUrl: string | null;
   targetUrl: string;
   targetSource: CloudflareTargetSource;
+  connectorCount: number;
+  activeSource: 'local-manager' | 'system' | null;
   startedAt: string | null;
   lastError: string | null;
   recentLogs: string[];

@@ -264,6 +264,8 @@ export function App() {
 
   const threadEvents = flattenThread(detail?.thread ?? null);
   const cloudflare = bootstrap?.cloudflare;
+  const cloudflareManagedBySystem = cloudflare?.activeSource === 'system';
+  const cloudflareManagedLocally = cloudflare?.activeSource === 'local-manager';
 
   if (error && !bootstrap) {
     return (
@@ -332,6 +334,13 @@ export function App() {
               ? `Targeting ${cloudflare.targetUrl} from ${cloudflare.targetSource}.`
               : 'cloudflared is not installed on this machine yet.'}
           </p>
+          {cloudflare?.tunnelName ? (
+            <p className="remote-access-note">
+              {cloudflareManagedBySystem
+                ? `${cloudflare.tunnelName} is already live through the system tunnel service.`
+                : `${cloudflare.tunnelName} is the active named tunnel for this surface.`}
+            </p>
+          ) : null}
           {cloudflare?.publicUrl ? (
             <p className="remote-access-url">
               <a href={cloudflare.publicUrl} target="_blank" rel="noreferrer">
@@ -351,22 +360,31 @@ export function App() {
           <div className="remote-status-row">
             <span>{cloudflare?.version ?? 'cloudflared missing'}</span>
             <span>{cloudflare?.mode ?? 'not connected'}</span>
+            <span>{cloudflare?.connectorCount ?? 0} connector(s)</span>
           </div>
           <div className="remote-button-row">
             <button
               type="button"
               onClick={() => void handleConnectCloudflare()}
-              disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'}
+              disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting' || cloudflareManagedBySystem}
             >
-              {busy === 'connect-cloudflare' || cloudflare?.state === 'connecting' ? 'Connecting...' : 'Connect tunnel'}
+              {cloudflareManagedBySystem
+                ? 'Tunnel already live'
+                : busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'
+                  ? 'Connecting...'
+                  : 'Connect tunnel'}
             </button>
             <button
               type="button"
               className="button-secondary"
               onClick={() => void handleDisconnectCloudflare()}
-              disabled={!cloudflare?.installed || !cloudflare?.publicUrl || busy === 'disconnect-cloudflare'}
+              disabled={!cloudflare?.installed || !cloudflareManagedLocally || busy === 'disconnect-cloudflare'}
             >
-              {busy === 'disconnect-cloudflare' ? 'Disconnecting...' : 'Disconnect'}
+              {cloudflareManagedBySystem
+                ? 'Managed by system'
+                : busy === 'disconnect-cloudflare'
+                  ? 'Disconnecting...'
+                  : 'Disconnect'}
             </button>
           </div>
           {cloudflare?.recentLogs.length ? (
@@ -464,7 +482,7 @@ export function App() {
                         <span>{EVENT_LABELS[event.kind]}</span>
                         <strong>{event.title}</strong>
                       </div>
-                      <p>{event.body}</p>
+                      <pre className="event-body">{event.body}</pre>
                     </article>
                   ))
                 )}
