@@ -3,6 +3,7 @@ import type {
   CloudflareStatus,
   CreateSessionRequest,
   ResolveApprovalRequest,
+  RenameSessionRequest,
   SessionDetailResponse,
   SessionRecord,
   CreateTurnRequest,
@@ -82,6 +83,14 @@ export async function archiveSession(sessionId: string) {
 export async function restoreSession(sessionId: string) {
   const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/restore`, {
     method: 'POST',
+  });
+  return response.session;
+}
+
+export async function renameSession(sessionId: string, input: RenameSessionRequest) {
+  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/rename`, {
+    method: 'POST',
+    body: JSON.stringify(input),
   });
   return response.session;
 }

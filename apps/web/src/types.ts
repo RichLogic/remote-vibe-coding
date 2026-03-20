@@ -192,6 +192,10 @@ export interface CreateTurnRequest {
   prompt: string;
 }
 
+export interface RenameSessionRequest {
+  title: string;
+}
+
 export interface ResolveApprovalRequest {
   decision: 'accept' | 'decline';
   scope?: ApprovalScope;

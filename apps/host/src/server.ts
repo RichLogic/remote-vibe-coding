@@ -16,6 +16,7 @@ import { SessionStore } from './store.js';
 import type {
   CodexThread,
   CreateSessionRequest,
+  RenameSessionRequest,
   CreateTurnRequest,
   PendingApproval,
   ResolveApprovalRequest,
@@ -458,6 +459,28 @@ app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
     status: 'idle',
     networkEnabled: false,
     lastIssue: null,
+  })) ?? session;
+
+  return { session: nextSession };
+});
+
+app.post('/api/sessions/:sessionId/rename', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const body = request.body as RenameSessionRequest;
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  const title = body.title?.trim();
+  if (!title) {
+    reply.code(400);
+    return { error: 'Session title is required' };
+  }
+
+  const nextSession = (await store.updateSession(sessionId, {
+    title,
   })) ?? session;
 
   return { session: nextSession };

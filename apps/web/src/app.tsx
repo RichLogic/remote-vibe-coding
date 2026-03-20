@@ -11,6 +11,7 @@ import {
   fetchBootstrap,
   fetchSessionDetail,
   logout,
+  renameSession,
   restartSession,
   resolveApproval,
   restoreSession,
@@ -106,6 +107,8 @@ const COPY = {
     archiving: 'Archiving...',
     delete: 'Delete',
     deleting: 'Deleting...',
+    rename: 'Rename',
+    renaming: 'Renaming...',
     restore: 'Restore',
     restoring: 'Restoring...',
     codingSurface: 'Coding-first surface',
@@ -175,12 +178,14 @@ const COPY = {
     signingOut: 'Signing out...',
     signOut: 'Sign out',
     newSessionTitle: 'Create a workspace thread',
+    renameSessionTitle: 'Rename session',
     workspace: 'Workspace',
     title: 'Title',
     optionalSessionTitle: 'Optional session title',
     securityProfile: 'Security profile',
     creating: 'Creating...',
     createSession: 'Create session',
+    saveName: 'Save name',
     sessionLabel: 'Session',
     threadLabel: 'Thread',
     gitLabel: 'Git',
@@ -220,6 +225,8 @@ const COPY = {
     archiving: '归档中...',
     delete: '删除',
     deleting: '删除中...',
+    rename: '改名',
+    renaming: '保存中...',
     restore: '恢复',
     restoring: '恢复中...',
     codingSurface: '开发工作区',
@@ -289,12 +296,14 @@ const COPY = {
     signingOut: '退出中...',
     signOut: '退出登录',
     newSessionTitle: '创建一个 workspace thread',
+    renameSessionTitle: '修改会话名称',
     workspace: '工作目录',
     title: '标题',
     optionalSessionTitle: '可选的会话标题',
     securityProfile: '安全档位',
     creating: '创建中...',
     createSession: '创建会话',
+    saveName: '保存名称',
     sessionLabel: '会话',
     threadLabel: '线程',
     gitLabel: 'Git',
@@ -323,48 +332,10 @@ function shortThreadId(threadId: string) {
   return threadId.slice(0, 8);
 }
 
-function compactWorkspacePath(workspace: string) {
-  const parts = workspace.split('/').filter(Boolean);
-  if (parts.length <= 2) return workspace;
-  return `${parts.slice(-2).join('/')}`;
-}
-
 function pickPreferredSessionId(
   sessions: Array<{ id: string; archivedAt: string | null }>,
 ) {
   return sessions.find((session) => !session.archivedAt)?.id ?? sessions[0]?.id ?? null;
-}
-
-function sessionSummaryText(
-  session: {
-    archivedAt: string | null;
-    pendingApprovalCount: number;
-    status: SessionStatus;
-    lastIssue: string | null;
-  },
-  language: Language,
-) {
-  if (session.archivedAt) {
-    return COPY[language].archivedSession;
-  }
-  if (session.pendingApprovalCount > 0) {
-    return language === 'zh'
-      ? `等待 ${session.pendingApprovalCount} 个审批`
-      : `${session.pendingApprovalCount} approval${session.pendingApprovalCount === 1 ? '' : 's'} waiting`;
-  }
-  if (session.status === 'running') {
-    return language === 'zh' ? '正在执行 Codex turn' : 'Streaming Codex turn';
-  }
-  if (session.status === 'needs-approval') {
-    return language === 'zh' ? '等待你的决定' : 'Waiting on user decision';
-  }
-  if (session.status === 'stale') {
-    return session.lastIssue ?? (language === 'zh' ? '运行时已重启，请先重启会话。' : 'Codex runtime restarted. Restart this session.');
-  }
-  if (session.status === 'error') {
-    return session.lastIssue ?? (language === 'zh' ? '上一次操作失败了' : 'Last action failed');
-  }
-  return language === 'zh' ? '可以继续下一条 prompt' : 'Ready for the next prompt';
 }
 
 function itemToEvent(item: CodexThreadItem): TranscriptEvent | null {
@@ -460,6 +431,8 @@ export function App() {
   const [detailView, setDetailView] = useState<DetailView>('transcript');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
   const [showArchived, setShowArchived] = useState(false);
   const copy = COPY[language];
 
@@ -598,6 +571,29 @@ export function App() {
     }
   }
 
+  async function handleRenameSession(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!renameSessionId) return;
+
+    setBusy(`rename-${renameSessionId}`);
+    try {
+      const session = await renameSession(renameSessionId, { title: renameTitle });
+      const [nextBootstrap, nextDetail] = await Promise.all([
+        fetchBootstrap(),
+        fetchSessionDetail(session.id),
+      ]);
+      setBootstrap(nextBootstrap);
+      setDetail(nextDetail);
+      setRenameSessionId(null);
+      setRenameTitle('');
+      setError(null);
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : copy.rename);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleDeleteSession(sessionId: string) {
     const session = bootstrap?.sessions.find((entry) => entry.id === sessionId);
     if (!session) return;
@@ -627,6 +623,11 @@ export function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function openRenameModal(sessionId: string, currentTitle: string) {
+    setRenameSessionId(sessionId);
+    setRenameTitle(currentTitle);
   }
 
   async function handleApprovalAction(approval: PendingApproval, decision: 'accept' | 'decline', scope: 'once' | 'session') {
@@ -764,13 +765,16 @@ export function App() {
                   <h3>{session.title}</h3>
                   <span className={`status-pill status-${session.status}`}>{STATUS_LABELS[language][session.status]}</span>
                 </div>
-                <p className="session-workspace">{compactWorkspacePath(session.workspace)}</p>
-                <div className="session-row session-foot">
-                  <span>{sessionSummaryText(session, language)}</span>
-                  {session.pendingApprovalCount > 0 ? <span>{session.pendingApprovalCount} {copy.approvals}</span> : null}
-                </div>
                 {selectedSessionId === session.id ? (
                   <div className="session-actions" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => openRenameModal(session.id, session.title)}
+                      disabled={busy === `rename-${session.id}`}
+                    >
+                      {busy === `rename-${session.id}` ? copy.renaming : copy.rename}
+                    </button>
                     <button
                       type="button"
                       className="button-secondary"
@@ -810,13 +814,16 @@ export function App() {
                       <h3>{session.title}</h3>
                       <span className="status-pill status-idle">{copy.archived}</span>
                     </div>
-                    <p className="session-workspace">{compactWorkspacePath(session.workspace)}</p>
-                    <div className="session-row session-foot">
-                      <span>{copy.archivedSession}</span>
-                      <span>{sessionSummaryText(session, language)}</span>
-                    </div>
                     {selectedSessionId === session.id ? (
                       <div className="session-actions" onClick={(event) => event.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={() => openRenameModal(session.id, session.title)}
+                          disabled={busy === `rename-${session.id}`}
+                        >
+                          {busy === `rename-${session.id}` ? copy.renaming : copy.rename}
+                        </button>
                         <button
                           type="button"
                           className="button-secondary"
@@ -1228,6 +1235,38 @@ export function App() {
               </label>
               <button type="submit" disabled={busy === 'create-session'}>
                 {busy === 'create-session' ? copy.creating : copy.createSession}
+              </button>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {renameSessionId ? (
+        <div className="modal-overlay" onClick={() => {
+          setRenameSessionId(null);
+          setRenameTitle('');
+        }}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-header settings-header">
+              <div>
+                <p className="eyebrow">{copy.rename}</p>
+                <h2>{copy.renameSessionTitle}</h2>
+              </div>
+              <button type="button" className="button-secondary topbar-button" onClick={() => {
+                setRenameSessionId(null);
+                setRenameTitle('');
+              }}>
+                {copy.close}
+              </button>
+            </div>
+
+            <form className="create-form" onSubmit={handleRenameSession}>
+              <label className="field">
+                <span>{copy.title}</span>
+                <input value={renameTitle} onChange={(event) => setRenameTitle(event.target.value)} placeholder={copy.optionalSessionTitle} />
+              </label>
+              <button type="submit" disabled={busy === `rename-${renameSessionId}`}>
+                {busy === `rename-${renameSessionId}` ? copy.renaming : copy.saveName}
               </button>
             </form>
           </div>
