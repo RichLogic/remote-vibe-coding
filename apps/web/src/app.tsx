@@ -553,9 +553,11 @@ export function App() {
       const nextBootstrap = await fetchBootstrap();
       setBootstrap(nextBootstrap);
 
-      const nextSelectedSessionId = archived && selectedSessionId === sessionId
-        ? pickPreferredSessionId(nextBootstrap.sessions)
-        : session.id;
+      if (archived) {
+        setShowArchived(true);
+      }
+
+      const nextSelectedSessionId = session.id;
 
       setSelectedSessionId(nextSelectedSessionId);
       if (nextSelectedSessionId) {
