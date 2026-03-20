@@ -4,6 +4,8 @@ import { createServer } from 'node:net';
 
 import WebSocket from 'ws';
 
+import type { ModelOption, ReasoningEffort, SecurityProfile } from './types.js';
+
 type JsonRpcId = number | string;
 
 interface JsonRpcResponse {
@@ -27,6 +29,12 @@ export interface JsonRpcServerRequest extends JsonRpcNotification {
 interface PendingRequest {
   resolve: (value: any) => void;
   reject: (error: Error) => void;
+}
+
+interface StartThreadOptions {
+  cwd: string;
+  securityProfile: SecurityProfile;
+  model?: string | null;
 }
 
 function delay(ms: number) {
@@ -229,22 +237,28 @@ export class CodexAppServerClient extends EventEmitter {
     });
   }
 
-  async startThread(cwd: string, fullHostEnabled: boolean) {
+  async startThread(options: StartThreadOptions) {
+    const sandbox = options.securityProfile === 'full-host'
+      ? 'danger-full-access'
+      : options.securityProfile === 'read-only'
+        ? 'read-only'
+        : 'workspace-write';
     return this.request<{
       thread: {
         id: string;
       };
     }>('thread/start', {
-      cwd,
+      cwd: options.cwd,
       approvalPolicy: 'on-request',
       approvalsReviewer: 'user',
-      sandbox: fullHostEnabled ? 'danger-full-access' : 'workspace-write',
+      sandbox,
+      ...(options.model ? { model: options.model } : {}),
       experimentalRawEvents: false,
       persistExtendedHistory: false,
     });
   }
 
-  async startTurn(threadId: string, prompt: string) {
+  async startTurn(threadId: string, prompt: string, options?: { model?: string | null; effort?: ReasoningEffort | null }) {
     return this.request('turn/start', {
       threadId,
       input: [
@@ -254,7 +268,40 @@ export class CodexAppServerClient extends EventEmitter {
           text_elements: [],
         },
       ],
+      ...(options?.model ? { model: options.model } : {}),
+      ...(options?.effort ? { effort: options.effort } : {}),
     });
+  }
+
+  async listModels() {
+    const response = await this.request<{
+      data: Array<{
+        id: string;
+        displayName: string;
+        model: string;
+        description: string;
+        isDefault: boolean;
+        hidden: boolean;
+        defaultReasoningEffort: ReasoningEffort;
+        supportedReasoningEfforts: Array<{
+          reasoningEffort: ReasoningEffort;
+        }>;
+      }>;
+    }>('model/list', {
+      includeHidden: false,
+      limit: 100,
+    });
+
+    return response.data.map((entry): ModelOption => ({
+      id: entry.id,
+      displayName: entry.displayName,
+      model: entry.model,
+      description: entry.description,
+      isDefault: entry.isDefault,
+      hidden: entry.hidden,
+      defaultReasoningEffort: entry.defaultReasoningEffort,
+      supportedReasoningEfforts: entry.supportedReasoningEfforts.map((option) => option.reasoningEffort),
+    }));
   }
 
   async readThread(threadId: string) {

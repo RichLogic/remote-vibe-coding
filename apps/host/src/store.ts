@@ -3,13 +3,41 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { ensureDataDir, SESSIONS_FILE } from './config.js';
 import type {
   PendingApproval,
+  ReasoningEffort,
   SessionEvent,
   SessionRecord,
   SessionStatus,
+  SessionType,
+  SecurityProfile,
 } from './types.js';
 
 interface PersistedState {
   sessions: SessionRecord[];
+}
+
+interface LegacySessionRecord {
+  id: string;
+  threadId: string;
+  title: string;
+  workspace: string;
+  archivedAt?: string | null;
+  securityProfile?: SecurityProfile;
+  networkEnabled?: boolean;
+  fullHostEnabled?: boolean;
+  status?: SessionStatus;
+  lastIssue?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  ownerUserId?: string;
+  ownerUsername?: string;
+  sessionType?: SessionType;
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+}
+
+interface LoadOptions {
+  fallbackOwnerUserId: string;
+  fallbackOwnerUsername: string;
 }
 
 const MAX_LIVE_EVENTS = 200;
@@ -19,15 +47,31 @@ export class SessionStore {
   private readonly approvals = new Map<string, PendingApproval[]>();
   private readonly liveEvents = new Map<string, SessionEvent[]>();
 
-  async load() {
+  async load(options: LoadOptions) {
     await ensureDataDir();
     try {
       const raw = await readFile(SESSIONS_FILE, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
       for (const session of parsed.sessions ?? []) {
-        this.sessions.set(session.id, {
-          ...session,
-          archivedAt: session.archivedAt ?? null,
+        const legacy = session as LegacySessionRecord;
+        this.sessions.set(legacy.id, {
+          id: legacy.id,
+          ownerUserId: legacy.ownerUserId ?? options.fallbackOwnerUserId,
+          ownerUsername: legacy.ownerUsername ?? options.fallbackOwnerUsername,
+          sessionType: legacy.sessionType ?? 'code',
+          threadId: legacy.threadId,
+          title: legacy.title,
+          workspace: legacy.workspace,
+          archivedAt: legacy.archivedAt ?? null,
+          securityProfile: legacy.securityProfile ?? 'repo-write',
+          networkEnabled: Boolean(legacy.networkEnabled),
+          fullHostEnabled: Boolean(legacy.fullHostEnabled),
+          status: legacy.status ?? 'idle',
+          lastIssue: legacy.lastIssue ?? null,
+          model: legacy.model ?? null,
+          reasoningEffort: legacy.reasoningEffort ?? null,
+          createdAt: legacy.createdAt,
+          updatedAt: legacy.updatedAt,
         });
       }
     } catch {
@@ -47,8 +91,20 @@ export class SessionStore {
     return [...this.sessions.values()].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
+  listSessionsForUser(userId: string) {
+    return this.listSessions().filter((session) => session.ownerUserId === userId);
+  }
+
   getSession(sessionId: string) {
     return this.sessions.get(sessionId) ?? null;
+  }
+
+  getSessionForUser(sessionId: string, userId: string) {
+    const session = this.getSession(sessionId);
+    if (!session || session.ownerUserId !== userId) {
+      return null;
+    }
+    return session;
   }
 
   findByThreadId(threadId: string) {
@@ -73,6 +129,25 @@ export class SessionStore {
     return next;
   }
 
+  async updateOwnerUsername(userId: string, ownerUsername: string) {
+    let changed = false;
+    for (const session of this.sessions.values()) {
+      if (session.ownerUserId !== userId || session.ownerUsername === ownerUsername) {
+        continue;
+      }
+      this.sessions.set(session.id, {
+        ...session,
+        ownerUsername,
+        updatedAt: new Date().toISOString(),
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      await this.save();
+    }
+  }
+
   async deleteSession(sessionId: string) {
     const existed = this.sessions.delete(sessionId);
     this.approvals.delete(sessionId);
@@ -89,6 +164,10 @@ export class SessionStore {
 
   getAllApprovals() {
     return [...this.approvals.values()].flat();
+  }
+
+  getAllApprovalsForUser(userId: string) {
+    return this.getAllApprovals().filter((approval) => this.getSession(approval.sessionId)?.ownerUserId === userId);
   }
 
   addApproval(approval: PendingApproval) {

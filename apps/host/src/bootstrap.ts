@@ -1,22 +1,23 @@
 import type {
   BootstrapPayload,
   CloudflareStatus,
+  ModelOption,
   PendingApproval,
   SessionRecord,
-  SessionStatus,
   SessionSummary,
+  UserRecord,
 } from './types.js';
 
-function describeStatus(session: SessionRecord, approvalCount: number): string {
+function describeStatus(session: SessionRecord, approvalCount: number) {
   if (session.archivedAt) return 'Archived';
   if (approvalCount > 0) return `${approvalCount} approval${approvalCount === 1 ? '' : 's'} waiting`;
   switch (session.status) {
     case 'running':
-      return 'Streaming Codex turn';
+      return session.sessionType === 'chat' ? 'Streaming chat turn' : 'Streaming Codex turn';
     case 'needs-approval':
       return 'Waiting on user decision';
     case 'stale':
-      return session.lastIssue ?? 'Codex runtime restarted. Restart this session.';
+      return session.lastIssue ?? 'Codex runtime restarted. The next prompt will create a fresh thread.';
     case 'error':
       return session.lastIssue ?? 'Last action failed';
     default:
@@ -33,9 +34,11 @@ export function toSessionSummary(session: SessionRecord, approvalCount: number):
 }
 
 export function buildBootstrapPayload(
+  currentUser: UserRecord,
   sessions: SessionRecord[],
   approvals: PendingApproval[],
   cloudflare: CloudflareStatus,
+  availableModels: ModelOption[],
 ): BootstrapPayload {
   const approvalCounts = new Map<string, number>();
   for (const approval of approvals) {
@@ -57,11 +60,14 @@ export function buildBootstrapPayload(
       transcriptMode: 'app-server',
       defaultSecurityProfile: 'repo-write',
       networkEnabledByDefault: false,
-      fullHostAvailable: true,
+      fullHostAvailable: currentUser.canUseFullHost,
       approvalScopes: ['once', 'session'],
       primaryClient: 'web',
+      sessionTypes: ['code', 'chat'],
     },
     cloudflare,
+    currentUser,
+    availableModels,
     sessions: summaries,
     approvals,
     updatedAt: new Date().toISOString(),

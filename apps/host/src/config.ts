@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 export const DATA_DIR = join(homedir(), '.config', 'remote-vibe-coding');
 export const SESSIONS_FILE = join(DATA_DIR, 'sessions.json');
 export const AUTH_FILE = join(DATA_DIR, 'auth.json');
+export const CHAT_WORKSPACES_DIR = join(DATA_DIR, 'chat-workspaces');
 export const PORT = Number.parseInt(process.env.PORT ?? '8787', 10);
 export const HOST = process.env.HOST ?? '127.0.0.1';
 
@@ -31,4 +32,8 @@ export function cloudflareRuntimeConfig() {
 
 export async function ensureDataDir() {
   await mkdir(DATA_DIR, { recursive: true });
+}
+
+export async function ensureChatWorkspacesDir() {
+  await mkdir(CHAT_WORKSPACES_DIR, { recursive: true });
 }

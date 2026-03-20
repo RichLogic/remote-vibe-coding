@@ -1,29 +1,63 @@
-import { stat } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
+import { mkdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { basename, join, resolve } from 'node:path';
 
-import Fastify, { type FastifyRequest } from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyCookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 
-import { AUTH_COOKIE_NAME, loadOrCreateOwnerAuth, loginPageHtml, verifyPassword, verifyToken } from './auth.js';
+import {
+  AUTH_COOKIE_NAME,
+  createUser,
+  deleteUser,
+  findUserByToken,
+  getPublicUsers,
+  loadOrCreateAuthState,
+  loginPageHtml,
+  toUserRecord,
+  updateUser,
+  verifyPassword,
+} from './auth.js';
 import { buildBootstrapPayload } from './bootstrap.js';
 import { CloudflareTunnelManager } from './cloudflare.js';
 import { CodexAppServerClient, type JsonRpcNotification, type JsonRpcServerRequest } from './codex-app-server.js';
-import { HOST, PORT, WEB_DIST_DIR } from './config.js';
+import { CHAT_WORKSPACES_DIR, HOST, PORT, WEB_DIST_DIR } from './config.js';
 import { SessionStore } from './store.js';
 import type {
   CodexThread,
   CreateSessionRequest,
-  RenameSessionRequest,
   CreateTurnRequest,
+  CreateUserRequest,
+  ModelOption,
   PendingApproval,
+  ReasoningEffort,
+  RenameSessionRequest,
   ResolveApprovalRequest,
+  SecurityProfile,
   SessionEvent,
   SessionRecord,
-  SecurityProfile,
+  SessionType,
+  UpdateUserRequest,
+  UserRecord,
 } from './types.js';
+
+type AuthenticatedRequest = FastifyRequest & {
+  authUser?: UserRecord;
+};
+
+const FALLBACK_MODELS: ModelOption[] = [
+  {
+    id: 'gpt-5-codex',
+    displayName: 'GPT-5 Codex',
+    model: 'gpt-5-codex',
+    description: 'Fallback default when the model catalog is unavailable.',
+    isDefault: true,
+    hidden: false,
+    defaultReasoningEffort: 'medium',
+    supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high'],
+  },
+];
 
 function approvalTitle(method: string): string {
   switch (method) {
@@ -124,7 +158,7 @@ function cookieIsSecure(request: FastifyRequest) {
   return protocol === 'https';
 }
 
-const STALE_SESSION_MESSAGE = 'Codex runtime restarted. Restart this session to create a fresh thread.';
+const STALE_SESSION_MESSAGE = 'Codex runtime restarted. The next prompt will create a fresh thread.';
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -138,6 +172,43 @@ function isArchivedSession(session: SessionRecord) {
   return Boolean(session.archivedAt);
 }
 
+function normalizeSessionType(value: unknown): SessionType {
+  return value === 'chat' ? 'chat' : 'code';
+}
+
+function normalizeSecurityProfile(value: unknown): SecurityProfile {
+  if (value === 'read-only') return 'read-only';
+  if (value === 'full-host') return 'full-host';
+  return 'repo-write';
+}
+
+function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
+  switch (value) {
+    case 'none':
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+      return value;
+    default:
+      return null;
+  }
+}
+
+function trimOptional(value: unknown) {
+  const next = typeof value === 'string' ? value.trim() : '';
+  return next || null;
+}
+
+function getRequestUser(request: FastifyRequest) {
+  const user = (request as AuthenticatedRequest).authUser;
+  if (!user) {
+    throw new Error('Authentication required');
+  }
+  return user;
+}
+
 const app = Fastify({
   logger: true,
   trustProxy: true,
@@ -148,14 +219,157 @@ await app.register(cors, {
 });
 await app.register(fastifyCookie);
 
+let authState = await loadOrCreateAuthState();
+const seedUsers = getPublicUsers(authState);
+const fallbackOwner = seedUsers.find((entry) => entry.isAdmin) ?? seedUsers[0]!;
+
 const store = new SessionStore();
-await store.load();
-const ownerAuth = await loadOrCreateOwnerAuth();
+await store.load({
+  fallbackOwnerUserId: fallbackOwner.id,
+  fallbackOwnerUsername: fallbackOwner.username,
+});
 
 const codex = new CodexAppServerClient();
 await codex.ensureStarted();
 await store.markAllStale(STALE_SESSION_MESSAGE);
 const cloudflare = new CloudflareTunnelManager();
+
+let availableModels = [...FALLBACK_MODELS];
+
+async function refreshAvailableModels() {
+  try {
+    const next = await codex.listModels();
+    if (next.length > 0) {
+      availableModels = next.filter((entry) => !entry.hidden);
+    }
+  } catch (error) {
+    app.log.warn(`model/list failed, using fallback catalog: ${errorMessage(error)}`);
+  }
+}
+
+await refreshAvailableModels();
+
+function currentDefaultModel() {
+  return availableModels.find((entry) => entry.isDefault)?.model ?? availableModels[0]?.model ?? FALLBACK_MODELS[0]!.model;
+}
+
+function currentDefaultEffort(model: string | null | undefined) {
+  const option = availableModels.find((entry) => entry.model === model)
+    ?? availableModels.find((entry) => entry.isDefault)
+    ?? availableModels[0]
+    ?? FALLBACK_MODELS[0]!;
+  return option.defaultReasoningEffort;
+}
+
+function userCanCreateSessionType(user: UserRecord, sessionType: SessionType) {
+  return user.allowedSessionTypes.includes(sessionType);
+}
+
+async function ensureChatWorkspace(userId: string, sessionId: string) {
+  const workspace = join(CHAT_WORKSPACES_DIR, userId, sessionId);
+  await mkdir(workspace, { recursive: true });
+  return workspace;
+}
+
+function sessionApprovalsForUser(userId: string) {
+  return store.getAllApprovalsForUser(userId);
+}
+
+function getOwnedSessionOrReply(userId: string, sessionId: string, reply: FastifyReply) {
+  const session = store.getSessionForUser(sessionId, userId);
+  if (!session) {
+    reply.code(404);
+    return null;
+  }
+  return session;
+}
+
+async function restartSessionThread(session: SessionRecord, summary = 'Started a fresh Codex thread for this session.') {
+  const threadResponse = await codex.startThread({
+    cwd: session.workspace,
+    securityProfile: session.securityProfile,
+    model: session.model,
+  });
+
+  store.clearApprovals(session.id);
+  store.clearLiveEvents(session.id);
+  store.addLiveEvent(session.id, {
+    id: randomUUID(),
+    method: 'session/restarted',
+    summary,
+    createdAt: new Date().toISOString(),
+  });
+
+  return (await store.updateSession(session.id, {
+    threadId: threadResponse.thread.id,
+    status: 'idle',
+    networkEnabled: false,
+    lastIssue: null,
+  })) ?? session;
+}
+
+async function startTurnWithAutoRestart(session: SessionRecord, prompt: string) {
+  let currentSession = session;
+
+  if (currentSession.status === 'stale') {
+    currentSession = await restartSessionThread(
+      currentSession,
+      'Automatically created a fresh thread before sending the next prompt.',
+    );
+  }
+
+  const runTurn = async (targetSession: SessionRecord) => {
+    await store.updateSession(targetSession.id, { status: 'running', lastIssue: null });
+    return codex.startTurn(targetSession.threadId, prompt, {
+      model: targetSession.model,
+      effort: targetSession.reasoningEffort,
+    });
+  };
+
+  try {
+    const turn = await runTurn(currentSession);
+    return { session: currentSession, turn };
+  } catch (error) {
+    if (!isThreadUnavailableError(error)) {
+      throw error;
+    }
+
+    const latestSession = store.getSession(currentSession.id) ?? currentSession;
+    currentSession = await restartSessionThread(
+      latestSession,
+      'Automatically created a fresh thread after a runtime reset.',
+    );
+    const turn = await runTurn(currentSession);
+    return { session: currentSession, turn };
+  }
+}
+
+async function handleChatApprovalRejection(session: SessionRecord, message: JsonRpcServerRequest) {
+  if (message.method === 'item/permissions/requestApproval') {
+    await codex.respond(message.id, {
+      permissions: {},
+      scope: 'turn',
+    });
+  } else if (
+    message.method === 'item/commandExecution/requestApproval'
+    || message.method === 'item/fileChange/requestApproval'
+  ) {
+    await codex.respond(message.id, {
+      decision: 'decline',
+    });
+  } else {
+    await codex.respond(message.id, {
+      decision: 'cancel',
+    });
+  }
+
+  store.addLiveEvent(session.id, {
+    id: randomUUID(),
+    method: 'session/chat-tool-blocked',
+    summary: 'Blocked a tool or permission request in a chat-only session.',
+    createdAt: new Date().toISOString(),
+  });
+}
 
 codex.on('debug', (message) => {
   app.log.info(message);
@@ -201,7 +415,6 @@ async function handleNotification(message: JsonRpcNotification) {
       status: store.getApprovals(session.id).length > 0 ? 'needs-approval' : 'idle',
       lastIssue: null,
     });
-    return;
   }
 }
 
@@ -215,6 +428,11 @@ async function handleServerRequest(message: JsonRpcServerRequest) {
   const session = store.findByThreadId(threadId);
   if (!session) {
     await codex.respond(message.id, { decision: 'cancel' });
+    return;
+  }
+
+  if (session.sessionType === 'chat') {
+    await handleChatApprovalRejection(session, message);
     return;
   }
 
@@ -252,11 +470,15 @@ app.addHook('onRequest', async (request, reply) => {
     ? authorization.slice('Bearer '.length).trim()
     : null;
 
-  const matchingToken = [tokenFromQuery, cookieToken, bearerToken].find((value) => verifyToken(ownerAuth, value));
+  const matchedUser = [tokenFromQuery, cookieToken, bearerToken]
+    .map((candidate) => findUserByToken(authState, candidate))
+    .find((entry) => entry !== null) ?? null;
 
-  if (matchingToken) {
-    if (cookieToken !== ownerAuth.token) {
-      reply.setCookie(AUTH_COOKIE_NAME, ownerAuth.token, {
+  if (matchedUser) {
+    (request as AuthenticatedRequest).authUser = toUserRecord(matchedUser);
+
+    if (cookieToken !== matchedUser.token) {
+      reply.setCookie(AUTH_COOKIE_NAME, matchedUser.token, {
         path: '/',
         httpOnly: true,
         sameSite: 'lax',
@@ -272,9 +494,9 @@ app.addHook('onRequest', async (request, reply) => {
   }
 
   if (
-    path === '/login' ||
-    path === '/api/auth/login' ||
-    path === '/api/health'
+    path === '/login'
+    || path === '/api/auth/login'
+    || path === '/api/health'
   ) {
     return;
   }
@@ -287,7 +509,7 @@ app.addHook('onRequest', async (request, reply) => {
   return reply.redirect('/login');
 });
 
-app.get('/login', async (request, reply) => {
+app.get('/login', async (_request, reply) => {
   reply.type('text/html; charset=utf-8');
   return loginPageHtml();
 });
@@ -296,22 +518,23 @@ app.post('/api/auth/login', async (request, reply) => {
   const body = request.body as { username?: string; password?: string } | undefined;
   const username = body?.username?.trim() ?? '';
   const password = body?.password ?? '';
+  const user = verifyPassword(authState, username, password);
 
-  if (!verifyPassword(ownerAuth, username, password)) {
+  if (!user) {
     reply.code(401);
     return { error: 'Invalid username or password' };
   }
 
-  reply.setCookie(AUTH_COOKIE_NAME, ownerAuth.token, {
+  reply.setCookie(AUTH_COOKIE_NAME, user.token, {
     path: '/',
     httpOnly: true,
     sameSite: 'lax',
     secure: cookieIsSecure(request),
   });
-  return { ok: true, username: ownerAuth.username };
+  return { ok: true, username: user.username };
 });
 
-app.post('/api/auth/logout', async (request, reply) => {
+app.post('/api/auth/logout', async (_request, reply) => {
   reply.clearCookie(AUTH_COOKIE_NAME, {
     path: '/',
   });
@@ -323,19 +546,108 @@ app.get('/api/health', async () => ({
   service: 'remote-vibe-coding-host',
 }));
 
-app.get('/api/bootstrap', async () => {
+app.get('/api/bootstrap', async (request) => {
+  const currentUser = getRequestUser(request);
   return buildBootstrapPayload(
-    store.listSessions(),
-    store.getAllApprovals(),
+    currentUser,
+    store.listSessionsForUser(currentUser.id),
+    sessionApprovalsForUser(currentUser.id),
     await cloudflare.getStatus(),
+    availableModels,
   );
+});
+
+app.get('/api/admin/users', async (request, reply) => {
+  const currentUser = getRequestUser(request);
+  if (!currentUser.isAdmin) {
+    reply.code(403);
+    return { error: 'Admin access required' };
+  }
+
+  return {
+    users: getPublicUsers(authState),
+  };
+});
+
+app.post('/api/admin/users', async (request, reply) => {
+  const currentUser = getRequestUser(request);
+  if (!currentUser.isAdmin) {
+    reply.code(403);
+    return { error: 'Admin access required' };
+  }
+
+  try {
+    const body = (request.body ?? {}) as CreateUserRequest;
+    const result = await createUser(authState, body);
+    authState = result.auth;
+    reply.code(201);
+    return {
+      user: result.user,
+      users: getPublicUsers(authState),
+    };
+  } catch (error) {
+    reply.code(400);
+    return { error: errorMessage(error) };
+  }
+});
+
+app.patch('/api/admin/users/:userId', async (request, reply) => {
+  const currentUser = getRequestUser(request);
+  if (!currentUser.isAdmin) {
+    reply.code(403);
+    return { error: 'Admin access required' };
+  }
+
+  try {
+    const { userId } = request.params as { userId: string };
+    const body = (request.body ?? {}) as UpdateUserRequest;
+    const previousUser = getPublicUsers(authState).find((entry) => entry.id === userId);
+    const result = await updateUser(authState, userId, body);
+    authState = result.auth;
+
+    if (previousUser && previousUser.username !== result.user.username) {
+      await store.updateOwnerUsername(userId, result.user.username);
+    }
+
+    return {
+      user: result.user,
+      users: getPublicUsers(authState),
+    };
+  } catch (error) {
+    reply.code(400);
+    return { error: errorMessage(error) };
+  }
+});
+
+app.delete('/api/admin/users/:userId', async (request, reply) => {
+  const currentUser = getRequestUser(request);
+  if (!currentUser.isAdmin) {
+    reply.code(403);
+    return { error: 'Admin access required' };
+  }
+
+  const { userId } = request.params as { userId: string };
+  if (store.listSessionsForUser(userId).length > 0) {
+    reply.code(409);
+    return { error: 'Delete or archive this user’s sessions before removing the user.' };
+  }
+
+  try {
+    authState = await deleteUser(authState, userId, currentUser.id);
+    return {
+      users: getPublicUsers(authState),
+    };
+  } catch (error) {
+    reply.code(400);
+    return { error: errorMessage(error) };
+  }
 });
 
 app.get('/api/cloudflare/status', async () => ({
   cloudflare: await cloudflare.getStatus(),
 }));
 
-app.post('/api/cloudflare/connect', async (request, reply) => {
+app.post('/api/cloudflare/connect', async (_request, reply) => {
   try {
     return {
       cloudflare: await cloudflare.connect(),
@@ -343,12 +655,12 @@ app.post('/api/cloudflare/connect', async (request, reply) => {
   } catch (error) {
     reply.code(500);
     return {
-      error: error instanceof Error ? error.message : 'Failed to connect Cloudflare tunnel',
+      error: errorMessage(error) || 'Failed to connect Cloudflare tunnel',
     };
   }
 });
 
-app.post('/api/cloudflare/disconnect', async (request, reply) => {
+app.post('/api/cloudflare/disconnect', async (_request, reply) => {
   try {
     return {
       cloudflare: await cloudflare.disconnect(),
@@ -356,16 +668,16 @@ app.post('/api/cloudflare/disconnect', async (request, reply) => {
   } catch (error) {
     reply.code(500);
     return {
-      error: error instanceof Error ? error.message : 'Failed to disconnect Cloudflare tunnel',
+      error: errorMessage(error) || 'Failed to disconnect Cloudflare tunnel',
     };
   }
 });
 
 app.get('/api/sessions/:sessionId', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
-  let session = store.getSession(sessionId);
+  let session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -403,18 +715,60 @@ app.get('/api/sessions/:sessionId', async (request, reply) => {
 });
 
 app.post('/api/sessions', async (request, reply) => {
-  const body = request.body as CreateSessionRequest;
-  const workspace = resolve(body.cwd);
-  await ensureWorkspaceExists(workspace);
+  const currentUser = getRequestUser(request);
+  const body = (request.body ?? {}) as CreateSessionRequest;
+  const sessionType = normalizeSessionType(body.sessionType);
 
-  const securityProfile: SecurityProfile = body.securityProfile === 'full-host' ? 'full-host' : 'repo-write';
+  if (!userCanCreateSessionType(currentUser, sessionType)) {
+    reply.code(403);
+    return { error: `You do not have permission to create ${sessionType} sessions.` };
+  }
+
+  const sessionId = randomUUID();
+  const model = trimOptional(body.model) ?? currentDefaultModel();
+  const reasoningEffort = normalizeReasoningEffort(body.reasoningEffort) ?? currentDefaultEffort(model);
+
+  let workspace: string;
+  let securityProfile: SecurityProfile;
+
+  if (sessionType === 'chat') {
+    workspace = await ensureChatWorkspace(currentUser.id, sessionId);
+    securityProfile = 'read-only';
+  } else {
+    const cwd = trimOptional(body.cwd);
+    if (!cwd) {
+      reply.code(400);
+      return { error: 'Workspace is required for code sessions.' };
+    }
+
+    workspace = resolve(cwd);
+    await ensureWorkspaceExists(workspace);
+
+    securityProfile = normalizeSecurityProfile(body.securityProfile);
+    if (securityProfile === 'read-only') {
+      securityProfile = 'repo-write';
+    }
+    if (securityProfile === 'full-host' && !currentUser.canUseFullHost) {
+      reply.code(403);
+      return { error: 'You do not have permission to create full-host sessions.' };
+    }
+  }
+
   const fullHostEnabled = securityProfile === 'full-host';
-  const threadResponse = await codex.startThread(workspace, fullHostEnabled);
+  const threadResponse = await codex.startThread({
+    cwd: workspace,
+    securityProfile,
+    model,
+  });
 
+  const now = new Date().toISOString();
   const session: SessionRecord = {
-    id: randomUUID(),
+    id: sessionId,
+    ownerUserId: currentUser.id,
+    ownerUsername: currentUser.username,
+    sessionType,
     threadId: threadResponse.thread.id,
-    title: body.title?.trim() || basename(workspace),
+    title: trimOptional(body.title) || (sessionType === 'chat' ? 'Chat session' : basename(workspace)),
     workspace,
     archivedAt: null,
     securityProfile,
@@ -422,8 +776,10 @@ app.post('/api/sessions', async (request, reply) => {
     fullHostEnabled,
     status: 'idle',
     lastIssue: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    model,
+    reasoningEffort,
+    createdAt: now,
+    updatedAt: now,
   };
 
   await store.upsertSession(session);
@@ -432,10 +788,10 @@ app.post('/api/sessions', async (request, reply) => {
 });
 
 app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -444,32 +800,16 @@ app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
     return { error: 'Archived sessions must be restored before they can restart.' };
   }
 
-  const threadResponse = await codex.startThread(session.workspace, session.fullHostEnabled);
-  store.clearApprovals(sessionId);
-  store.clearLiveEvents(sessionId);
-  store.addLiveEvent(sessionId, {
-    id: randomUUID(),
-    method: 'session/restarted',
-    summary: 'Started a fresh Codex thread for this session.',
-    createdAt: new Date().toISOString(),
-  });
-
-  const nextSession = (await store.updateSession(sessionId, {
-    threadId: threadResponse.thread.id,
-    status: 'idle',
-    networkEnabled: false,
-    lastIssue: null,
-  })) ?? session;
-
+  const nextSession = await restartSessionThread(session);
   return { session: nextSession };
 });
 
 app.post('/api/sessions/:sessionId/rename', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
   const body = request.body as RenameSessionRequest;
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -487,10 +827,10 @@ app.post('/api/sessions/:sessionId/rename', async (request, reply) => {
 });
 
 app.post('/api/sessions/:sessionId/archive', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -509,10 +849,10 @@ app.post('/api/sessions/:sessionId/archive', async (request, reply) => {
 });
 
 app.post('/api/sessions/:sessionId/restore', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -529,10 +869,10 @@ app.post('/api/sessions/:sessionId/restore', async (request, reply) => {
 });
 
 app.delete('/api/sessions/:sessionId', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -541,11 +881,11 @@ app.delete('/api/sessions/:sessionId', async (request, reply) => {
 });
 
 app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId } = request.params as { sessionId: string };
   const body = request.body as CreateTurnRequest;
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 
@@ -559,31 +899,10 @@ app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
     return { error: 'Archived sessions must be restored before they can accept a prompt.' };
   }
 
-  if (session.status === 'stale') {
-    reply.code(409);
-    return { error: STALE_SESSION_MESSAGE };
-  }
-
-  await store.updateSession(sessionId, { status: 'running', lastIssue: null });
-
   try {
-    const turn = await codex.startTurn(session.threadId, body.prompt.trim());
-    return { turn };
+    const result = await startTurnWithAutoRestart(session, body.prompt.trim());
+    return { turn: result.turn, session: result.session };
   } catch (error) {
-    if (isThreadUnavailableError(error)) {
-      const latestSession = store.getSession(sessionId);
-      if (latestSession?.threadId === session.threadId) {
-        await store.updateSession(sessionId, {
-          status: 'stale',
-          lastIssue: STALE_SESSION_MESSAGE,
-          networkEnabled: false,
-        });
-        store.clearApprovals(sessionId);
-      }
-      reply.code(409);
-      return { error: STALE_SESSION_MESSAGE };
-    }
-
     const message = errorMessage(error);
     await store.updateSession(sessionId, {
       status: 'error',
@@ -595,11 +914,11 @@ app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
 });
 
 app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply) => {
+  const currentUser = getRequestUser(request);
   const { sessionId, approvalId } = request.params as { sessionId: string; approvalId: string };
   const body = request.body as ResolveApprovalRequest;
-  const session = store.getSession(sessionId);
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
   if (!session) {
-    reply.code(404);
     return { error: 'Session not found' };
   }
 

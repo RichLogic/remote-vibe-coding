@@ -1,15 +1,27 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 
 import { AUTH_FILE, ensureDataDir } from './config.js';
+import type {
+  AdminUserRecord,
+  CreateUserRequest,
+  SessionType,
+  UpdateUserRequest,
+  UserRecord,
+} from './types.js';
 
-export const AUTH_COOKIE_NAME = 'rvc_owner';
+export const AUTH_COOKIE_NAME = 'rvc_session';
 
-export interface OwnerAuthConfig {
-  username: string;
+interface AuthFileUser extends UserRecord {
   passwordHash: string;
   token: string;
+}
+
+interface AuthFile {
+  version: 2;
   createdAt: string;
+  updatedAt: string;
+  users: AuthFileUser[];
 }
 
 interface LegacyOwnerAuthConfig {
@@ -35,7 +47,7 @@ function safeEqual(left: string, right: string) {
   return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function hashPassword(password: string) {
+export function hashPassword(password: string) {
   const salt = randomSecret(16);
   const hash = scryptSync(password, salt, 64).toString('base64url');
   return `scrypt:${salt}:${hash}`;
@@ -51,61 +63,145 @@ function verifyPasswordHash(password: string, passwordHash: string) {
   return safeEqual(actualHash, expectedHash);
 }
 
-async function persistAuth(auth: OwnerAuthConfig) {
+function normalizedSessionTypes(sessionTypes: SessionType[] | undefined, fallback: SessionType[]) {
+  const allowed = Array.from(new Set((sessionTypes ?? fallback).filter((entry): entry is SessionType => entry === 'code' || entry === 'chat')));
+  return allowed.length > 0 ? allowed : fallback;
+}
+
+function sanitizeUser(user: AuthFileUser): UserRecord {
+  return {
+    id: user.id,
+    username: user.username,
+    isAdmin: user.isAdmin,
+    allowedSessionTypes: [...user.allowedSessionTypes],
+    canUseFullHost: user.canUseFullHost,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt,
+  };
+}
+
+function sanitizeAdminUser(user: AuthFileUser): AdminUserRecord {
+  return {
+    ...sanitizeUser(user),
+    token: user.token,
+  };
+}
+
+async function persistAuth(auth: AuthFile) {
   await writeFile(AUTH_FILE, `${JSON.stringify(auth, null, 2)}\n`, {
     mode: 0o600,
   });
   await chmod(AUTH_FILE, 0o600);
 }
 
-export async function loadOrCreateOwnerAuth() {
-  await ensureDataDir();
+function createAdminUser(username: string, password: string, createdAt: string): AuthFileUser {
+  return {
+    id: randomUUID(),
+    username,
+    passwordHash: hashPassword(password),
+    token: randomSecret(32),
+    isAdmin: true,
+    allowedSessionTypes: ['code', 'chat'],
+    canUseFullHost: true,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
 
-  const envUsername = process.env.RVC_AUTH_USERNAME?.trim();
-  const envPassword = process.env.RVC_AUTH_PASSWORD?.trim();
-  const envToken = process.env.RVC_AUTH_TOKEN?.trim();
-
-  if (envUsername && envPassword && envToken) {
-    return {
-      username: envUsername,
-      passwordHash: hashPassword(envPassword),
-      token: envToken,
-      createdAt: 'environment',
-    } satisfies OwnerAuthConfig;
+function validateUsername(username: string) {
+  const next = username.trim();
+  if (!next) {
+    throw new Error('Username is required');
   }
+  if (next.length < 3) {
+    throw new Error('Username must be at least 3 characters');
+  }
+  return next;
+}
+
+function validatePassword(password: string | undefined, required: boolean) {
+  const next = password?.trim() ?? '';
+  if (!next && !required) {
+    return null;
+  }
+  if (next.length < 8) {
+    throw new Error('Password must be at least 8 characters');
+  }
+  return next;
+}
+
+function ensureUniqueUsername(auth: AuthFile, username: string, ignoreUserId?: string) {
+  const conflict = auth.users.find((entry) => entry.id !== ignoreUserId && entry.username.toLowerCase() === username.toLowerCase());
+  if (conflict) {
+    throw new Error(`Username "${username}" already exists`);
+  }
+}
+
+function ensureAdminInvariant(users: AuthFileUser[]) {
+  if (!users.some((entry) => entry.isAdmin)) {
+    throw new Error('At least one admin user is required');
+  }
+}
+
+export async function loadOrCreateAuthState() {
+  await ensureDataDir();
 
   try {
     const content = await readFile(AUTH_FILE, 'utf8');
-    const parsed = JSON.parse(content) as LegacyOwnerAuthConfig;
+    const parsed = JSON.parse(content) as AuthFile | LegacyOwnerAuthConfig;
 
-    if (parsed.passwordHash) {
+    if ('version' in parsed && parsed.version === 2 && Array.isArray(parsed.users)) {
       return {
-        username: parsed.username,
-        passwordHash: parsed.passwordHash,
-        token: parsed.token,
-        createdAt: parsed.createdAt,
-      } satisfies OwnerAuthConfig;
+        ...parsed,
+        users: parsed.users.map((user) => ({
+          ...user,
+          allowedSessionTypes: normalizedSessionTypes(user.allowedSessionTypes, ['chat']),
+          canUseFullHost: Boolean(user.canUseFullHost),
+          isAdmin: Boolean(user.isAdmin),
+        })),
+      } satisfies AuthFile;
     }
 
-    if (parsed.password) {
-      const migrated: OwnerAuthConfig = {
-        username: parsed.username,
-        passwordHash: hashPassword(parsed.password),
-        token: parsed.token,
-        createdAt: parsed.createdAt,
-      };
-      await persistAuth(migrated);
-      return migrated;
-    }
-
-    throw new Error('Auth config is missing a password hash');
+    const legacy = parsed as LegacyOwnerAuthConfig;
+    const createdAt = legacy.createdAt ?? new Date().toISOString();
+    const password = legacy.passwordHash ? null : legacy.password;
+    const migratedUser: AuthFileUser = {
+      id: randomUUID(),
+      username: legacy.username,
+      passwordHash: legacy.passwordHash ?? hashPassword(password ?? randomSecret(18)),
+      token: legacy.token,
+      isAdmin: true,
+      allowedSessionTypes: ['code', 'chat'],
+      canUseFullHost: true,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const migrated: AuthFile = {
+      version: 2,
+      createdAt,
+      updatedAt: new Date().toISOString(),
+      users: [migratedUser],
+    };
+    await persistAuth(migrated);
+    return migrated;
   } catch {
-    const generatedPassword = randomSecret(18);
-    const auth: OwnerAuthConfig = {
-      username: 'owner',
-      passwordHash: hashPassword(generatedPassword),
-      token: randomSecret(32),
-      createdAt: new Date().toISOString(),
+    const envUsername = process.env.RVC_AUTH_USERNAME?.trim();
+    const envPassword = process.env.RVC_AUTH_PASSWORD?.trim();
+    const createdAt = new Date().toISOString();
+    const seedUser = envUsername && envPassword
+      ? createAdminUser(envUsername, envPassword, createdAt)
+      : createAdminUser('owner', randomSecret(18), createdAt);
+
+    const auth: AuthFile = {
+      version: 2,
+      createdAt,
+      updatedAt: createdAt,
+      users: [
+        {
+          ...seedUser,
+          token: process.env.RVC_AUTH_TOKEN?.trim() || seedUser.token,
+        },
+      ],
     };
 
     await persistAuth(auth);
@@ -113,13 +209,112 @@ export async function loadOrCreateOwnerAuth() {
   }
 }
 
-export function verifyPassword(auth: OwnerAuthConfig, username: string, password: string) {
-  return safeEqual(auth.username, username) && verifyPasswordHash(password, auth.passwordHash);
+export function getPublicUsers(auth: AuthFile) {
+  return auth.users.map(sanitizeAdminUser).sort((left, right) => left.username.localeCompare(right.username));
 }
 
-export function verifyToken(auth: OwnerAuthConfig, token: string | null | undefined) {
-  if (!token) return false;
-  return safeEqual(auth.token, token);
+export function findUserByToken(auth: AuthFile, token: string | null | undefined) {
+  if (!token) return null;
+  return auth.users.find((entry) => safeEqual(entry.token, token)) ?? null;
+}
+
+export function verifyPassword(auth: AuthFile, username: string, password: string) {
+  const normalizedUsername = username.trim().toLowerCase();
+  const user = auth.users.find((entry) => entry.username.toLowerCase() === normalizedUsername);
+  if (!user) return null;
+  return verifyPasswordHash(password, user.passwordHash) ? user : null;
+}
+
+export async function createUser(auth: AuthFile, input: CreateUserRequest) {
+  const username = validateUsername(input.username);
+  ensureUniqueUsername(auth, username);
+  const password = validatePassword(input.password, true);
+  const createdAt = new Date().toISOString();
+  const user: AuthFileUser = {
+    id: randomUUID(),
+    username,
+    passwordHash: hashPassword(password ?? randomSecret(18)),
+    token: randomSecret(32),
+    isAdmin: Boolean(input.isAdmin),
+    allowedSessionTypes: normalizedSessionTypes(input.allowedSessionTypes, ['chat']),
+    canUseFullHost: Boolean(input.canUseFullHost),
+    createdAt,
+    updatedAt: createdAt,
+  };
+  const next: AuthFile = {
+    ...auth,
+    users: [...auth.users, user],
+    updatedAt: createdAt,
+  };
+  ensureAdminInvariant(next.users);
+  await persistAuth(next);
+  return {
+    auth: next,
+    user: sanitizeAdminUser(user),
+  };
+}
+
+export async function updateUser(auth: AuthFile, userId: string, input: UpdateUserRequest) {
+  const current = auth.users.find((entry) => entry.id === userId);
+  if (!current) {
+    throw new Error('User not found');
+  }
+
+  const username = input.username !== undefined ? validateUsername(input.username) : current.username;
+  ensureUniqueUsername(auth, username, userId);
+
+  const password = validatePassword(input.password, false);
+  const updatedAt = new Date().toISOString();
+  const nextUser: AuthFileUser = {
+    ...current,
+    username,
+    isAdmin: input.isAdmin ?? current.isAdmin,
+    allowedSessionTypes: input.allowedSessionTypes
+      ? normalizedSessionTypes(input.allowedSessionTypes, current.allowedSessionTypes)
+      : current.allowedSessionTypes,
+    canUseFullHost: input.canUseFullHost ?? current.canUseFullHost,
+    passwordHash: password ? hashPassword(password) : current.passwordHash,
+    token: input.regenerateToken ? randomSecret(32) : current.token,
+    updatedAt,
+  };
+
+  const nextUsers = auth.users.map((entry) => (entry.id === userId ? nextUser : entry));
+  ensureAdminInvariant(nextUsers);
+
+  const next: AuthFile = {
+    ...auth,
+    users: nextUsers,
+    updatedAt,
+  };
+  await persistAuth(next);
+  return {
+    auth: next,
+    user: sanitizeAdminUser(nextUser),
+  };
+}
+
+export async function deleteUser(auth: AuthFile, userId: string, actingUserId: string) {
+  if (userId === actingUserId) {
+    throw new Error('You cannot delete the current user');
+  }
+
+  const nextUsers = auth.users.filter((entry) => entry.id !== userId);
+  if (nextUsers.length === auth.users.length) {
+    throw new Error('User not found');
+  }
+  ensureAdminInvariant(nextUsers);
+
+  const next: AuthFile = {
+    ...auth,
+    users: nextUsers,
+    updatedAt: new Date().toISOString(),
+  };
+  await persistAuth(next);
+  return next;
+}
+
+export function toUserRecord(user: AuthFileUser) {
+  return sanitizeUser(user);
 }
 
 export function loginPageHtml() {
@@ -237,13 +432,13 @@ export function loginPageHtml() {
   </head>
   <body>
     <main class="card">
-      <p class="eyebrow">Owner login</p>
+      <p class="eyebrow">Secure sign-in</p>
       <h1>remote-vibe-coding</h1>
-      <p>Password login is enabled. A token link still works as a fallback.</p>
+      <p>Use your username and password. A personal token link still works as a fallback.</p>
       <form id="login-form">
         <label>
           <span>Username</span>
-          <input name="username" autocomplete="username" value="owner" required />
+          <input name="username" autocomplete="username" required />
         </label>
         <label>
           <span>Password</span>
@@ -262,28 +457,26 @@ export function loginPageHtml() {
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         error.textContent = '';
-
-        const formData = new FormData(form);
-        const payload = {
-          username: String(formData.get('username') || ''),
-          password: String(formData.get('password') || ''),
-        };
+        const data = new FormData(form);
 
         const response = await fetch('/api/auth/login', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(payload),
+          body: JSON.stringify({
+            username: String(data.get('username') || ''),
+            password: String(data.get('password') || ''),
+          }),
         });
 
-        if (response.ok) {
-          window.location.href = '/';
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          error.textContent = body.error || 'Sign-in failed';
           return;
         }
 
-        const body = await response.json().catch(() => null);
-        error.textContent = body?.error || 'Login failed';
+        window.location.href = '/';
       });
     </script>
   </body>

@@ -1,10 +1,23 @@
-export type SecurityProfile = 'repo-write' | 'full-host';
+export type SecurityProfile = 'read-only' | 'repo-write' | 'full-host';
 export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'running' | 'needs-approval' | 'idle' | 'error' | 'stale';
+export type SessionType = 'code' | 'chat';
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 export type TranscriptEventKind = 'user' | 'assistant' | 'tool' | 'status';
 export type CloudflareTunnelState = 'idle' | 'connecting' | 'connected' | 'error';
 export type CloudflareTunnelMode = 'quick' | 'token' | 'named';
 export type CloudflareTargetSource = 'host' | 'dev-web' | 'override';
+
+export interface ModelOption {
+  id: string;
+  displayName: string;
+  model: string;
+  description: string;
+  isDefault: boolean;
+  hidden: boolean;
+  defaultReasoningEffort: ReasoningEffort;
+  supportedReasoningEfforts: ReasoningEffort[];
+}
 
 export interface ProductDefaults {
   executor: 'codex';
@@ -14,6 +27,7 @@ export interface ProductDefaults {
   fullHostAvailable: boolean;
   approvalScopes: ApprovalScope[];
   primaryClient: 'web';
+  sessionTypes: SessionType[];
 }
 
 export interface CloudflareStatus {
@@ -32,8 +46,25 @@ export interface CloudflareStatus {
   recentLogs: string[];
 }
 
+export interface UserRecord {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  allowedSessionTypes: SessionType[];
+  canUseFullHost: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminUserRecord extends UserRecord {
+  token: string;
+}
+
 export interface SessionRecord {
   id: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  sessionType: SessionType;
   threadId: string;
   title: string;
   workspace: string;
@@ -43,6 +74,8 @@ export interface SessionRecord {
   fullHostEnabled: boolean;
   status: SessionStatus;
   lastIssue: string | null;
+  model: string | null;
+  reasoningEffort: ReasoningEffort | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -76,6 +109,8 @@ export interface BootstrapPayload {
   subtitle: string;
   defaults: ProductDefaults;
   cloudflare: CloudflareStatus;
+  currentUser: UserRecord;
+  availableModels: ModelOption[];
   sessions: SessionSummary[];
   approvals: PendingApproval[];
   updatedAt: string;
@@ -183,9 +218,12 @@ export interface SessionDetailResponse {
 }
 
 export interface CreateSessionRequest {
-  cwd: string;
+  sessionType?: SessionType;
+  cwd?: string;
   title?: string;
   securityProfile?: SecurityProfile;
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
 }
 
 export interface CreateTurnRequest {
@@ -199,4 +237,21 @@ export interface RenameSessionRequest {
 export interface ResolveApprovalRequest {
   decision: 'accept' | 'decline';
   scope?: ApprovalScope;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+  isAdmin?: boolean;
+  allowedSessionTypes?: SessionType[];
+  canUseFullHost?: boolean;
+}
+
+export interface UpdateUserRequest {
+  username?: string;
+  password?: string;
+  isAdmin?: boolean;
+  allowedSessionTypes?: SessionType[];
+  canUseFullHost?: boolean;
+  regenerateToken?: boolean;
 }

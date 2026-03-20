@@ -176,6 +176,10 @@ code {
   gap: 16px;
 }
 
+.admin-sheet {
+  width: min(720px, 100%);
+}
+
 .settings-header {
   display: flex;
   align-items: flex-start;
@@ -206,6 +210,12 @@ code {
 
 .settings-signout {
   justify-self: flex-start;
+}
+
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .modal-overlay {
@@ -376,6 +386,8 @@ code {
 .session-card {
   cursor: pointer;
   transition: transform 150ms ease, border-color 150ms ease;
+  position: relative;
+  padding-right: 94px;
 }
 
 .session-card-archived {
@@ -409,7 +421,7 @@ code {
 }
 
 .session-card-head {
-  align-items: flex-start;
+  align-items: center;
 }
 
 .event-body {
@@ -434,10 +446,48 @@ code {
 }
 
 .session-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.session-card:hover .session-actions,
+.session-card:focus-within .session-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.session-action-button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 250, 240, 0.96);
+  color: var(--ink);
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.session-action-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.session-action-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(15, 118, 110, 0.28);
+}
+
+.session-action-danger {
+  color: #991b1b;
 }
 
 .session-empty {
@@ -551,7 +601,6 @@ code {
 .approval-actions button,
 .rail-header button,
 .rail-actions button,
-.session-actions button,
 .create-form button,
 .composer-form button,
 .remote-button-row button {
@@ -568,7 +617,6 @@ code {
 .approval-actions button:hover,
 .rail-header button:hover,
 .rail-actions button:hover,
-.session-actions button:hover,
 .create-form button:hover,
 .composer-form button:hover,
 .remote-button-row button:hover {
@@ -621,6 +669,47 @@ code {
 
 .field textarea {
   resize: vertical;
+}
+
+.token-block {
+  display: grid;
+  gap: 8px;
+}
+
+.token-block span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.token-block input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 250, 240, 0.92);
+  color: var(--ink);
+  font: inherit;
+}
+
+.checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 250, 240, 0.78);
+}
+
+.checkbox-field span {
+  color: var(--ink);
+  font-size: 0.9rem;
 }
 
 .rail-divider {
@@ -747,6 +836,15 @@ code {
 
 .detail-list {
   display: grid;
+  gap: 12px;
+}
+
+.admin-user-list {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-user-card {
   gap: 12px;
 }
 
@@ -928,6 +1026,10 @@ code {
   }
 
   .hero-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .checkbox-grid {
     grid-template-columns: 1fr;
   }
 }

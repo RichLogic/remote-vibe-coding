@@ -1,12 +1,15 @@
 import type {
+  AdminUserRecord,
   BootstrapPayload,
   CloudflareStatus,
   CreateSessionRequest,
-  ResolveApprovalRequest,
+  CreateTurnRequest,
+  CreateUserRequest,
   RenameSessionRequest,
+  ResolveApprovalRequest,
   SessionDetailResponse,
   SessionRecord,
-  CreateTurnRequest,
+  UpdateUserRequest,
 } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
@@ -118,4 +121,32 @@ export async function resolveApproval(
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+export async function fetchAdminUsers() {
+  const response = await requestJson<{ users: AdminUserRecord[] }>('/api/admin/users');
+  return response.users;
+}
+
+export async function createAdminUser(input: CreateUserRequest) {
+  const response = await requestJson<{ user: AdminUserRecord; users: AdminUserRecord[] }>('/api/admin/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return response;
+}
+
+export async function updateAdminUser(userId: string, input: UpdateUserRequest) {
+  const response = await requestJson<{ user: AdminUserRecord; users: AdminUserRecord[] }>(`/api/admin/users/${userId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
+  return response;
+}
+
+export async function deleteAdminUser(userId: string) {
+  const response = await requestJson<{ users: AdminUserRecord[] }>(`/api/admin/users/${userId}`, {
+    method: 'DELETE',
+  });
+  return response.users;
 }
