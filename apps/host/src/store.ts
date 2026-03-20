@@ -60,6 +60,7 @@ export class SessionStore {
           ownerUsername: legacy.ownerUsername ?? options.fallbackOwnerUsername,
           sessionType: legacy.sessionType ?? 'code',
           threadId: legacy.threadId,
+          activeTurnId: null,
           title: legacy.title,
           workspace: legacy.workspace,
           archivedAt: legacy.archivedAt ?? null,
@@ -212,6 +213,7 @@ export class SessionStore {
     for (const session of this.sessions.values()) {
       this.sessions.set(session.id, {
         ...session,
+        activeTurnId: null,
         status: 'stale',
         lastIssue: reason,
         networkEnabled: false,

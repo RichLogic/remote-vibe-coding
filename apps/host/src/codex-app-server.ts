@@ -259,7 +259,12 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   async startTurn(threadId: string, prompt: string, options?: { model?: string | null; effort?: ReasoningEffort | null }) {
-    return this.request('turn/start', {
+    return this.request<{
+      turn: {
+        id: string;
+        status: string;
+      };
+    }>('turn/start', {
       threadId,
       input: [
         {
@@ -270,6 +275,13 @@ export class CodexAppServerClient extends EventEmitter {
       ],
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.effort ? { effort: options.effort } : {}),
+    });
+  }
+
+  async interruptTurn(threadId: string, turnId: string) {
+    return this.request('turn/interrupt', {
+      threadId,
+      turnId,
     });
   }
 

@@ -360,6 +360,20 @@ code {
   font-size: 1.05rem;
 }
 
+.session-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-title-row h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .session-list,
 .approval-list {
   display: grid;
@@ -839,6 +853,20 @@ code {
   gap: 12px;
 }
 
+.info-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0 !important;
+  border-radius: 999px;
+}
+
+.info-button svg {
+  width: 14px;
+  height: 14px;
+}
+
 .admin-user-list {
   display: grid;
   gap: 12px;
@@ -876,6 +904,77 @@ code {
   border-top: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(246, 241, 231, 0), rgba(246, 241, 231, 0.92) 16%, rgba(246, 241, 231, 0.98) 100%);
   flex-shrink: 0;
+}
+
+.composer-docked .field {
+  gap: 6px;
+}
+
+.composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgba(255, 250, 240, 0.95);
+}
+
+.composer-row textarea {
+  flex: 1;
+  min-height: calc(1.55em * 3);
+  max-height: calc(1.55em * 10);
+  padding: 3px 0;
+  border: none;
+  background: transparent;
+  resize: vertical;
+  color: var(--ink);
+  font: inherit;
+  line-height: 1.55;
+  outline: none;
+  overflow-y: auto;
+}
+
+.composer-row textarea::placeholder {
+  color: var(--muted);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.send-button,
+.stop-button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0 !important;
+  border-radius: 999px !important;
+}
+
+.send-button svg,
+.stop-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.send-button {
+  background: var(--ink) !important;
+  color: #fff8ef !important;
+}
+
+.stop-button {
+  background: rgba(185, 28, 28, 0.94) !important;
+  color: #fff8ef !important;
+}
+
+.send-button:disabled,
+.stop-button:disabled {
+  opacity: 0.3;
 }
 
 .detail-card-head {
@@ -1031,5 +1130,9 @@ code {
 
   .checkbox-grid {
     grid-template-columns: 1fr;
+  }
+
+  .composer-row {
+    padding: 8px 8px 8px 12px;
   }
 }

@@ -112,6 +112,14 @@ export async function startTurn(sessionId: string, input: CreateTurnRequest) {
   });
 }
 
+export async function stopSession(sessionId: string) {
+  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/stop`, {
+    method: 'POST',
+    body: '{}',
+  });
+  return response.session;
+}
+
 export async function resolveApproval(
   sessionId: string,
   approvalId: string,

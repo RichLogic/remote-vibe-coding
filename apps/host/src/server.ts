@@ -302,6 +302,7 @@ async function restartSessionThread(session: SessionRecord, summary = 'Started a
 
   return (await store.updateSession(session.id, {
     threadId: threadResponse.thread.id,
+    activeTurnId: null,
     status: 'idle',
     networkEnabled: false,
     lastIssue: null,
@@ -320,10 +321,16 @@ async function startTurnWithAutoRestart(session: SessionRecord, prompt: string) 
 
   const runTurn = async (targetSession: SessionRecord) => {
     await store.updateSession(targetSession.id, { status: 'running', lastIssue: null });
-    return codex.startTurn(targetSession.threadId, prompt, {
+    const turn = await codex.startTurn(targetSession.threadId, prompt, {
       model: targetSession.model,
       effort: targetSession.reasoningEffort,
     });
+    await store.updateSession(targetSession.id, {
+      activeTurnId: turn.turn.id,
+      status: 'running',
+      lastIssue: null,
+    });
+    return turn;
   };
 
   try {
@@ -406,12 +413,17 @@ async function handleNotification(message: JsonRpcNotification) {
   if (message.method === 'thread/status/changed') {
     const statusType = String(((message.params as Record<string, unknown>).status as { type?: string } | undefined)?.type ?? '');
     const nextStatus = statusType === 'active' ? 'running' : statusType === 'idle' ? 'idle' : session.status;
-    await store.updateSession(session.id, { status: nextStatus, lastIssue: null });
+    await store.updateSession(session.id, {
+      status: nextStatus,
+      lastIssue: null,
+      ...(statusType === 'idle' ? { activeTurnId: null } : {}),
+    });
     return;
   }
 
   if (message.method === 'turn/completed') {
     await store.updateSession(session.id, {
+      activeTurnId: null,
       status: store.getApprovals(session.id).length > 0 ? 'needs-approval' : 'idle',
       lastIssue: null,
     });
@@ -695,6 +707,7 @@ app.get('/api/sessions/:sessionId', async (request, reply) => {
       const latestSession = store.getSession(session.id);
       if (latestSession?.threadId === session.threadId) {
         session = (await store.updateSession(session.id, {
+          activeTurnId: null,
           status: 'stale',
           lastIssue: STALE_SESSION_MESSAGE,
           networkEnabled: false,
@@ -768,6 +781,7 @@ app.post('/api/sessions', async (request, reply) => {
     ownerUsername: currentUser.username,
     sessionType,
     threadId: threadResponse.thread.id,
+    activeTurnId: null,
     title: trimOptional(body.title) || (sessionType === 'chat' ? 'Chat session' : basename(workspace)),
     workspace,
     archivedAt: null,
@@ -841,6 +855,7 @@ app.post('/api/sessions/:sessionId/archive', async (request, reply) => {
   store.clearApprovals(sessionId);
   const nextSession = (await store.updateSession(sessionId, {
     archivedAt: new Date().toISOString(),
+    activeTurnId: null,
     networkEnabled: false,
     lastIssue: null,
   })) ?? session;
@@ -905,6 +920,57 @@ app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
   } catch (error) {
     const message = errorMessage(error);
     await store.updateSession(sessionId, {
+      activeTurnId: null,
+      status: 'error',
+      lastIssue: message,
+    });
+    reply.code(500);
+    return { error: message };
+  }
+});
+
+app.post('/api/sessions/:sessionId/stop', async (request, reply) => {
+  const currentUser = getRequestUser(request);
+  const { sessionId } = request.params as { sessionId: string };
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
+  if (!session) {
+    return { error: 'Session not found' };
+  }
+
+  if (!session.activeTurnId) {
+    reply.code(409);
+    return { error: 'This session does not have an active turn to stop.' };
+  }
+
+  try {
+    await codex.interruptTurn(session.threadId, session.activeTurnId);
+    store.addLiveEvent(session.id, {
+      id: randomUUID(),
+      method: 'turn/interrupted',
+      summary: 'Stopped the active turn.',
+      createdAt: new Date().toISOString(),
+    });
+    const nextSession = (await store.updateSession(session.id, {
+      activeTurnId: null,
+      status: 'idle',
+      lastIssue: 'Stopped by user.',
+    })) ?? session;
+    return { session: nextSession };
+  } catch (error) {
+    if (isThreadUnavailableError(error)) {
+      const nextSession = (await store.updateSession(session.id, {
+        activeTurnId: null,
+        status: 'stale',
+        lastIssue: STALE_SESSION_MESSAGE,
+        networkEnabled: false,
+      })) ?? session;
+      reply.code(409);
+      return { error: STALE_SESSION_MESSAGE, session: nextSession };
+    }
+
+    const message = errorMessage(error);
+    await store.updateSession(session.id, {
+      activeTurnId: null,
       status: 'error',
       lastIssue: message,
     });

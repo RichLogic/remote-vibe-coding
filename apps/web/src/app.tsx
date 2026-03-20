@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -18,6 +18,7 @@ import {
   resolveApproval,
   restoreSession,
   startTurn,
+  stopSession,
   updateAdminUser,
 } from './api';
 import type {
@@ -124,7 +125,6 @@ const COPY = {
     commands: 'Commands',
     changes: 'Changes',
     activity: 'Activity',
-    codingSurface: 'Coding surface',
     selectOrCreate: 'Select a session to continue working.',
     runtimeReset: 'Runtime reset detected',
     threadMissing: 'Codex no longer has this thread loaded',
@@ -148,6 +148,8 @@ const COPY = {
     prompt: 'Prompt',
     sendPrompt: 'Send',
     sending: 'Sending...',
+    stop: 'Stop',
+    stopping: 'Stopping...',
     restoreRequired: 'Restore required',
     approvalCenter: 'Approval center',
     pendingRequests: 'pending',
@@ -233,6 +235,10 @@ const COPY = {
     sessionOwner: 'Owner',
     securityLabel: 'Security',
     modelLabel: 'Model',
+    thinkingLabel: 'Thinking',
+    threadLabel: 'Thread',
+    info: 'Info',
+    sessionInfoTitle: 'Session info',
     archived: 'Archived',
     active: 'active',
     commandToolingHidden: 'Chat sessions stay in conversation-only mode, so tool views are hidden.',
@@ -258,7 +264,6 @@ const COPY = {
     commands: '命令',
     changes: '改动',
     activity: '活动',
-    codingSurface: '开发工作区',
     selectOrCreate: '选择一个会话继续工作。',
     runtimeReset: '运行时已重置',
     threadMissing: 'Codex 已经不再持有这个 thread',
@@ -282,6 +287,8 @@ const COPY = {
     prompt: '输入内容',
     sendPrompt: '发送',
     sending: '发送中...',
+    stop: '停止',
+    stopping: '停止中...',
     restoreRequired: '需要先恢复',
     approvalCenter: '审批中心',
     pendingRequests: '个待处理',
@@ -367,6 +374,10 @@ const COPY = {
     sessionOwner: 'Owner',
     securityLabel: '安全',
     modelLabel: '模型',
+    thinkingLabel: '思考强度',
+    threadLabel: '线程',
+    info: '信息',
+    sessionInfoTitle: '会话信息',
     archived: '归档',
     active: '活跃',
     commandToolingHidden: '聊天会话保持纯对话模式，所以工具视图默认隐藏。',
@@ -511,6 +522,31 @@ function TrashIcon() {
   );
 }
 
+function InfoIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M10 8.1v4.8M10 6.1h.01" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M3.4 9.8 16.2 3.7l-2.8 12.6-4.1-4.2-3 .9 1.4-3.2-4.3-.8Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <rect x="5.7" y="5.7" width="8.6" height="8.6" rx="1.4" fill="currentColor" />
+    </svg>
+  );
+}
+
 function SessionActionButton(
   props: {
     label: string;
@@ -553,6 +589,7 @@ export function App() {
   const [detailView, setDetailView] = useState<DetailView>('transcript');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
   const [adminUsers, setAdminUsers] = useState<AdminUserRecord[] | null>(null);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [renameSessionId, setRenameSessionId] = useState<string | null>(null);
@@ -568,6 +605,9 @@ export function App() {
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [userForm, setUserForm] = useState<UserFormState>(() => defaultUserForm());
+  const [isPromptComposing, setIsPromptComposing] = useState(false);
+  const promptCompositionResetTimerRef = useRef<number | null>(null);
+  const lastPromptCompositionEndAtRef = useRef(0);
   const copy = COPY[language];
 
   const availableModels = bootstrap?.availableModels.length ? bootstrap.availableModels : [];
@@ -697,6 +737,12 @@ export function App() {
     };
   }, [adminOpen, bootstrap?.currentUser.isAdmin, copy.unknownError]);
 
+  useEffect(() => () => {
+    if (promptCompositionResetTimerRef.current) {
+      window.clearTimeout(promptCompositionResetTimerRef.current);
+    }
+  }, []);
+
   const threadEvents = flattenThread(detail?.thread ?? null);
   const commandEvents = collectCommands(detail?.thread ?? null);
   const fileChanges = collectFileChanges(detail?.thread ?? null);
@@ -705,6 +751,7 @@ export function App() {
   const cloudflareManagedLocally = cloudflare?.activeSource === 'local-manager';
   const sessionIsArchived = Boolean(detail?.session.archivedAt);
   const sessionIsChat = detail?.session.sessionType === 'chat';
+  const sessionHasActiveTurn = Boolean(detail?.session.activeTurnId);
   const threadStatus = detail?.thread?.status && typeof detail.thread.status === 'object'
     ? detail.thread.status.type
     : typeof detail?.thread?.status === 'string'
@@ -725,6 +772,42 @@ export function App() {
     } else {
       setDetail(null);
     }
+  }
+
+  function clearPromptCompositionResetTimer() {
+    if (promptCompositionResetTimerRef.current) {
+      window.clearTimeout(promptCompositionResetTimerRef.current);
+      promptCompositionResetTimerRef.current = null;
+    }
+  }
+
+  function handlePromptCompositionStart() {
+    clearPromptCompositionResetTimer();
+    setIsPromptComposing(true);
+    lastPromptCompositionEndAtRef.current = 0;
+  }
+
+  function handlePromptCompositionEnd() {
+    clearPromptCompositionResetTimer();
+    lastPromptCompositionEndAtRef.current = Date.now();
+    promptCompositionResetTimerRef.current = window.setTimeout(() => {
+      setIsPromptComposing(false);
+      promptCompositionResetTimerRef.current = null;
+    }, 80);
+  }
+
+  function shouldIgnorePromptEnter(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey) return false;
+    const nativeEvent = event.nativeEvent as KeyboardEvent<HTMLTextAreaElement>['nativeEvent'] & {
+      keyCode?: number;
+      which?: number;
+    };
+
+    if (nativeEvent.isComposing) return true;
+    if (nativeEvent.keyCode === 229 || nativeEvent.which === 229) return true;
+    if (isPromptComposing) return true;
+    if (!lastPromptCompositionEndAtRef.current) return false;
+    return (Date.now() - lastPromptCompositionEndAtRef.current) < 80;
   }
 
   async function handleCreateSession(event: FormEvent<HTMLFormElement>) {
@@ -757,7 +840,7 @@ export function App() {
   }
 
   async function submitPrompt() {
-    if (!selectedSessionId || !prompt.trim()) return;
+    if (!selectedSessionId || !prompt.trim() || sessionIsArchived || sessionHasActiveTurn || busy === 'stop-session') return;
     setBusy('start-turn');
     try {
       await startTurn(selectedSessionId, { prompt: prompt.trim() });
@@ -772,15 +855,30 @@ export function App() {
 
   async function handleStartTurn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (sessionHasActiveTurn) return;
     await submitPrompt();
   }
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.nativeEvent.isComposing) return;
+    if (shouldIgnorePromptEnter(event)) return;
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
-    if (busy === 'start-turn' || sessionIsArchived) return;
+    if (busy === 'start-turn' || busy === 'stop-session' || sessionIsArchived || detail?.session.activeTurnId) return;
     void submitPrompt();
+  }
+
+  async function handleStopActiveTurn() {
+    if (!selectedSessionId) return;
+    setBusy('stop-session');
+    try {
+      await stopSession(selectedSessionId);
+      await refreshCurrentSelection(selectedSessionId);
+      setError(null);
+    } catch (stopError) {
+      setError(stopError instanceof Error ? stopError.message : copy.stop);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function handleArchiveToggle(sessionId: string, archived: boolean) {
@@ -1139,8 +1237,14 @@ export function App() {
 
         <section className="panel transcript">
           <div className="panel-header">
-            <p className="eyebrow">{copy.codingSurface}</p>
-            <h2>{detail?.session.title ?? copy.selectOrCreate}</h2>
+            <div className="session-title-row">
+              <h2 title={detail?.session.workspace ?? undefined}>{detail?.session.title ?? copy.selectOrCreate}</h2>
+              {detail ? (
+                <button type="button" className="button-secondary info-button" onClick={() => setSessionInfoOpen(true)} title={copy.info} aria-label={copy.info}>
+                  <InfoIcon />
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {detail ? (
@@ -1265,26 +1369,6 @@ export function App() {
                   <div className="detail-list">
                     <article className="detail-card">
                       <div className="detail-card-head">
-                        <strong>{copy.sessionState}</strong>
-                        <span>{STATUS_LABELS[language][detail.session.status]}</span>
-                      </div>
-                      <p className="detail-card-meta">{copy.sessionOwner}: {detail.session.ownerUsername}</p>
-                      <p className="detail-card-meta">{copy.securityLabel}: {detail.session.securityProfile}</p>
-                      <p className="detail-card-meta">{copy.modelLabel}: {detail.session.model ?? 'codex'}</p>
-                      <p className="detail-card-meta">{copy.createdAt} {formatTimestamp(detail.session.createdAt, language)}</p>
-                      <p className="detail-card-meta">{copy.updatedAt} {formatTimestamp(detail.session.updatedAt, language)}</p>
-                      {detail.session.lastIssue ? <p>{detail.session.lastIssue}</p> : null}
-                    </article>
-
-                    {sessionIsChat ? (
-                      <article className="detail-card">
-                        <strong>{copy.chatSessionHint}</strong>
-                        <p>{copy.commandToolingHidden}</p>
-                      </article>
-                    ) : null}
-
-                    <article className="detail-card">
-                      <div className="detail-card-head">
                         <strong>{copy.liveEvents}</strong>
                         <span>{detail.liveEvents.length}</span>
                       </div>
@@ -1308,17 +1392,41 @@ export function App() {
               <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
                 <label className="field">
                   <span>{copy.prompt}</span>
-                  <textarea
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    onKeyDown={handlePromptKeyDown}
-                    rows={5}
-                    disabled={sessionIsArchived}
-                  />
+                  <div className="composer-row">
+                    <textarea
+                      value={prompt}
+                      onChange={(event) => setPrompt(event.target.value)}
+                      onKeyDown={handlePromptKeyDown}
+                      onCompositionStart={handlePromptCompositionStart}
+                      onCompositionEnd={handlePromptCompositionEnd}
+                      rows={5}
+                      disabled={sessionIsArchived}
+                    />
+                    <div className="composer-actions">
+                      {sessionHasActiveTurn ? (
+                        <button
+                          type="button"
+                          className="stop-button"
+                          onClick={() => void handleStopActiveTurn()}
+                          disabled={busy === 'stop-session'}
+                          title={busy === 'stop-session' ? copy.stopping : copy.stop}
+                          aria-label={busy === 'stop-session' ? copy.stopping : copy.stop}
+                        >
+                          <StopIcon />
+                        </button>
+                      ) : null}
+                      <button
+                        type="submit"
+                        className="send-button"
+                        disabled={busy === 'start-turn' || busy === 'stop-session' || sessionIsArchived || sessionHasActiveTurn || !prompt.trim()}
+                        title={sessionIsArchived ? copy.restoreRequired : sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                        aria-label={sessionIsArchived ? copy.restoreRequired : sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                      >
+                        <SendIcon />
+                      </button>
+                    </div>
+                  </div>
                 </label>
-                <button type="submit" disabled={busy === 'start-turn' || sessionIsArchived || !prompt.trim()}>
-                  {sessionIsArchived ? copy.restoreRequired : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
-                </button>
               </form>
             </div>
           ) : (
@@ -1511,6 +1619,66 @@ export function App() {
               )}
             </div>
           </aside>
+        </div>
+      ) : null}
+
+      {sessionInfoOpen && detail ? (
+        <div className="modal-overlay" onClick={() => setSessionInfoOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-header settings-header">
+              <div>
+                <p className="eyebrow">{copy.info}</p>
+                <h2>{copy.sessionInfoTitle}</h2>
+              </div>
+              <button type="button" className="button-secondary topbar-button" onClick={() => setSessionInfoOpen(false)}>
+                {copy.close}
+              </button>
+            </div>
+
+            <div className="detail-list">
+              <article className="detail-card">
+                <div className="detail-card-head">
+                  <strong>{detail.session.title}</strong>
+                  <span>{STATUS_LABELS[language][detail.session.status]}</span>
+                </div>
+                <p className="detail-card-meta">{copy.workspace}: {detail.session.workspace}</p>
+                <p className="detail-card-meta">{copy.sessionOwner}: {detail.session.ownerUsername}</p>
+                <p className="detail-card-meta">{copy.securityLabel}: {detail.session.securityProfile}</p>
+                <p className="detail-card-meta">{copy.modelLabel}: {detail.session.model ?? 'codex'}</p>
+                <p className="detail-card-meta">{copy.thinkingLabel}: {detail.session.reasoningEffort ?? 'medium'}</p>
+                <p className="detail-card-meta">{copy.threadLabel}: {shortThreadId(detail.session.threadId)}</p>
+                <p className="detail-card-meta">{copy.createdAt} {formatTimestamp(detail.session.createdAt, language)}</p>
+                <p className="detail-card-meta">{copy.updatedAt} {formatTimestamp(detail.session.updatedAt, language)}</p>
+                {detail.session.lastIssue ? <p>{detail.session.lastIssue}</p> : null}
+              </article>
+
+              {sessionIsChat ? (
+                <article className="detail-card">
+                  <strong>{copy.chatSessionHint}</strong>
+                  <p>{copy.commandToolingHidden}</p>
+                </article>
+              ) : null}
+
+              <article className="detail-card">
+                <div className="detail-card-head">
+                  <strong>{copy.liveEvents}</strong>
+                  <span>{detail.liveEvents.length}</span>
+                </div>
+                {detail.liveEvents.length === 0 ? (
+                  <p className="detail-card-meta">{copy.noTransportEvents}</p>
+                ) : (
+                  <div className="activity-stream">
+                    {detail.liveEvents.map((event) => (
+                      <div key={event.id} className="live-event-row">
+                        <strong>{event.method}</strong>
+                        <span>{event.summary}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+            </div>
+          </div>
         </div>
       ) : null}
 

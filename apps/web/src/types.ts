@@ -66,6 +66,7 @@ export interface SessionRecord {
   ownerUsername: string;
   sessionType: SessionType;
   threadId: string;
+  activeTurnId: string | null;
   title: string;
   workspace: string;
   archivedAt: string | null;
