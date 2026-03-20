@@ -72,6 +72,26 @@ export async function restartSession(sessionId: string) {
   return response.session;
 }
 
+export async function archiveSession(sessionId: string) {
+  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/archive`, {
+    method: 'POST',
+  });
+  return response.session;
+}
+
+export async function restoreSession(sessionId: string) {
+  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/restore`, {
+    method: 'POST',
+  });
+  return response.session;
+}
+
+export async function deleteSession(sessionId: string) {
+  return requestJson<{ ok: true }>(`/api/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function startTurn(sessionId: string, input: CreateTurnRequest) {
   return requestJson(`/api/sessions/${sessionId}/turns`, {
     method: 'POST',

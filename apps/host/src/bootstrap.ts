@@ -8,6 +8,7 @@ import type {
 } from './types.js';
 
 function describeStatus(session: SessionRecord, approvalCount: number): string {
+  if (session.archivedAt) return 'Archived';
   if (approvalCount > 0) return `${approvalCount} approval${approvalCount === 1 ? '' : 's'} waiting`;
   switch (session.status) {
     case 'running':

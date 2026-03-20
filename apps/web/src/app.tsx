@@ -3,14 +3,17 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import {
+  archiveSession,
   connectCloudflareTunnel,
   createSession,
+  deleteSession,
   disconnectCloudflareTunnel,
   fetchBootstrap,
   fetchSessionDetail,
   logout,
   restartSession,
   resolveApproval,
+  restoreSession,
   startTurn,
 } from './api';
 import type {
@@ -69,6 +72,18 @@ function formatTimestamp(value: string) {
 
 function shortThreadId(threadId: string) {
   return threadId.slice(0, 8);
+}
+
+function compactWorkspacePath(workspace: string) {
+  const parts = workspace.split('/').filter(Boolean);
+  if (parts.length <= 2) return workspace;
+  return `${parts.slice(-2).join('/')}`;
+}
+
+function pickPreferredSessionId(
+  sessions: Array<{ id: string; archivedAt: string | null }>,
+) {
+  return sessions.find((session) => !session.archivedAt)?.id ?? sessions[0]?.id ?? null;
 }
 
 function itemToEvent(item: CodexThreadItem): TranscriptEvent | null {
@@ -158,6 +173,7 @@ export function App() {
   const [detailView, setDetailView] = useState<DetailView>('transcript');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,8 +184,8 @@ export function App() {
         if (cancelled) return;
         setBootstrap(next);
         setError(null);
-        if (!selectedSessionId && next.sessions.length > 0) {
-          setSelectedSessionId(next.sessions[0]?.id ?? null);
+        if (!selectedSessionId || !next.sessions.some((session) => session.id === selectedSessionId)) {
+          setSelectedSessionId(pickPreferredSessionId(next.sessions));
         }
       } catch (loadError) {
         if (!cancelled) {
@@ -277,6 +293,62 @@ export function App() {
     }
   }
 
+  async function handleArchiveToggle(sessionId: string, archived: boolean) {
+    setBusy(`${archived ? 'archive' : 'restore'}-${sessionId}`);
+    try {
+      const session = archived ? await archiveSession(sessionId) : await restoreSession(sessionId);
+      const nextBootstrap = await fetchBootstrap();
+      setBootstrap(nextBootstrap);
+
+      const nextSelectedSessionId = archived && selectedSessionId === sessionId
+        ? pickPreferredSessionId(nextBootstrap.sessions)
+        : session.id;
+
+      setSelectedSessionId(nextSelectedSessionId);
+      if (nextSelectedSessionId) {
+        setDetail(await fetchSessionDetail(nextSelectedSessionId));
+      } else {
+        setDetail(null);
+      }
+      setError(null);
+    } catch (archiveError) {
+      setError(archiveError instanceof Error ? archiveError.message : 'Failed to update session archive state');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDeleteSession(sessionId: string) {
+    const session = bootstrap?.sessions.find((entry) => entry.id === sessionId);
+    if (!session) return;
+
+    const confirmed = window.confirm(`Delete "${session.title}" permanently? This only removes it from remote-vibe-coding.`);
+    if (!confirmed) return;
+
+    setBusy(`delete-${sessionId}`);
+    try {
+      await deleteSession(sessionId);
+      const nextBootstrap = await fetchBootstrap();
+      setBootstrap(nextBootstrap);
+
+      const nextSelectedSessionId = selectedSessionId === sessionId
+        ? pickPreferredSessionId(nextBootstrap.sessions)
+        : selectedSessionId;
+
+      setSelectedSessionId(nextSelectedSessionId);
+      if (nextSelectedSessionId) {
+        setDetail(await fetchSessionDetail(nextSelectedSessionId));
+      } else {
+        setDetail(null);
+      }
+      setError(null);
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete session');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleApprovalAction(approval: PendingApproval, decision: 'accept' | 'decline', scope: 'once' | 'session') {
     setBusy(approval.id);
     try {
@@ -339,10 +411,13 @@ export function App() {
   const cloudflareManagedBySystem = cloudflare?.activeSource === 'system';
   const cloudflareManagedLocally = cloudflare?.activeSource === 'local-manager';
   const sessionIsStale = detail?.session.status === 'stale';
+  const sessionIsArchived = Boolean(detail?.session.archivedAt);
   const threadStatus = detail?.thread?.status && typeof detail.thread.status === 'object' ? detail.thread.status.type : 'idle';
   const sessionGitLabel = detail?.thread?.gitInfo?.branch
     ? `${detail.thread.gitInfo.branch}${detail.thread.gitInfo.sha ? ` @ ${detail.thread.gitInfo.sha.slice(0, 7)}` : ''}`
     : 'No git metadata';
+  const activeSessions = (bootstrap?.sessions ?? []).filter((session) => !session.archivedAt);
+  const archivedSessions = (bootstrap?.sessions ?? []).filter((session) => Boolean(session.archivedAt));
 
   if (error && !bootstrap) {
     return (
@@ -362,10 +437,11 @@ export function App() {
       <header className="topbar">
         <div>
           <p className="eyebrow">Codex-first remote coding</p>
-          <h1>{detail?.session.title ?? bootstrap?.productName ?? 'remote-vibe-coding'}</h1>
+          <h1>{bootstrap?.productName ?? 'remote-vibe-coding'}</h1>
         </div>
         <div className="topbar-meta">
-          <span>{bootstrap?.sessions.length ?? 0} sessions</span>
+          <span>{activeSessions.length} active</span>
+          {archivedSessions.length > 0 ? <span>{archivedSessions.length} archived</span> : null}
           <span>{bootstrap?.approvals.length ?? 0} approvals</span>
           <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(true)}>
             Settings
@@ -380,30 +456,107 @@ export function App() {
               <p className="eyebrow">Sessions</p>
               <h2>Existing work</h2>
             </div>
-            <button type="button" onClick={() => setNewSessionOpen(true)} disabled={busy === 'create-session'}>
-              New session
-            </button>
+            <div className="rail-actions">
+              {archivedSessions.length > 0 ? (
+                <button type="button" className="button-secondary" onClick={() => setShowArchived((value) => !value)}>
+                  {showArchived ? 'Hide archived' : `Archived (${archivedSessions.length})`}
+                </button>
+              ) : null}
+              <button type="button" onClick={() => setNewSessionOpen(true)} disabled={busy === 'create-session'}>
+                New session
+              </button>
+            </div>
           </div>
 
           <ul className="session-list">
-            {bootstrap?.sessions.map((session) => (
+            {activeSessions.length === 0 ? (
+              <li className="session-empty">No active sessions yet.</li>
+            ) : activeSessions.map((session) => (
               <li
                 key={session.id}
                 className={`session-card ${selectedSessionId === session.id ? 'session-card-active' : ''}`}
                 onClick={() => setSelectedSessionId(session.id)}
               >
-                <div className="session-row">
+                <div className="session-row session-card-head">
                   <h3>{session.title}</h3>
                   <span className={`status-pill status-${session.status}`}>{STATUS_LABELS[session.status]}</span>
                 </div>
-                <p className="session-workspace">{session.workspace}</p>
+                <p className="session-workspace">{compactWorkspacePath(session.workspace)}</p>
                 <div className="session-row session-foot">
-                  <span>{session.securityProfile}{session.pendingApprovalCount > 0 ? ` · ${session.pendingApprovalCount} approval` : ''}</span>
                   <span>{session.lastUpdate}</span>
+                  {session.pendingApprovalCount > 0 ? <span>{session.pendingApprovalCount} approval</span> : null}
                 </div>
+                {selectedSessionId === session.id ? (
+                  <div className="session-actions" onClick={(event) => event.stopPropagation()}>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => void handleArchiveToggle(session.id, true)}
+                      disabled={busy === `archive-${session.id}`}
+                    >
+                      {busy === `archive-${session.id}` ? 'Archiving...' : 'Archive'}
+                    </button>
+                    <button
+                      type="button"
+                      className="button-danger"
+                      onClick={() => void handleDeleteSession(session.id)}
+                      disabled={busy === `delete-${session.id}`}
+                    >
+                      {busy === `delete-${session.id}` ? 'Deleting...' : 'Delete'}
+                    </button>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
+
+          {showArchived && archivedSessions.length > 0 ? (
+            <>
+              <div className="rail-subhead">
+                <p className="eyebrow">Archived</p>
+                <h2>History</h2>
+              </div>
+              <ul className="session-list archived-session-list">
+                {archivedSessions.map((session) => (
+                  <li
+                    key={session.id}
+                    className={`session-card session-card-archived ${selectedSessionId === session.id ? 'session-card-active' : ''}`}
+                    onClick={() => setSelectedSessionId(session.id)}
+                  >
+                    <div className="session-row session-card-head">
+                      <h3>{session.title}</h3>
+                      <span className="status-pill status-idle">Archived</span>
+                    </div>
+                    <p className="session-workspace">{compactWorkspacePath(session.workspace)}</p>
+                    <div className="session-row session-foot">
+                      <span>Archived session</span>
+                      <span>{session.lastUpdate}</span>
+                    </div>
+                    {selectedSessionId === session.id ? (
+                      <div className="session-actions" onClick={(event) => event.stopPropagation()}>
+                        <button
+                          type="button"
+                          className="button-secondary"
+                          onClick={() => void handleArchiveToggle(session.id, false)}
+                          disabled={busy === `restore-${session.id}`}
+                        >
+                          {busy === `restore-${session.id}` ? 'Restoring...' : 'Restore'}
+                        </button>
+                        <button
+                          type="button"
+                          className="button-danger"
+                          onClick={() => void handleDeleteSession(session.id)}
+                          disabled={busy === `delete-${session.id}`}
+                        >
+                          {busy === `delete-${session.id}` ? 'Deleting...' : 'Delete'}
+                        </button>
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
         </aside>
 
         <section className="panel transcript">
@@ -430,7 +583,22 @@ export function App() {
                   </button>
                 </div>
 
-                {sessionIsStale ? (
+                {sessionIsArchived ? (
+                  <section className="runtime-alert runtime-alert-muted">
+                    <div>
+                      <p className="eyebrow">Archived session</p>
+                      <h3>This session is in history mode</h3>
+                      <p>Restore it if you want to continue prompting in the same workspace.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => detail && void handleArchiveToggle(detail.session.id, false)}
+                      disabled={!detail || busy === `restore-${detail.session.id}`}
+                    >
+                      {!detail || busy !== `restore-${detail.session.id}` ? 'Restore session' : 'Restoring...'}
+                    </button>
+                  </section>
+                ) : sessionIsStale ? (
                   <section className="runtime-alert">
                     <div>
                       <p className="eyebrow">Runtime reset detected</p>
@@ -600,11 +768,11 @@ export function App() {
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     rows={5}
-                    disabled={sessionIsStale}
+                    disabled={sessionIsStale || sessionIsArchived}
                   />
                 </label>
-                <button type="submit" disabled={busy === 'start-turn' || sessionIsStale}>
-                  {sessionIsStale ? 'Restart required' : busy === 'start-turn' ? 'Sending...' : 'Send prompt'}
+                <button type="submit" disabled={busy === 'start-turn' || sessionIsStale || sessionIsArchived}>
+                  {sessionIsArchived ? 'Restore required' : sessionIsStale ? 'Restart required' : busy === 'start-turn' ? 'Sending...' : 'Send prompt'}
                 </button>
               </form>
             </div>

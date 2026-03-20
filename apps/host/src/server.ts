@@ -133,6 +133,10 @@ function isThreadUnavailableError(error: unknown) {
   return errorMessage(error).includes('thread not loaded');
 }
 
+function isArchivedSession(session: SessionRecord) {
+  return Boolean(session.archivedAt);
+}
+
 const app = Fastify({
   logger: true,
   trustProxy: true,
@@ -411,6 +415,7 @@ app.post('/api/sessions', async (request, reply) => {
     threadId: threadResponse.thread.id,
     title: body.title?.trim() || basename(workspace),
     workspace,
+    archivedAt: null,
     securityProfile,
     networkEnabled: false,
     fullHostEnabled,
@@ -433,6 +438,11 @@ app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
     return { error: 'Session not found' };
   }
 
+  if (isArchivedSession(session)) {
+    reply.code(409);
+    return { error: 'Archived sessions must be restored before they can restart.' };
+  }
+
   const threadResponse = await codex.startThread(session.workspace, session.fullHostEnabled);
   store.clearApprovals(sessionId);
   store.clearLiveEvents(sessionId);
@@ -453,6 +463,60 @@ app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
   return { session: nextSession };
 });
 
+app.post('/api/sessions/:sessionId/archive', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  if (session.archivedAt) {
+    return { session };
+  }
+
+  store.clearApprovals(sessionId);
+  const nextSession = (await store.updateSession(sessionId, {
+    archivedAt: new Date().toISOString(),
+    networkEnabled: false,
+    lastIssue: null,
+  })) ?? session;
+
+  return { session: nextSession };
+});
+
+app.post('/api/sessions/:sessionId/restore', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  if (!session.archivedAt) {
+    return { session };
+  }
+
+  const nextSession = (await store.updateSession(sessionId, {
+    archivedAt: null,
+    lastIssue: null,
+  })) ?? session;
+
+  return { session: nextSession };
+});
+
+app.delete('/api/sessions/:sessionId', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  await store.deleteSession(sessionId);
+  return { ok: true };
+});
+
 app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
   const { sessionId } = request.params as { sessionId: string };
   const body = request.body as CreateTurnRequest;
@@ -465,6 +529,11 @@ app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
   if (!body.prompt?.trim()) {
     reply.code(400);
     return { error: 'Prompt is required' };
+  }
+
+  if (isArchivedSession(session)) {
+    reply.code(409);
+    return { error: 'Archived sessions must be restored before they can accept a prompt.' };
   }
 
   if (session.status === 'stale') {
@@ -509,6 +578,11 @@ app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply
   if (!session) {
     reply.code(404);
     return { error: 'Session not found' };
+  }
+
+  if (isArchivedSession(session)) {
+    reply.code(409);
+    return { error: 'Archived sessions do not accept approvals.' };
   }
 
   const approval = store.getApprovals(sessionId).find((entry) => entry.id === approvalId);

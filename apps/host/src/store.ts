@@ -25,7 +25,10 @@ export class SessionStore {
       const raw = await readFile(SESSIONS_FILE, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
       for (const session of parsed.sessions ?? []) {
-        this.sessions.set(session.id, session);
+        this.sessions.set(session.id, {
+          ...session,
+          archivedAt: session.archivedAt ?? null,
+        });
       }
     } catch {
       // Fresh repo, nothing to load yet.
@@ -68,6 +71,16 @@ export class SessionStore {
     this.sessions.set(sessionId, next);
     await this.save();
     return next;
+  }
+
+  async deleteSession(sessionId: string) {
+    const existed = this.sessions.delete(sessionId);
+    this.approvals.delete(sessionId);
+    this.liveEvents.delete(sessionId);
+    if (existed) {
+      await this.save();
+    }
+    return existed;
   }
 
   getApprovals(sessionId: string) {

@@ -37,6 +37,7 @@ export interface SessionRecord {
   threadId: string;
   title: string;
   workspace: string;
+  archivedAt: string | null;
   securityProfile: SecurityProfile;
   networkEnabled: boolean;
   fullHostEnabled: boolean;
