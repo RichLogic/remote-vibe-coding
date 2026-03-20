@@ -33,6 +33,19 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function codexExecutable() {
+  const configured = process.env.CODEX_BIN?.trim();
+  if (configured) {
+    return configured;
+  }
+
+  if (process.platform === 'darwin') {
+    return '/opt/homebrew/bin/codex';
+  }
+
+  return 'codex';
+}
+
 async function findFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -95,7 +108,7 @@ export class CodexAppServerClient extends EventEmitter {
     const port = await findFreePort();
     this.listenUrl = `ws://127.0.0.1:${port}`;
 
-    const proc = spawn('codex', ['app-server', '--listen', this.listenUrl], {
+    const proc = spawn(codexExecutable(), ['app-server', '--listen', this.listenUrl], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: process.env,
     });
