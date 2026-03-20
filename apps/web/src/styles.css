@@ -118,6 +118,13 @@ code {
   cursor: pointer;
 }
 
+.rail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
 .settings-overlay {
   position: fixed;
   inset: 0;
@@ -171,6 +178,26 @@ code {
 
 .settings-signout {
   justify-self: flex-start;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(30, 27, 23, 0.22);
+  backdrop-filter: blur(10px);
+}
+
+.modal-card {
+  width: min(520px, 100%);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: rgba(248, 244, 237, 0.98);
+  box-shadow: var(--shadow);
+  padding: 24px;
 }
 
 .eyebrow {
@@ -429,6 +456,7 @@ code {
 }
 
 .approval-actions button,
+.rail-header button,
 .create-form button,
 .composer-form button,
 .remote-button-row button {
@@ -442,6 +470,7 @@ code {
 }
 
 .approval-actions button:hover,
+.rail-header button:hover,
 .create-form button:hover,
 .composer-form button:hover,
 .remote-button-row button:hover {

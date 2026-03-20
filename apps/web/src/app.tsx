@@ -206,6 +206,7 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [detailView, setDetailView] = useState<DetailView>('transcript');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -280,6 +281,7 @@ export function App() {
         ...(title.trim() ? { title: title.trim() } : {}),
       });
       setTitle('');
+      setNewSessionOpen(false);
       setSelectedSessionId(session.id);
       const nextBootstrap = await fetchBootstrap();
       setBootstrap(nextBootstrap);
@@ -422,35 +424,14 @@ export function App() {
 
       <section className="workspace">
         <aside className="panel rail">
-          <div className="panel-header">
-            <p className="eyebrow">Create session</p>
-            <h2>Workspace-first entry</h2>
-          </div>
-
-          <form className="create-form" onSubmit={handleCreateSession}>
-            <label className="field">
-              <span>Workspace</span>
-              <input value={workspace} onChange={(event) => setWorkspace(event.target.value)} />
-            </label>
-            <label className="field">
-              <span>Title</span>
-              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional session title" />
-            </label>
-            <label className="field">
-              <span>Security profile</span>
-              <select value={securityProfile} onChange={(event) => setSecurityProfile(event.target.value as 'repo-write' | 'full-host')}>
-                <option value="repo-write">repo-write</option>
-                <option value="full-host">full-host</option>
-              </select>
-            </label>
-            <button type="submit" disabled={busy === 'create-session'}>
-              {busy === 'create-session' ? 'Creating...' : 'New session'}
+          <div className="panel-header rail-header">
+            <div>
+              <p className="eyebrow">Sessions</p>
+              <h2>Existing work</h2>
+            </div>
+            <button type="button" onClick={() => setNewSessionOpen(true)} disabled={busy === 'create-session'}>
+              New session
             </button>
-          </form>
-
-          <div className="panel-header rail-divider">
-            <p className="eyebrow">Concurrent sessions</p>
-            <h2>Light session rail</h2>
           </div>
 
           <ul className="session-list">
@@ -679,7 +660,7 @@ export function App() {
           ) : (
             <section className="empty-state">
               <p className="eyebrow">No active selection</p>
-              <h2>Create a session on the left to start a real Codex thread.</h2>
+              <h2>Pick an existing session, or use the New session button to start a fresh Codex thread.</h2>
             </section>
           )}
         </section>
@@ -816,6 +797,43 @@ export function App() {
               </button>
             </section>
           </aside>
+        </div>
+      ) : null}
+
+      {newSessionOpen ? (
+        <div className="modal-overlay" onClick={() => setNewSessionOpen(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-header settings-header">
+              <div>
+                <p className="eyebrow">New session</p>
+                <h2>Create a workspace thread</h2>
+              </div>
+              <button type="button" className="button-secondary topbar-button" onClick={() => setNewSessionOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <form className="create-form" onSubmit={handleCreateSession}>
+              <label className="field">
+                <span>Workspace</span>
+                <input value={workspace} onChange={(event) => setWorkspace(event.target.value)} />
+              </label>
+              <label className="field">
+                <span>Title</span>
+                <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional session title" />
+              </label>
+              <label className="field">
+                <span>Security profile</span>
+                <select value={securityProfile} onChange={(event) => setSecurityProfile(event.target.value as 'repo-write' | 'full-host')}>
+                  <option value="repo-write">repo-write</option>
+                  <option value="full-host">full-host</option>
+                </select>
+              </label>
+              <button type="submit" disabled={busy === 'create-session'}>
+                {busy === 'create-session' ? 'Creating...' : 'Create session'}
+              </button>
+            </form>
+          </div>
         </div>
       ) : null}
     </main>
