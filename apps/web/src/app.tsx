@@ -118,6 +118,7 @@ const COPY = {
     threadMissing: 'Codex no longer has this thread loaded',
     restartSession: 'Restart session',
     restarting: 'Restarting...',
+    autoRestartHint: 'The next prompt will automatically create a fresh thread in the same workspace.',
     archivedEyebrow: 'Archived session',
     historyMode: 'This session is in history mode',
     historyModeHint: 'Restore it if you want to continue prompting in the same workspace.',
@@ -231,6 +232,7 @@ const COPY = {
     threadMissing: 'Codex 已经不再持有这个 thread',
     restartSession: '重启会话',
     restarting: '重启中...',
+    autoRestartHint: '你下一次发送消息时，会自动在同一个 workspace 里创建新的 thread。',
     archivedEyebrow: '已归档会话',
     historyMode: '这个会话目前处于历史模式',
     historyModeHint: '如果你想继续在同一个 workspace 里对话，先恢复它。',
@@ -554,30 +556,18 @@ export function App() {
     if (!selectedSessionId) return;
     setBusy('start-turn');
     try {
+      if (detail?.session.status === 'stale') {
+        await restartSession(selectedSessionId);
+      }
       await startTurn(selectedSessionId, { prompt });
-      const nextDetail = await fetchSessionDetail(selectedSessionId);
-      setDetail(nextDetail);
-    } catch (turnError) {
-      setError(turnError instanceof Error ? turnError.message : copy.sendPrompt);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleRestartSession() {
-    if (!selectedSessionId) return;
-    setBusy('restart-session');
-    try {
-      await restartSession(selectedSessionId);
       const [nextBootstrap, nextDetail] = await Promise.all([
         fetchBootstrap(),
         fetchSessionDetail(selectedSessionId),
       ]);
       setBootstrap(nextBootstrap);
       setDetail(nextDetail);
-      setError(null);
-    } catch (restartError) {
-      setError(restartError instanceof Error ? restartError.message : copy.restartSession);
+    } catch (turnError) {
+      setError(turnError instanceof Error ? turnError.message : copy.sendPrompt);
     } finally {
       setBusy(null);
     }
@@ -896,15 +886,8 @@ export function App() {
                     <div>
                       <p className="eyebrow">{copy.runtimeReset}</p>
                       <h3>{copy.threadMissing}</h3>
-                      <p>{detail.session.lastIssue ?? (language === 'zh' ? '重启这个会话，在同一个 workspace 下创建新的 thread。' : 'Restart this session to create a fresh thread in the same workspace.')}</p>
+                      <p>{detail.session.lastIssue ?? copy.autoRestartHint}</p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleRestartSession()}
-                      disabled={busy === 'restart-session'}
-                    >
-                      {busy === 'restart-session' ? copy.restarting : copy.restartSession}
-                    </button>
                   </section>
                 ) : null}
 
@@ -1061,11 +1044,11 @@ export function App() {
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
                     rows={5}
-                    disabled={sessionIsStale || sessionIsArchived}
+                    disabled={sessionIsArchived}
                   />
                 </label>
-                <button type="submit" disabled={busy === 'start-turn' || sessionIsStale || sessionIsArchived}>
-                  {sessionIsArchived ? copy.restoreRequired : sessionIsStale ? copy.restartRequired : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                <button type="submit" disabled={busy === 'start-turn' || sessionIsArchived}>
+                  {sessionIsArchived ? copy.restoreRequired : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
                 </button>
               </form>
             </div>
