@@ -19,6 +19,7 @@ import {
   restoreSession,
   startTurn,
   stopSession,
+  updateSessionPreferences,
   updateAdminUser,
 } from './api';
 import type {
@@ -541,8 +542,8 @@ export function App() {
   const [workspace, setWorkspace] = useState('/Users/richlogic/code/remote-vibe-coding');
   const [title, setTitle] = useState('');
   const [securityProfile, setSecurityProfile] = useState<'repo-write' | 'full-host'>('repo-write');
-  const [selectedModel, setSelectedModel] = useState('');
-  const [selectedEffort, setSelectedEffort] = useState<ReasoningEffort>('medium');
+  const [sessionModel, setSessionModel] = useState('');
+  const [sessionEffort, setSessionEffort] = useState<ReasoningEffort>('medium');
   const [userModalMode, setUserModalMode] = useState<UserModalMode>('create');
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
@@ -553,12 +554,12 @@ export function App() {
   const copy = COPY[language];
 
   const availableModels = bootstrap?.availableModels.length ? bootstrap.availableModels : [];
-  const selectedModelOption = availableModels.find((entry) => entry.model === selectedModel)
+  const currentSessionModelOption = availableModels.find((entry) => entry.model === sessionModel)
     ?? availableModels.find((entry) => entry.isDefault)
     ?? availableModels[0]
     ?? null;
-  const availableEfforts = selectedModelOption?.supportedReasoningEfforts.length
-    ? selectedModelOption.supportedReasoningEfforts
+  const currentSessionEfforts = currentSessionModelOption?.supportedReasoningEfforts.length
+    ? currentSessionModelOption.supportedReasoningEfforts
     : FALLBACK_REASONING;
 
   useEffect(() => {
@@ -645,15 +646,21 @@ export function App() {
   }, [newSessionType, securityProfile]);
 
   useEffect(() => {
-    if (!selectedModelOption) return;
-    if (!selectedModel) {
-      setSelectedModel(selectedModelOption.model);
-      return;
-    }
-    if (!availableEfforts.includes(selectedEffort)) {
-      setSelectedEffort(selectedModelOption.defaultReasoningEffort);
-    }
-  }, [selectedModel, selectedModelOption, selectedEffort, availableEfforts]);
+    if (!detail?.session) return;
+    const option = availableModels.find((entry) => entry.model === detail.session.model)
+      ?? availableModels.find((entry) => entry.isDefault)
+      ?? availableModels[0]
+      ?? null;
+    if (!option) return;
+
+    const nextModel = detail.session.model ?? option.model;
+    const nextEffort = detail.session.reasoningEffort && option.supportedReasoningEfforts.includes(detail.session.reasoningEffort)
+      ? detail.session.reasoningEffort
+      : option.defaultReasoningEffort;
+
+    setSessionModel(nextModel);
+    setSessionEffort(nextEffort);
+  }, [detail?.session, availableModels]);
 
   useEffect(() => {
     if (!adminOpen || !bootstrap?.currentUser.isAdmin) return;
@@ -758,8 +765,6 @@ export function App() {
     try {
       const session = await createSession({
         sessionType: newSessionType,
-        reasoningEffort: selectedEffort,
-        ...(selectedModel ? { model: selectedModel } : {}),
         ...(title.trim() ? { title: title.trim() } : {}),
         ...(newSessionType === 'code'
           ? {
@@ -821,6 +826,40 @@ export function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  async function handleSessionPreferencesChange(nextModel: string, nextEffort: ReasoningEffort) {
+    if (!selectedSessionId) return;
+    setBusy('update-session-preferences');
+    try {
+      await updateSessionPreferences(selectedSessionId, {
+        model: nextModel,
+        reasoningEffort: nextEffort,
+      });
+      await refreshCurrentSelection(selectedSessionId);
+      setError(null);
+    } catch (preferencesError) {
+      await refreshCurrentSelection(selectedSessionId);
+      setError(preferencesError instanceof Error ? preferencesError.message : copy.settings);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function handleSessionModelChange(nextModel: string) {
+    const option = availableModels.find((entry) => entry.model === nextModel);
+    if (!option) return;
+    const nextEffort = option.supportedReasoningEfforts.includes(sessionEffort)
+      ? sessionEffort
+      : option.defaultReasoningEffort;
+    setSessionModel(nextModel);
+    setSessionEffort(nextEffort);
+    void handleSessionPreferencesChange(nextModel, nextEffort);
+  }
+
+  function handleSessionEffortChange(nextEffort: ReasoningEffort) {
+    setSessionEffort(nextEffort);
+    void handleSessionPreferencesChange(sessionModel, nextEffort);
   }
 
   async function handleArchiveToggle(sessionId: string, archived: boolean) {
@@ -1280,6 +1319,34 @@ export function App() {
               </div>
 
               <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
+                {detail ? (
+                  <div className="composer-config-row">
+                    <label className="composer-config-field">
+                      <span>{copy.model}</span>
+                      <select
+                        value={sessionModel}
+                        onChange={(event) => handleSessionModelChange(event.target.value)}
+                        disabled={busy === 'update-session-preferences' || availableModels.length === 0}
+                      >
+                        {availableModels.map((option) => (
+                          <option key={option.id} value={option.model}>{option.displayName}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="composer-config-field">
+                      <span>{copy.thinking}</span>
+                      <select
+                        value={sessionEffort}
+                        onChange={(event) => handleSessionEffortChange(event.target.value as ReasoningEffort)}
+                        disabled={busy === 'update-session-preferences'}
+                      >
+                        {currentSessionEfforts.map((effort) => (
+                          <option key={effort} value={effort}>{effort}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                ) : null}
                 <label className="field">
                   <span>{copy.prompt}</span>
                   <div className="composer-row">
@@ -1664,24 +1731,6 @@ export function App() {
               <label className="field">
                 <span>{copy.title}</span>
                 <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={copy.optionalSessionTitle} />
-              </label>
-
-              <label className="field">
-                <span>{copy.model}</span>
-                <select value={selectedModel} onChange={(event) => setSelectedModel(event.target.value)}>
-                  {availableModels.map((option) => (
-                    <option key={option.id} value={option.model}>{option.displayName}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field">
-                <span>{copy.thinking}</span>
-                <select value={selectedEffort} onChange={(event) => setSelectedEffort(event.target.value as ReasoningEffort)}>
-                  {availableEfforts.map((effort) => (
-                    <option key={effort} value={effort}>{effort}</option>
-                  ))}
-                </select>
               </label>
 
               <button type="submit" disabled={busy === 'create-session'}>

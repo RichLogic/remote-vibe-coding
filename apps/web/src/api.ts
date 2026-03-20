@@ -9,6 +9,7 @@ import type {
   ResolveApprovalRequest,
   SessionDetailResponse,
   SessionRecord,
+  UpdateSessionPreferencesRequest,
   UpdateUserRequest,
 } from './types';
 
@@ -94,6 +95,14 @@ export async function restoreSession(sessionId: string) {
 export async function renameSession(sessionId: string, input: RenameSessionRequest) {
   const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/rename`, {
     method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return response.session;
+}
+
+export async function updateSessionPreferences(sessionId: string, input: UpdateSessionPreferencesRequest) {
+  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/preferences`, {
+    method: 'PATCH',
     body: JSON.stringify(input),
   });
   return response.session;

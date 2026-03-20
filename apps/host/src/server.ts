@@ -38,6 +38,7 @@ import type {
   SessionEvent,
   SessionRecord,
   SessionType,
+  UpdateSessionPreferencesRequest,
   UpdateUserRequest,
   UserRecord,
 } from './types.js';
@@ -253,12 +254,15 @@ function currentDefaultModel() {
   return availableModels.find((entry) => entry.isDefault)?.model ?? availableModels[0]?.model ?? FALLBACK_MODELS[0]!.model;
 }
 
-function currentDefaultEffort(model: string | null | undefined) {
-  const option = availableModels.find((entry) => entry.model === model)
+function resolveModelOption(model: string | null | undefined) {
+  return availableModels.find((entry) => entry.model === model)
     ?? availableModels.find((entry) => entry.isDefault)
     ?? availableModels[0]
     ?? FALLBACK_MODELS[0]!;
-  return option.defaultReasoningEffort;
+}
+
+function currentDefaultEffort(model: string | null | undefined) {
+  return resolveModelOption(model).defaultReasoningEffort;
 }
 
 function userCanCreateSessionType(user: UserRecord, sessionType: SessionType) {
@@ -835,6 +839,35 @@ app.post('/api/sessions/:sessionId/rename', async (request, reply) => {
 
   const nextSession = (await store.updateSession(sessionId, {
     title,
+  })) ?? session;
+
+  return { session: nextSession };
+});
+
+app.patch('/api/sessions/:sessionId/preferences', async (request, reply) => {
+  const currentUser = getRequestUser(request);
+  const { sessionId } = request.params as { sessionId: string };
+  const body = (request.body ?? {}) as UpdateSessionPreferencesRequest;
+  const session = getOwnedSessionOrReply(currentUser.id, sessionId, reply);
+  if (!session) {
+    return { error: 'Session not found' };
+  }
+
+  const requestedModel = trimOptional(body.model) ?? session.model ?? currentDefaultModel();
+  const modelOption = availableModels.find((entry) => entry.model === requestedModel);
+  if (!modelOption) {
+    reply.code(400);
+    return { error: 'Unknown model.' };
+  }
+
+  const requestedEffort = normalizeReasoningEffort(body.reasoningEffort);
+  const reasoningEffort = requestedEffort && modelOption.supportedReasoningEfforts.includes(requestedEffort)
+    ? requestedEffort
+    : modelOption.defaultReasoningEffort;
+
+  const nextSession = (await store.updateSession(sessionId, {
+    model: modelOption.model,
+    reasoningEffort,
   })) ?? session;
 
   return { session: nextSession };

@@ -886,6 +886,35 @@ code {
   gap: 6px;
 }
 
+.composer-config-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.composer-config-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: max-content;
+}
+
+.composer-config-field span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.composer-config-field select {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  background: rgba(255, 250, 240, 0.95);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+}
+
 .composer-row {
   display: flex;
   align-items: flex-end;
@@ -1110,5 +1139,14 @@ code {
 
   .composer-row {
     padding: 8px 8px 8px 12px;
+  }
+
+  .composer-config-row {
+    align-items: flex-start;
+  }
+
+  .composer-config-field {
+    width: 100%;
+    justify-content: space-between;
   }
 }

@@ -242,6 +242,11 @@ export interface RenameSessionRequest {
   title: string;
 }
 
+export interface UpdateSessionPreferencesRequest {
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+}
+
 export interface ResolveApprovalRequest {
   decision: 'accept' | 'decline';
   scope?: ApprovalScope;
