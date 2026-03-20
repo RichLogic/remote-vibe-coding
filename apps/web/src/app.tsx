@@ -205,6 +205,7 @@ export function App() {
   const [prompt, setPrompt] = useState('Inspect the current project and summarize what is already implemented.');
   const [busy, setBusy] = useState<string | null>(null);
   const [detailView, setDetailView] = useState<DetailView>('transcript');
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -408,120 +409,16 @@ export function App() {
       <header className="topbar">
         <div>
           <p className="eyebrow">Codex-first remote coding</p>
-          <h1>{bootstrap?.productName ?? 'remote-vibe-coding'}</h1>
+          <h1>{detail?.session.title ?? bootstrap?.productName ?? 'remote-vibe-coding'}</h1>
         </div>
         <div className="topbar-meta">
-          <span>{bootstrap?.defaults.defaultSecurityProfile ?? 'repo-write'}</span>
-          <span>{bootstrap?.defaults.networkEnabledByDefault ? 'Network on' : 'Network off'}</span>
-          <span>{bootstrap?.defaults.transcriptMode ?? 'app-server'}</span>
-          <button type="button" className="button-secondary topbar-button" onClick={() => void handleLogout()} disabled={busy === 'logout'}>
-            {busy === 'logout' ? 'Signing out...' : 'Sign out'}
+          <span>{bootstrap?.sessions.length ?? 0} sessions</span>
+          <span>{bootstrap?.approvals.length ?? 0} approvals</span>
+          <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(true)}>
+            Settings
           </button>
         </div>
       </header>
-
-      <section className="hero-card">
-        <div>
-          <p className="eyebrow">Phase 1 contract</p>
-          <h2>{bootstrap?.subtitle ?? 'Connecting the browser shell to the real Codex runtime.'}</h2>
-        </div>
-        <div className="hero-grid">
-          <div>
-            <span className="hero-label">Executor</span>
-            <strong>{bootstrap?.defaults.executor ?? 'codex'}</strong>
-          </div>
-          <div>
-            <span className="hero-label">Primary client</span>
-            <strong>{bootstrap?.defaults.primaryClient ?? 'web'}</strong>
-          </div>
-          <div>
-            <span className="hero-label">Sessions</span>
-            <strong>{bootstrap?.sessions.length ?? 0}</strong>
-          </div>
-          <div>
-            <span className="hero-label">Pending approvals</span>
-            <strong>{bootstrap?.approvals.length ?? 0}</strong>
-          </div>
-        </div>
-      </section>
-
-      <section className="remote-access-card">
-        <div className="remote-access-copy">
-          <div>
-            <p className="eyebrow">Cloudflare remote access</p>
-            <h2>
-              {cloudflare
-                ? `${CLOUDFLARE_STATE_LABELS[cloudflare.state]} tunnel`
-                : 'Tunnel status unavailable'}
-            </h2>
-          </div>
-          <p>
-            {cloudflare?.installed
-              ? `Targeting ${cloudflare.targetUrl} from ${cloudflare.targetSource}.`
-              : 'cloudflared is not installed on this machine yet.'}
-          </p>
-          {cloudflare?.tunnelName ? (
-            <p className="remote-access-note">
-              {cloudflareManagedBySystem
-                ? `${cloudflare.tunnelName} is already live through the system tunnel service.`
-                : `${cloudflare.tunnelName} is the active named tunnel for this surface.`}
-            </p>
-          ) : null}
-          {cloudflare?.publicUrl ? (
-            <p className="remote-access-url">
-              <a href={cloudflare.publicUrl} target="_blank" rel="noreferrer">
-                {cloudflare.publicUrl}
-              </a>
-            </p>
-          ) : (
-            <p className="remote-access-note">
-              {cloudflare?.mode === 'token'
-                ? 'Set CLOUDFLARE_PUBLIC_URL to surface the stable hostname in the UI.'
-                : 'Quick tunnel mode will surface a temporary trycloudflare.com URL here.'}
-            </p>
-          )}
-          {cloudflare?.lastError ? <p className="remote-access-error">{cloudflare.lastError}</p> : null}
-        </div>
-        <div className="remote-access-actions">
-          <div className="remote-status-row">
-            <span>{cloudflare?.version ?? 'cloudflared missing'}</span>
-            <span>{cloudflare?.mode ?? 'not connected'}</span>
-            <span>{cloudflare?.connectorCount ?? 0} connector(s)</span>
-          </div>
-          <div className="remote-button-row">
-            <button
-              type="button"
-              onClick={() => void handleConnectCloudflare()}
-              disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting' || cloudflareManagedBySystem}
-            >
-              {cloudflareManagedBySystem
-                ? 'Tunnel already live'
-                : busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'
-                  ? 'Connecting...'
-                  : 'Connect tunnel'}
-            </button>
-            <button
-              type="button"
-              className="button-secondary"
-              onClick={() => void handleDisconnectCloudflare()}
-              disabled={!cloudflare?.installed || !cloudflareManagedLocally || busy === 'disconnect-cloudflare'}
-            >
-              {cloudflareManagedBySystem
-                ? 'Managed by system'
-                : busy === 'disconnect-cloudflare'
-                  ? 'Disconnecting...'
-                  : 'Disconnect'}
-            </button>
-          </div>
-          {cloudflare?.recentLogs.length ? (
-            <div className="remote-log-list">
-              {cloudflare.recentLogs.slice(-4).map((line, index) => (
-                <p key={`${line}-${index}`}>{line}</p>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      </section>
 
       <section className="workspace">
         <aside className="panel rail">
@@ -826,6 +723,101 @@ export function App() {
           </div>
         </aside>
       </section>
+
+      {settingsOpen ? (
+        <div className="settings-overlay" onClick={() => setSettingsOpen(false)}>
+          <aside className="settings-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-header settings-header">
+              <div>
+                <p className="eyebrow">Settings</p>
+                <h2>System information and controls</h2>
+              </div>
+              <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(false)}>
+                Close
+              </button>
+            </div>
+
+            <section className="detail-summary-grid">
+              <article className="summary-card">
+                <p className="eyebrow">Product</p>
+                <strong>{bootstrap?.productName ?? 'remote-vibe-coding'}</strong>
+                <p>{bootstrap?.subtitle ?? 'Codex-first browser shell'}</p>
+              </article>
+              <article className="summary-card">
+                <p className="eyebrow">Defaults</p>
+                <strong>{bootstrap?.defaults.defaultSecurityProfile ?? 'repo-write'}</strong>
+                <p>{bootstrap?.defaults.networkEnabledByDefault ? 'Network on by default' : 'Network off by default'}</p>
+              </article>
+              <article className="summary-card">
+                <p className="eyebrow">Current session</p>
+                <strong>{detail?.session.title ?? 'No active session'}</strong>
+                <p>{detail?.session.workspace ?? 'Select a session to inspect its workspace.'}</p>
+              </article>
+              <article className="summary-card">
+                <p className="eyebrow">Remote access</p>
+                <strong>{cloudflare ? `${CLOUDFLARE_STATE_LABELS[cloudflare.state]} tunnel` : 'Tunnel status unavailable'}</strong>
+                <p>{cloudflare?.publicUrl ?? cloudflare?.targetUrl ?? 'No public URL available yet'}</p>
+              </article>
+            </section>
+
+            <section className="settings-section">
+              <div className="settings-section-head">
+                <strong>Cloudflare</strong>
+                <span>{cloudflare?.mode ?? 'not connected'}</span>
+              </div>
+              <p className="detail-card-meta">
+                {cloudflare?.installed
+                  ? `Targeting ${cloudflare.targetUrl} from ${cloudflare.targetSource}.`
+                  : 'cloudflared is not installed on this machine yet.'}
+              </p>
+              {cloudflare?.publicUrl ? (
+                <p className="remote-access-url">
+                  <a href={cloudflare.publicUrl} target="_blank" rel="noreferrer">
+                    {cloudflare.publicUrl}
+                  </a>
+                </p>
+              ) : null}
+              {cloudflare?.lastError ? <p className="remote-access-error">{cloudflare.lastError}</p> : null}
+              <div className="remote-button-row">
+                <button
+                  type="button"
+                  onClick={() => void handleConnectCloudflare()}
+                  disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting' || cloudflareManagedBySystem}
+                >
+                  {cloudflareManagedBySystem
+                    ? 'Tunnel already live'
+                    : busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'
+                      ? 'Connecting...'
+                      : 'Connect tunnel'}
+                </button>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={() => void handleDisconnectCloudflare()}
+                  disabled={!cloudflare?.installed || !cloudflareManagedLocally || busy === 'disconnect-cloudflare'}
+                >
+                  {cloudflareManagedBySystem
+                    ? 'Managed by system'
+                    : busy === 'disconnect-cloudflare'
+                      ? 'Disconnecting...'
+                      : 'Disconnect'}
+                </button>
+              </div>
+            </section>
+
+            <section className="settings-section">
+              <div className="settings-section-head">
+                <strong>Account</strong>
+                <span>{bootstrap?.defaults.executor ?? 'codex'}</span>
+              </div>
+              <p className="detail-card-meta">Use this panel for machine-level controls. Keep the main screen focused on session management and chat.</p>
+              <button type="button" className="button-secondary settings-signout" onClick={() => void handleLogout()} disabled={busy === 'logout'}>
+                {busy === 'logout' ? 'Signing out...' : 'Sign out'}
+              </button>
+            </section>
+          </aside>
+        </div>
+      ) : null}
     </main>
   );
 }
