@@ -157,6 +157,15 @@ export interface CodexThread {
   preview: string;
   cwd: string;
   name: string | null;
+  path?: string | null;
+  cliVersion?: string | null;
+  source?: string | null;
+  modelProvider?: string | null;
+  gitInfo?: {
+    sha?: string;
+    branch?: string;
+    originUrl?: string;
+  };
   status: {
     type: string;
     activeFlags?: string[];
