@@ -123,6 +123,16 @@ function cookieIsSecure(request: FastifyRequest) {
   return protocol === 'https';
 }
 
+const STALE_SESSION_MESSAGE = 'Codex runtime restarted. Restart this session to create a fresh thread.';
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isThreadUnavailableError(error: unknown) {
+  return errorMessage(error).includes('thread not loaded');
+}
+
 const app = Fastify({
   logger: true,
   trustProxy: true,
@@ -139,6 +149,7 @@ const ownerAuth = await loadOrCreateOwnerAuth();
 
 const codex = new CodexAppServerClient();
 await codex.ensureStarted();
+await store.markAllStale(STALE_SESSION_MESSAGE);
 const cloudflare = new CloudflareTunnelManager();
 
 codex.on('debug', (message) => {
@@ -151,6 +162,11 @@ codex.on('notification', (message: JsonRpcNotification) => {
 
 codex.on('serverRequest', (message: JsonRpcServerRequest) => {
   void handleServerRequest(message);
+});
+
+codex.on('runtimeStopped', (message: string) => {
+  app.log.warn(message);
+  void store.markAllStale(STALE_SESSION_MESSAGE);
 });
 
 async function handleNotification(message: JsonRpcNotification) {
@@ -171,12 +187,15 @@ async function handleNotification(message: JsonRpcNotification) {
   if (message.method === 'thread/status/changed') {
     const statusType = String(((message.params as Record<string, unknown>).status as { type?: string } | undefined)?.type ?? '');
     const nextStatus = statusType === 'active' ? 'running' : statusType === 'idle' ? 'idle' : session.status;
-    await store.updateSession(session.id, { status: nextStatus });
+    await store.updateSession(session.id, { status: nextStatus, lastIssue: null });
     return;
   }
 
   if (message.method === 'turn/completed') {
-    await store.updateSession(session.id, { status: store.getApprovals(session.id).length > 0 ? 'needs-approval' : 'idle' });
+    await store.updateSession(session.id, {
+      status: store.getApprovals(session.id).length > 0 ? 'needs-approval' : 'idle',
+      lastIssue: null,
+    });
     return;
   }
 }
@@ -214,7 +233,7 @@ async function handleServerRequest(message: JsonRpcServerRequest) {
     summary: approval.title,
     createdAt: approval.createdAt,
   });
-  await store.updateSession(session.id, { status: 'needs-approval' });
+  await store.updateSession(session.id, { status: 'needs-approval', lastIssue: null });
 }
 
 app.addHook('onRequest', async (request, reply) => {
@@ -339,7 +358,7 @@ app.post('/api/cloudflare/disconnect', async (request, reply) => {
 
 app.get('/api/sessions/:sessionId', async (request, reply) => {
   const { sessionId } = request.params as { sessionId: string };
-  const session = store.getSession(sessionId);
+  let session = store.getSession(sessionId);
   if (!session) {
     reply.code(404);
     return { error: 'Session not found' };
@@ -352,7 +371,22 @@ app.get('/api/sessions/:sessionId', async (request, reply) => {
       thread = response.thread;
     }
   } catch (error) {
-    app.log.warn(`thread/read failed for ${session.threadId}: ${(error as Error).message}`);
+    const message = errorMessage(error);
+    app.log.warn(`thread/read failed for ${session.threadId}: ${message}`);
+
+    if (isThreadUnavailableError(error)) {
+      const latestSession = store.getSession(session.id);
+      if (latestSession?.threadId === session.threadId) {
+        session = (await store.updateSession(session.id, {
+          status: 'stale',
+          lastIssue: STALE_SESSION_MESSAGE,
+          networkEnabled: false,
+        })) ?? session;
+        store.clearApprovals(session.id);
+      } else if (latestSession) {
+        session = latestSession;
+      }
+    }
   }
 
   return {
@@ -381,6 +415,7 @@ app.post('/api/sessions', async (request, reply) => {
     networkEnabled: false,
     fullHostEnabled,
     status: 'idle',
+    lastIssue: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -388,6 +423,34 @@ app.post('/api/sessions', async (request, reply) => {
   await store.upsertSession(session);
   reply.code(201);
   return { session };
+});
+
+app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  const threadResponse = await codex.startThread(session.workspace, session.fullHostEnabled);
+  store.clearApprovals(sessionId);
+  store.clearLiveEvents(sessionId);
+  store.addLiveEvent(sessionId, {
+    id: randomUUID(),
+    method: 'session/restarted',
+    summary: 'Started a fresh Codex thread for this session.',
+    createdAt: new Date().toISOString(),
+  });
+
+  const nextSession = (await store.updateSession(sessionId, {
+    threadId: threadResponse.thread.id,
+    status: 'idle',
+    networkEnabled: false,
+    lastIssue: null,
+  })) ?? session;
+
+  return { session: nextSession };
 });
 
 app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
@@ -404,9 +467,39 @@ app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
     return { error: 'Prompt is required' };
   }
 
-  await store.updateSession(sessionId, { status: 'running' });
-  const turn = await codex.startTurn(session.threadId, body.prompt.trim());
-  return { turn };
+  if (session.status === 'stale') {
+    reply.code(409);
+    return { error: STALE_SESSION_MESSAGE };
+  }
+
+  await store.updateSession(sessionId, { status: 'running', lastIssue: null });
+
+  try {
+    const turn = await codex.startTurn(session.threadId, body.prompt.trim());
+    return { turn };
+  } catch (error) {
+    if (isThreadUnavailableError(error)) {
+      const latestSession = store.getSession(sessionId);
+      if (latestSession?.threadId === session.threadId) {
+        await store.updateSession(sessionId, {
+          status: 'stale',
+          lastIssue: STALE_SESSION_MESSAGE,
+          networkEnabled: false,
+        });
+        store.clearApprovals(sessionId);
+      }
+      reply.code(409);
+      return { error: STALE_SESSION_MESSAGE };
+    }
+
+    const message = errorMessage(error);
+    await store.updateSession(sessionId, {
+      status: 'error',
+      lastIssue: message,
+    });
+    reply.code(500);
+    return { error: message };
+  }
 });
 
 app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply) => {
@@ -455,6 +548,7 @@ app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply
   store.removeApproval(sessionId, approvalId);
   await store.updateSession(sessionId, {
     status: store.getApprovals(sessionId).length > 0 ? 'needs-approval' : 'running',
+    lastIssue: null,
   });
   return { ok: true };
 });

@@ -7,15 +7,17 @@ import type {
   SessionSummary,
 } from './types.js';
 
-function describeStatus(status: SessionStatus, approvalCount: number): string {
+function describeStatus(session: SessionRecord, approvalCount: number): string {
   if (approvalCount > 0) return `${approvalCount} approval${approvalCount === 1 ? '' : 's'} waiting`;
-  switch (status) {
+  switch (session.status) {
     case 'running':
       return 'Streaming Codex turn';
     case 'needs-approval':
       return 'Waiting on user decision';
+    case 'stale':
+      return session.lastIssue ?? 'Codex runtime restarted. Restart this session.';
     case 'error':
-      return 'Last action failed';
+      return session.lastIssue ?? 'Last action failed';
     default:
       return 'Ready for the next prompt';
   }
@@ -24,7 +26,7 @@ function describeStatus(status: SessionStatus, approvalCount: number): string {
 export function toSessionSummary(session: SessionRecord, approvalCount: number): SessionSummary {
   return {
     ...session,
-    lastUpdate: describeStatus(session.status, approvalCount),
+    lastUpdate: describeStatus(session, approvalCount),
     pendingApprovalCount: approvalCount,
   };
 }

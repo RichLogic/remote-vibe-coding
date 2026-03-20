@@ -129,7 +129,9 @@ export class CodexAppServerClient extends EventEmitter {
     });
 
     proc.on('exit', (code, signal) => {
-      this.emit('debug', `codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
+      const message = `codex app-server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`;
+      this.emit('debug', message);
+      this.emit('runtimeStopped', message);
       this.startPromise = null;
       this.ws = null;
       this.process = null;

@@ -63,6 +63,13 @@ export async function createSession(input: CreateSessionRequest) {
   return response.session;
 }
 
+export async function restartSession(sessionId: string) {
+  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/restart`, {
+    method: 'POST',
+  });
+  return response.session;
+}
+
 export async function startTurn(sessionId: string, input: CreateTurnRequest) {
   return requestJson(`/api/sessions/${sessionId}/turns`, {
     method: 'POST',

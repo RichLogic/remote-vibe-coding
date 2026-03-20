@@ -7,6 +7,7 @@ import {
   fetchBootstrap,
   fetchSessionDetail,
   logout,
+  restartSession,
   resolveApproval,
   startTurn,
 } from './api';
@@ -25,6 +26,7 @@ const STATUS_LABELS: Record<SessionStatus, string> = {
   'needs-approval': 'Needs approval',
   idle: 'Idle',
   error: 'Error',
+  stale: 'Stale',
 };
 
 const EVENT_LABELS: Record<TranscriptEventKind, string> = {
@@ -217,6 +219,25 @@ export function App() {
     }
   }
 
+  async function handleRestartSession() {
+    if (!selectedSessionId) return;
+    setBusy('restart-session');
+    try {
+      await restartSession(selectedSessionId);
+      const [nextBootstrap, nextDetail] = await Promise.all([
+        fetchBootstrap(),
+        fetchSessionDetail(selectedSessionId),
+      ]);
+      setBootstrap(nextBootstrap);
+      setDetail(nextDetail);
+      setError(null);
+    } catch (restartError) {
+      setError(restartError instanceof Error ? restartError.message : 'Failed to restart session');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function handleApprovalAction(approval: PendingApproval, decision: 'accept' | 'decline', scope: 'once' | 'session') {
     setBusy(approval.id);
     try {
@@ -276,6 +297,7 @@ export function App() {
   const cloudflare = bootstrap?.cloudflare;
   const cloudflareManagedBySystem = cloudflare?.activeSource === 'system';
   const cloudflareManagedLocally = cloudflare?.activeSource === 'local-manager';
+  const sessionIsStale = detail?.session.status === 'stale';
 
   if (error && !bootstrap) {
     return (
@@ -476,17 +498,38 @@ export function App() {
                 <span>{detail.session.workspace}</span>
                 <span>{detail.session.securityProfile}</span>
                 <span>{detail.session.networkEnabled ? 'Network enabled' : 'Network disabled'}</span>
-                <span>{detail.thread?.status && typeof detail.thread.status === 'object' ? detail.thread.status.type : 'idle'}</span>
+                <span>{sessionIsStale ? 'stale session' : detail.thread?.status && typeof detail.thread.status === 'object' ? detail.thread.status.type : 'idle'}</span>
               </div>
+
+              {sessionIsStale ? (
+                <section className="runtime-alert">
+                  <div>
+                    <p className="eyebrow">Runtime reset detected</p>
+                    <h3>Codex no longer has this thread loaded</h3>
+                    <p>{detail.session.lastIssue ?? 'Restart this session to create a fresh thread in the same workspace.'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRestartSession()}
+                    disabled={busy === 'restart-session'}
+                  >
+                    {busy === 'restart-session' ? 'Restarting...' : 'Restart session'}
+                  </button>
+                </section>
+              ) : null}
 
               <div className="event-list">
                 {threadEvents.length === 0 ? (
                   <article className="event-card event-status">
                     <div className="event-meta">
                       <span>Status</span>
-                      <strong>No turns yet</strong>
+                      <strong>{sessionIsStale ? 'Thread unavailable' : 'No turns yet'}</strong>
                     </div>
-                    <p>Start the first prompt from the composer below.</p>
+                    <p>
+                      {sessionIsStale
+                        ? 'This session needs a fresh thread before it can accept a new prompt.'
+                        : 'Start the first prompt from the composer below.'}
+                    </p>
                   </article>
                 ) : (
                   threadEvents.map((event: ReturnType<typeof itemToEvent>, index: number) => (
@@ -518,10 +561,15 @@ export function App() {
               <form className="composer-form" onSubmit={handleStartTurn}>
                 <label className="field">
                   <span>Prompt</span>
-                  <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={5} />
+                  <textarea
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    rows={5}
+                    disabled={sessionIsStale}
+                  />
                 </label>
-                <button type="submit" disabled={busy === 'start-turn'}>
-                  {busy === 'start-turn' ? 'Sending...' : 'Send prompt'}
+                <button type="submit" disabled={busy === 'start-turn' || sessionIsStale}>
+                  {sessionIsStale ? 'Restart required' : busy === 'start-turn' ? 'Sending...' : 'Send prompt'}
                 </button>
               </form>
             </>

@@ -1,6 +1,6 @@
 export type SecurityProfile = 'repo-write' | 'full-host';
 export type ApprovalScope = 'once' | 'session';
-export type SessionStatus = 'running' | 'needs-approval' | 'idle' | 'error';
+export type SessionStatus = 'running' | 'needs-approval' | 'idle' | 'error' | 'stale';
 export type TranscriptEventKind = 'user' | 'assistant' | 'tool' | 'status';
 export type CloudflareTunnelState = 'idle' | 'connecting' | 'connected' | 'error';
 export type CloudflareTunnelMode = 'quick' | 'token' | 'named';
@@ -41,6 +41,7 @@ export interface SessionRecord {
   networkEnabled: boolean;
   fullHostEnabled: boolean;
   status: SessionStatus;
+  lastIssue: string | null;
   createdAt: string;
   updatedAt: string;
 }

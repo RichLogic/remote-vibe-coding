@@ -98,5 +98,6 @@ This repo currently ships the phase-1 runtime foundation:
 - a formal architecture/design document
 - a host service that bridges into the real Codex app-server protocol
 - a browser shell that can create sessions, send prompts, render thread history, and surface approval requests
+- explicit stale-session handling after host/runtime restarts, with a restart action that creates a fresh Codex thread for the same workspace
 
 It still does not ship Cloudflare Access auth, Flutter, or the full long-running orchestration model yet.

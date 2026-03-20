@@ -83,6 +83,14 @@ export class SessionStore {
     this.approvals.set(approval.sessionId, [...approvals, approval]);
   }
 
+  clearApprovals(sessionId: string) {
+    this.approvals.delete(sessionId);
+  }
+
+  clearAllApprovals() {
+    this.approvals.clear();
+  }
+
   removeApproval(sessionId: string, approvalId: string) {
     const approvals = this.getApprovals(sessionId).filter((approval) => approval.id !== approvalId);
     this.approvals.set(sessionId, approvals);
@@ -98,7 +106,27 @@ export class SessionStore {
     return this.liveEvents.get(sessionId) ?? [];
   }
 
+  clearLiveEvents(sessionId: string) {
+    this.liveEvents.delete(sessionId);
+  }
+
   async setStatus(sessionId: string, status: SessionStatus) {
     await this.updateSession(sessionId, { status });
+  }
+
+  async markAllStale(reason: string) {
+    if (this.sessions.size === 0) return;
+
+    for (const session of this.sessions.values()) {
+      this.sessions.set(session.id, {
+        ...session,
+        status: 'stale',
+        lastIssue: reason,
+        networkEnabled: false,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    this.clearAllApprovals();
+    await this.save();
   }
 }
