@@ -1142,8 +1142,10 @@ export function App() {
                   className={`session-card ${selectedSessionId === session.id ? 'session-card-active' : ''}`}
                   onClick={() => setSelectedSessionId(session.id)}
                 >
-                  <div className="session-row session-card-head">
-                    <h3>{session.title}</h3>
+                  <div className="session-card-title">
+                    <h3 title={session.title}>{session.title}</h3>
+                  </div>
+                  <div className="session-status-row">
                     <span className={`status-pill status-${session.status}`}>{STATUS_LABELS[language][session.status]}</span>
                   </div>
                   <div className="session-actions">
@@ -1195,8 +1197,10 @@ export function App() {
                       className={`session-card session-card-archived ${selectedSessionId === session.id ? 'session-card-active' : ''}`}
                       onClick={() => setSelectedSessionId(session.id)}
                     >
-                      <div className="session-row session-card-head">
-                        <h3>{session.title}</h3>
+                      <div className="session-card-title">
+                        <h3 title={session.title}>{session.title}</h3>
+                      </div>
+                      <div className="session-status-row">
                         <span className="status-pill status-idle">{copy.archived}</span>
                       </div>
                       <div className="session-actions">

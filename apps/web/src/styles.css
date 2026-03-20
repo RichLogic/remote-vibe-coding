@@ -434,8 +434,18 @@ code {
   line-height: 1.3;
 }
 
-.session-card-head {
-  align-items: center;
+.session-card-title {
+  min-width: 0;
+}
+
+.session-card-title h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-status-row {
+  margin-top: 8px;
 }
 
 .event-body {
