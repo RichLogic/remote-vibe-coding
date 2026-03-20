@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import {
   connectCloudflareTunnel,
@@ -27,6 +29,7 @@ interface TranscriptEvent {
   kind: TranscriptEventKind;
   title: string;
   body: string;
+  markdown: boolean;
 }
 
 interface CommandEvent {
@@ -85,6 +88,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
         .filter((entry) => entry.type === 'text')
         .map((entry) => entry.text)
         .join('\n'),
+      markdown: true,
     };
   }
 
@@ -93,6 +97,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
       kind: 'assistant',
       title: item.phase === 'commentary' ? 'Commentary' : 'Answer',
       body: item.text,
+      markdown: true,
     };
   }
 
@@ -101,6 +106,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
       kind: 'assistant',
       title: 'Plan',
       body: item.text,
+      markdown: true,
     };
   }
 
@@ -109,6 +115,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
       kind: 'assistant',
       title: 'Reasoning',
       body: [...item.summary, ...item.content].join('\n'),
+      markdown: true,
     };
   }
 
@@ -117,6 +124,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
       kind: 'tool',
       title: item.command,
       body: item.aggregatedOutput || item.status,
+      markdown: false,
     };
   }
 
@@ -127,6 +135,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
       body: item.changes
         .map((change) => `${change.kind?.type ?? 'update'} ${change.path}`)
         .join('\n'),
+      markdown: false,
     };
   }
 
@@ -135,6 +144,7 @@ function itemToEvent(item: CodexThreadItem): TranscriptEvent {
     kind: 'status',
     title: 'Item',
     body: JSON.stringify(fallback, null, 2),
+    markdown: false,
   };
 }
 
@@ -574,177 +584,187 @@ export function App() {
           </div>
 
           {detail ? (
-            <>
-              <div className="detail-meta">
-                <span>{detail.session.workspace}</span>
-                <span>{detail.session.securityProfile}</span>
-                <span>{detail.session.networkEnabled ? 'Network enabled' : 'Network disabled'}</span>
-                <span>{sessionIsStale ? 'stale session' : threadStatus}</span>
-              </div>
+            <div className="transcript-layout">
+              <div className="transcript-scroll">
+                <div className="detail-meta">
+                  <span>{detail.session.workspace}</span>
+                  <span>{detail.session.securityProfile}</span>
+                  <span>{detail.session.networkEnabled ? 'Network enabled' : 'Network disabled'}</span>
+                  <span>{sessionIsStale ? 'stale session' : threadStatus}</span>
+                </div>
 
-              <section className="detail-summary-grid">
-                <article className="summary-card">
-                  <p className="eyebrow">Session</p>
-                  <strong>{detail.session.title}</strong>
-                  <p>{detail.session.workspace}</p>
-                </article>
-                <article className="summary-card">
-                  <p className="eyebrow">Thread</p>
-                  <strong>{shortThreadId(detail.session.threadId)}</strong>
-                  <p>{detail.thread?.path ?? 'Fresh thread or not yet loaded'}</p>
-                </article>
-                <article className="summary-card">
-                  <p className="eyebrow">Git</p>
-                  <strong>{sessionGitLabel}</strong>
-                  <p>{detail.thread?.gitInfo?.originUrl ?? 'No remote reported yet'}</p>
-                </article>
-                <article className="summary-card">
-                  <p className="eyebrow">Runtime</p>
-                  <strong>{detail.thread?.modelProvider ?? 'codex'}</strong>
-                  <p>
-                    {detail.thread?.source ?? 'local host'}
-                    {detail.thread?.cliVersion ? ` · CLI ${detail.thread.cliVersion}` : ''}
-                  </p>
-                </article>
-              </section>
-
-              <div className="view-tabs">
-                <button type="button" className={detailView === 'transcript' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('transcript')}>
-                  Transcript
-                </button>
-                <button type="button" className={detailView === 'commands' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('commands')}>
-                  Commands {commandEvents.length > 0 ? `(${commandEvents.length})` : ''}
-                </button>
-                <button type="button" className={detailView === 'changes' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('changes')}>
-                  Changes {fileChanges.length > 0 ? `(${fileChanges.length})` : ''}
-                </button>
-                <button type="button" className={detailView === 'activity' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('activity')}>
-                  Activity {detail.liveEvents.length > 0 ? `(${detail.liveEvents.length})` : ''}
-                </button>
-              </div>
-
-              {sessionIsStale ? (
-                <section className="runtime-alert">
-                  <div>
-                    <p className="eyebrow">Runtime reset detected</p>
-                    <h3>Codex no longer has this thread loaded</h3>
-                    <p>{detail.session.lastIssue ?? 'Restart this session to create a fresh thread in the same workspace.'}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleRestartSession()}
-                    disabled={busy === 'restart-session'}
-                  >
-                    {busy === 'restart-session' ? 'Restarting...' : 'Restart session'}
-                  </button>
+                <section className="detail-summary-grid">
+                  <article className="summary-card">
+                    <p className="eyebrow">Session</p>
+                    <strong>{detail.session.title}</strong>
+                    <p>{detail.session.workspace}</p>
+                  </article>
+                  <article className="summary-card">
+                    <p className="eyebrow">Thread</p>
+                    <strong>{shortThreadId(detail.session.threadId)}</strong>
+                    <p>{detail.thread?.path ?? 'Fresh thread or not yet loaded'}</p>
+                  </article>
+                  <article className="summary-card">
+                    <p className="eyebrow">Git</p>
+                    <strong>{sessionGitLabel}</strong>
+                    <p>{detail.thread?.gitInfo?.originUrl ?? 'No remote reported yet'}</p>
+                  </article>
+                  <article className="summary-card">
+                    <p className="eyebrow">Runtime</p>
+                    <strong>{detail.thread?.modelProvider ?? 'codex'}</strong>
+                    <p>
+                      {detail.thread?.source ?? 'local host'}
+                      {detail.thread?.cliVersion ? ` · CLI ${detail.thread.cliVersion}` : ''}
+                    </p>
+                  </article>
                 </section>
-              ) : null}
 
-              {detailView === 'transcript' ? (
-                <div className="event-list">
-                  {threadEvents.length === 0 ? (
-                    <article className="event-card event-status">
-                      <div className="event-meta">
-                        <span>Status</span>
-                        <strong>{sessionIsStale ? 'Thread unavailable' : 'No turns yet'}</strong>
-                      </div>
-                      <p>
-                        {sessionIsStale
-                          ? 'This session needs a fresh thread before it can accept a new prompt.'
-                          : 'Start the first prompt from the composer below.'}
-                      </p>
-                    </article>
-                  ) : (
-                    threadEvents.map((event, index) => (
-                      <article key={`${event.title}-${index}`} className={`event-card event-${event.kind}`}>
+                <div className="view-tabs">
+                  <button type="button" className={detailView === 'transcript' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('transcript')}>
+                    Transcript
+                  </button>
+                  <button type="button" className={detailView === 'commands' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('commands')}>
+                    Commands {commandEvents.length > 0 ? `(${commandEvents.length})` : ''}
+                  </button>
+                  <button type="button" className={detailView === 'changes' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('changes')}>
+                    Changes {fileChanges.length > 0 ? `(${fileChanges.length})` : ''}
+                  </button>
+                  <button type="button" className={detailView === 'activity' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('activity')}>
+                    Activity {detail.liveEvents.length > 0 ? `(${detail.liveEvents.length})` : ''}
+                  </button>
+                </div>
+
+                {sessionIsStale ? (
+                  <section className="runtime-alert">
+                    <div>
+                      <p className="eyebrow">Runtime reset detected</p>
+                      <h3>Codex no longer has this thread loaded</h3>
+                      <p>{detail.session.lastIssue ?? 'Restart this session to create a fresh thread in the same workspace.'}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleRestartSession()}
+                      disabled={busy === 'restart-session'}
+                    >
+                      {busy === 'restart-session' ? 'Restarting...' : 'Restart session'}
+                    </button>
+                  </section>
+                ) : null}
+
+                {detailView === 'transcript' ? (
+                  <div className="event-list">
+                    {threadEvents.length === 0 ? (
+                      <article className="event-card event-status">
                         <div className="event-meta">
-                          <span>{EVENT_LABELS[event.kind]}</span>
-                          <strong>{event.title}</strong>
+                          <span>Status</span>
+                          <strong>{sessionIsStale ? 'Thread unavailable' : 'No turns yet'}</strong>
                         </div>
-                        <pre className="event-body">{event.body}</pre>
+                        <p>
+                          {sessionIsStale
+                            ? 'This session needs a fresh thread before it can accept a new prompt.'
+                            : 'Start the first prompt from the composer below.'}
+                        </p>
                       </article>
-                    ))
-                  )}
-                </div>
-              ) : null}
-
-              {detailView === 'commands' ? (
-                <div className="detail-list">
-                  {commandEvents.length === 0 ? (
-                    <article className="detail-card">
-                      <strong>No command executions yet</strong>
-                      <p>Command output from Codex will land here once the thread starts using tools.</p>
-                    </article>
-                  ) : (
-                    commandEvents.map((command) => (
-                      <article key={command.id} className="detail-card">
-                        <div className="detail-card-head">
-                          <strong>{command.command}</strong>
-                          <span>{command.status}{command.exitCode !== null ? ` · exit ${command.exitCode}` : ''}</span>
-                        </div>
-                        <p className="detail-card-meta">{command.cwd}</p>
-                        <pre className="event-body">{command.output}</pre>
-                      </article>
-                    ))
-                  )}
-                </div>
-              ) : null}
-
-              {detailView === 'changes' ? (
-                <div className="detail-list">
-                  {fileChanges.length === 0 ? (
-                    <article className="detail-card">
-                      <strong>No file changes yet</strong>
-                      <p>When Codex proposes edits, this view will show paths and inline diffs.</p>
-                    </article>
-                  ) : (
-                    fileChanges.map((change) => (
-                      <article key={change.id} className="detail-card">
-                        <div className="detail-card-head">
-                          <strong>{change.path}</strong>
-                          <span>{change.kind} · {change.status}</span>
-                        </div>
-                        {change.diff ? <pre className="event-body">{change.diff}</pre> : <p className="detail-card-meta">No inline diff payload was reported for this change.</p>}
-                      </article>
-                    ))
-                  )}
-                </div>
-              ) : null}
-
-              {detailView === 'activity' ? (
-                <div className="detail-list">
-                  <article className="detail-card">
-                    <div className="detail-card-head">
-                      <strong>Session state</strong>
-                      <span>{detail.session.status}</span>
-                    </div>
-                    <p className="detail-card-meta">Created {formatTimestamp(detail.session.createdAt)}</p>
-                    <p className="detail-card-meta">Updated {formatTimestamp(detail.session.updatedAt)}</p>
-                    {detail.session.lastIssue ? <p>{detail.session.lastIssue}</p> : null}
-                  </article>
-
-                  <article className="detail-card">
-                    <div className="detail-card-head">
-                      <strong>Live host events</strong>
-                      <span>{detail.liveEvents.length}</span>
-                    </div>
-                    {detail.liveEvents.length === 0 ? (
-                      <p className="detail-card-meta">No transport events captured yet.</p>
                     ) : (
-                      <div className="activity-stream">
-                        {detail.liveEvents.map((event) => (
-                          <div key={event.id} className="live-event-row">
-                            <strong>{event.method}</strong>
-                            <span>{event.summary}</span>
+                      threadEvents.map((event, index) => (
+                        <article key={`${event.title}-${index}`} className={`event-card event-${event.kind}`}>
+                          <div className="event-meta">
+                            <span>{EVENT_LABELS[event.kind]}</span>
+                            <strong>{event.title}</strong>
                           </div>
-                        ))}
-                      </div>
+                          {event.markdown ? (
+                            <div className="markdown-body">
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                {event.body}
+                              </ReactMarkdown>
+                            </div>
+                          ) : (
+                            <pre className="event-body">{event.body}</pre>
+                          )}
+                        </article>
+                      ))
                     )}
-                  </article>
-                </div>
-              ) : null}
+                  </div>
+                ) : null}
 
-              <form className="composer-form" onSubmit={handleStartTurn}>
+                {detailView === 'commands' ? (
+                  <div className="detail-list">
+                    {commandEvents.length === 0 ? (
+                      <article className="detail-card">
+                        <strong>No command executions yet</strong>
+                        <p>Command output from Codex will land here once the thread starts using tools.</p>
+                      </article>
+                    ) : (
+                      commandEvents.map((command) => (
+                        <article key={command.id} className="detail-card">
+                          <div className="detail-card-head">
+                            <strong>{command.command}</strong>
+                            <span>{command.status}{command.exitCode !== null ? ` · exit ${command.exitCode}` : ''}</span>
+                          </div>
+                          <p className="detail-card-meta">{command.cwd}</p>
+                          <pre className="event-body">{command.output}</pre>
+                        </article>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+
+                {detailView === 'changes' ? (
+                  <div className="detail-list">
+                    {fileChanges.length === 0 ? (
+                      <article className="detail-card">
+                        <strong>No file changes yet</strong>
+                        <p>When Codex proposes edits, this view will show paths and inline diffs.</p>
+                      </article>
+                    ) : (
+                      fileChanges.map((change) => (
+                        <article key={change.id} className="detail-card">
+                          <div className="detail-card-head">
+                            <strong>{change.path}</strong>
+                            <span>{change.kind} · {change.status}</span>
+                          </div>
+                          {change.diff ? <pre className="event-body">{change.diff}</pre> : <p className="detail-card-meta">No inline diff payload was reported for this change.</p>}
+                        </article>
+                      ))
+                    )}
+                  </div>
+                ) : null}
+
+                {detailView === 'activity' ? (
+                  <div className="detail-list">
+                    <article className="detail-card">
+                      <div className="detail-card-head">
+                        <strong>Session state</strong>
+                        <span>{detail.session.status}</span>
+                      </div>
+                      <p className="detail-card-meta">Created {formatTimestamp(detail.session.createdAt)}</p>
+                      <p className="detail-card-meta">Updated {formatTimestamp(detail.session.updatedAt)}</p>
+                      {detail.session.lastIssue ? <p>{detail.session.lastIssue}</p> : null}
+                    </article>
+
+                    <article className="detail-card">
+                      <div className="detail-card-head">
+                        <strong>Live host events</strong>
+                        <span>{detail.liveEvents.length}</span>
+                      </div>
+                      {detail.liveEvents.length === 0 ? (
+                        <p className="detail-card-meta">No transport events captured yet.</p>
+                      ) : (
+                        <div className="activity-stream">
+                          {detail.liveEvents.map((event) => (
+                            <div key={event.id} className="live-event-row">
+                              <strong>{event.method}</strong>
+                              <span>{event.summary}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </article>
+                  </div>
+                ) : null}
+              </div>
+
+              <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
                 <label className="field">
                   <span>Prompt</span>
                   <textarea
@@ -758,7 +778,7 @@ export function App() {
                   {sessionIsStale ? 'Restart required' : busy === 'start-turn' ? 'Sending...' : 'Send prompt'}
                 </button>
               </form>
-            </>
+            </div>
           ) : (
             <section className="empty-state">
               <p className="eyebrow">No active selection</p>
