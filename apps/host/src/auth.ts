@@ -1,4 +1,4 @@
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { chmod, readFile, writeFile } from 'node:fs/promises';
 
 import { AUTH_FILE, ensureDataDir } from './config.js';
@@ -7,7 +7,15 @@ export const AUTH_COOKIE_NAME = 'rvc_owner';
 
 export interface OwnerAuthConfig {
   username: string;
-  password: string;
+  passwordHash: string;
+  token: string;
+  createdAt: string;
+}
+
+interface LegacyOwnerAuthConfig {
+  username: string;
+  password?: string;
+  passwordHash?: string;
   token: string;
   createdAt: string;
 }
@@ -27,30 +35,86 @@ function safeEqual(left: string, right: string) {
   return timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+function hashPassword(password: string) {
+  const salt = randomSecret(16);
+  const hash = scryptSync(password, salt, 64).toString('base64url');
+  return `scrypt:${salt}:${hash}`;
+}
+
+function verifyPasswordHash(password: string, passwordHash: string) {
+  const [scheme, salt, expectedHash] = passwordHash.split(':');
+  if (scheme !== 'scrypt' || !salt || !expectedHash) {
+    return false;
+  }
+
+  const actualHash = scryptSync(password, salt, 64).toString('base64url');
+  return safeEqual(actualHash, expectedHash);
+}
+
+async function persistAuth(auth: OwnerAuthConfig) {
+  await writeFile(AUTH_FILE, `${JSON.stringify(auth, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await chmod(AUTH_FILE, 0o600);
+}
+
 export async function loadOrCreateOwnerAuth() {
   await ensureDataDir();
 
+  const envUsername = process.env.RVC_AUTH_USERNAME?.trim();
+  const envPassword = process.env.RVC_AUTH_PASSWORD?.trim();
+  const envToken = process.env.RVC_AUTH_TOKEN?.trim();
+
+  if (envUsername && envPassword && envToken) {
+    return {
+      username: envUsername,
+      passwordHash: hashPassword(envPassword),
+      token: envToken,
+      createdAt: 'environment',
+    } satisfies OwnerAuthConfig;
+  }
+
   try {
     const content = await readFile(AUTH_FILE, 'utf8');
-    return JSON.parse(content) as OwnerAuthConfig;
+    const parsed = JSON.parse(content) as LegacyOwnerAuthConfig;
+
+    if (parsed.passwordHash) {
+      return {
+        username: parsed.username,
+        passwordHash: parsed.passwordHash,
+        token: parsed.token,
+        createdAt: parsed.createdAt,
+      } satisfies OwnerAuthConfig;
+    }
+
+    if (parsed.password) {
+      const migrated: OwnerAuthConfig = {
+        username: parsed.username,
+        passwordHash: hashPassword(parsed.password),
+        token: parsed.token,
+        createdAt: parsed.createdAt,
+      };
+      await persistAuth(migrated);
+      return migrated;
+    }
+
+    throw new Error('Auth config is missing a password hash');
   } catch {
+    const generatedPassword = randomSecret(18);
     const auth: OwnerAuthConfig = {
       username: 'owner',
-      password: randomSecret(18),
+      passwordHash: hashPassword(generatedPassword),
       token: randomSecret(32),
       createdAt: new Date().toISOString(),
     };
 
-    await writeFile(AUTH_FILE, `${JSON.stringify(auth, null, 2)}\n`, {
-      mode: 0o600,
-    });
-    await chmod(AUTH_FILE, 0o600);
+    await persistAuth(auth);
     return auth;
   }
 }
 
 export function verifyPassword(auth: OwnerAuthConfig, username: string, password: string) {
-  return safeEqual(auth.username, username) && safeEqual(auth.password, password);
+  return safeEqual(auth.username, username) && verifyPasswordHash(password, auth.passwordHash);
 }
 
 export function verifyToken(auth: OwnerAuthConfig, token: string | null | undefined) {

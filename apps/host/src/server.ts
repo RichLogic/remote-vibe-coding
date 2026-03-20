@@ -103,10 +103,6 @@ function requestPath(url: string) {
   return url.split('?')[0] ?? url;
 }
 
-function isAssetPath(path: string) {
-  return path.startsWith('/assets/') || path === '/favicon.ico';
-}
-
 function clearTokenFromUrl(url: string) {
   const parsed = new URL(url, 'http://127.0.0.1');
   parsed.searchParams.delete('token');
@@ -254,8 +250,7 @@ app.addHook('onRequest', async (request, reply) => {
   if (
     path === '/login' ||
     path === '/api/auth/login' ||
-    path === '/api/health' ||
-    isAssetPath(path)
+    path === '/api/health'
   ) {
     return;
   }

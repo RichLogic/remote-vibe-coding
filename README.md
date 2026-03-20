@@ -47,14 +47,20 @@ The public surface is now owner-gated by default.
 - unauthenticated browser requests are redirected to `/login`
 - password login sets an HTTP-only cookie
 - `?token=...` links still work as a fallback and are cleaned back to `/` after the cookie is set
-- credentials live in `~/.config/remote-vibe-coding/auth.json`
+- credentials can come from environment variables or `~/.config/remote-vibe-coding/auth.json`
 
-The first startup generates a local owner auth record automatically:
+Supported environment overrides:
+
+- `RVC_AUTH_USERNAME`
+- `RVC_AUTH_PASSWORD`
+- `RVC_AUTH_TOKEN`
+
+Without environment overrides, the first startup generates a local owner auth record automatically:
 
 ```json
 {
   "username": "owner",
-  "password": "...generated locally...",
+  "passwordHash": "...generated and hashed locally...",
   "token": "...generated locally..."
 }
 ```
