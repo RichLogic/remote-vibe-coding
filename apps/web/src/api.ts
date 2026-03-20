@@ -69,6 +69,7 @@ export async function createSession(input: CreateSessionRequest) {
 export async function restartSession(sessionId: string) {
   const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/restart`, {
     method: 'POST',
+    body: '{}',
   });
   return response.session;
 }

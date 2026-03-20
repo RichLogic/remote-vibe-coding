@@ -76,6 +76,19 @@ code {
   padding: 32px;
 }
 
+.inline-banner {
+  border-radius: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  background: rgba(255, 250, 240, 0.86);
+}
+
+.inline-banner-error {
+  color: #991b1b;
+  border-color: rgba(185, 28, 28, 0.18);
+  background: rgba(254, 242, 242, 0.9);
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -577,6 +590,11 @@ code {
 .composer-form {
   display: grid;
   gap: 12px;
+}
+
+.composer-form button {
+  justify-self: flex-start;
+  padding: 7px 12px;
 }
 
 .field {

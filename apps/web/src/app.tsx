@@ -524,8 +524,7 @@ export function App() {
     }
   }
 
-  async function handleStartTurn(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function submitPrompt() {
     if (!selectedSessionId) return;
     setBusy('start-turn');
     try {
@@ -539,11 +538,27 @@ export function App() {
       ]);
       setBootstrap(nextBootstrap);
       setDetail(nextDetail);
+      setError(null);
     } catch (turnError) {
       setError(turnError instanceof Error ? turnError.message : copy.sendPrompt);
     } finally {
       setBusy(null);
     }
+  }
+
+  async function handleStartTurn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await submitPrompt();
+  }
+
+  function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) return;
+    if (event.key !== 'Enter') return;
+    if (event.shiftKey) return;
+
+    event.preventDefault();
+    if (busy === 'start-turn' || sessionIsArchived) return;
+    void submitPrompt();
   }
 
   async function handleArchiveToggle(sessionId: string, archived: boolean) {
@@ -734,6 +749,8 @@ export function App() {
           </button>
         </div>
       </header>
+
+      {error ? <section className="inline-banner inline-banner-error">{error}</section> : null}
 
       <section className="workspace">
         <aside className="panel rail">
@@ -1052,6 +1069,7 @@ export function App() {
                   <textarea
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={handlePromptKeyDown}
                     rows={5}
                     disabled={sessionIsArchived}
                   />
