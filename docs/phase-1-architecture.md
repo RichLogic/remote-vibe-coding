@@ -76,16 +76,29 @@ The active session remains the center of gravity. Session management should not 
 
 ## API shape
 
-Phase 1 needs a minimal host contract:
+Phase 1 now exposes a minimal but real host contract:
 
 - `GET /api/health`
 - `GET /api/bootstrap`
+- `GET /api/sessions/:sessionId`
+- `POST /api/sessions`
+- `POST /api/sessions/:sessionId/turns`
+- `POST /api/sessions/:sessionId/approvals/:approvalId`
 
-`/api/bootstrap` should give the browser the current product defaults, a lightweight session list, sample transcript data, and approval cards.
+The browser uses these routes to create sessions, start turns, read full thread history, and respond to Codex approval requests.
+
+## Codex integration choice
+
+Phase 1 does not use `codex exec --json`.
+
+It uses `codex app-server`, because:
+
+- `codex exec` is non-interactive and does not expose the approval flow we need
+- `app-server` exposes thread, turn, notification, and approval requests as a formal machine-readable protocol
+- this keeps the browser contract closer to the real Codex interaction model
 
 ## What phase 1 does not do yet
 
-- real `Codex` process launch
 - Flutter client
 - hard sandboxing
 - multi-executor abstraction

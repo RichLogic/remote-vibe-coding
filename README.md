@@ -30,10 +30,10 @@ Web defaults to `http://localhost:5173`.
 
 ## Current scope
 
-This repo starts with the phase-1 foundation:
+This repo currently ships the phase-1 runtime foundation:
 
 - a formal architecture/design document
-- a host API skeleton with the agreed product defaults
-- a browser shell that visualizes the coding-first layout, session list, transcript, and approvals model
+- a host service that bridges into the real Codex app-server protocol
+- a browser shell that can create sessions, send prompts, render thread history, and surface approval requests
 
-It does not yet launch the real `Codex` binary. That comes after the transport, permissions, and browser contract are stable.
+It still does not ship Cloudflare access, Flutter, or the full long-running orchestration model yet.

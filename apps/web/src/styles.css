@@ -178,6 +178,17 @@ code {
   padding: 16px;
 }
 
+.session-card {
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease;
+}
+
+.session-card:hover,
+.session-card-active {
+  transform: translateY(-1px);
+  border-color: rgba(15, 118, 110, 0.34);
+}
+
 .session-row,
 .approval-head,
 .approval-actions {
@@ -195,7 +206,10 @@ code {
 
 .session-workspace,
 .session-foot,
-.approval-head span {
+.approval-head span,
+.detail-meta,
+.live-empty,
+.live-event-row span {
   color: var(--muted);
   font-size: 0.9rem;
 }
@@ -263,9 +277,12 @@ code {
 
 .approval-actions {
   justify-content: flex-start;
+  flex-wrap: wrap;
 }
 
-.approval-actions button {
+.approval-actions button,
+.create-form button,
+.composer-form button {
   border: 0;
   border-radius: 999px;
   padding: 10px 14px;
@@ -275,9 +292,91 @@ code {
   transition: transform 150ms ease, opacity 150ms ease;
 }
 
-.approval-actions button:hover {
+.approval-actions button:hover,
+.create-form button:hover,
+.composer-form button:hover {
   transform: translateY(-1px);
   opacity: 0.92;
+}
+
+.button-secondary {
+  background: rgba(30, 27, 23, 0.12) !important;
+  color: var(--ink) !important;
+}
+
+.create-form,
+.composer-form {
+  display: grid;
+  gap: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 12px 14px;
+  background: rgba(255, 250, 240, 0.95);
+  color: var(--ink);
+  font: inherit;
+}
+
+.field textarea {
+  resize: vertical;
+}
+
+.rail-divider {
+  margin-top: 22px;
+  padding-top: 22px;
+  border-top: 1px solid var(--line);
+}
+
+.detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.detail-meta span,
+.live-event-row {
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: rgba(30, 27, 23, 0.06);
+  border: 1px solid var(--line);
+}
+
+.live-events {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  margin-bottom: 18px;
+}
+
+.live-event-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-radius: 16px;
+}
+
+.empty-state {
+  display: grid;
+  place-items: center;
+  min-height: 320px;
+  text-align: center;
 }
 
 code {

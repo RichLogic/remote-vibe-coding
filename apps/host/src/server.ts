@@ -1,29 +1,338 @@
+import { stat } from 'node:fs/promises';
+import { basename, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 
 import { buildBootstrapPayload } from './bootstrap.js';
+import { CodexAppServerClient, type JsonRpcNotification, type JsonRpcServerRequest } from './codex-app-server.js';
+import { SessionStore } from './store.js';
+import type {
+  CodexThread,
+  CreateSessionRequest,
+  CreateTurnRequest,
+  PendingApproval,
+  ResolveApprovalRequest,
+  SessionEvent,
+  SessionRecord,
+  SecurityProfile,
+} from './types.js';
 
 const port = Number.parseInt(process.env.PORT ?? '8787', 10);
 const host = process.env.HOST ?? '127.0.0.1';
 
+function approvalTitle(method: string): string {
+  switch (method) {
+    case 'item/commandExecution/requestApproval':
+      return 'Approve command execution';
+    case 'item/fileChange/requestApproval':
+      return 'Approve file change';
+    case 'item/permissions/requestApproval':
+      return 'Grant extra permissions';
+    default:
+      return 'Review Codex request';
+  }
+}
+
+function approvalRisk(method: string, params: Record<string, unknown>): string {
+  if (method === 'item/commandExecution/requestApproval') {
+    return String(params.reason ?? params.command ?? 'Codex requested command approval.');
+  }
+  if (method === 'item/fileChange/requestApproval') {
+    return String(params.reason ?? 'Codex requested file write approval.');
+  }
+  if (method === 'item/permissions/requestApproval') {
+    return String(params.reason ?? 'Codex requested additional permissions.');
+  }
+  return 'Codex requested a user decision.';
+}
+
+function summarizeNotification(method: string, params: Record<string, unknown>): string {
+  switch (method) {
+    case 'thread/status/changed':
+      return `Thread status changed to ${String((params.status as { type?: string } | undefined)?.type ?? 'unknown')}`;
+    case 'turn/started':
+      return 'Turn started';
+    case 'turn/completed':
+      return 'Turn completed';
+    case 'item/completed': {
+      const item = params.item as { type?: string } | undefined;
+      return `Completed ${item?.type ?? 'item'}`;
+    }
+    case 'item/started': {
+      const item = params.item as { type?: string } | undefined;
+      return `Started ${item?.type ?? 'item'}`;
+    }
+    case 'item/agentMessage/delta':
+      return 'Streaming assistant text';
+    case 'turn/diff/updated':
+      return 'Turn diff updated';
+    case 'thread/tokenUsage/updated':
+      return 'Token usage updated';
+    default:
+      return method;
+  }
+}
+
+function extractThreadId(params: unknown): string | null {
+  if (!params || typeof params !== 'object') return null;
+  const record = params as Record<string, unknown>;
+  if (typeof record.threadId === 'string') return record.threadId;
+  if (record.thread && typeof record.thread === 'object') {
+    const thread = record.thread as Record<string, unknown>;
+    if (typeof thread.id === 'string') return thread.id;
+  }
+  return null;
+}
+
+function isCodexThread(value: unknown): value is CodexThread {
+  return Boolean(value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string');
+}
+
+async function ensureWorkspaceExists(cwd: string) {
+  const info = await stat(cwd);
+  if (!info.isDirectory()) {
+    throw new Error(`Workspace is not a directory: ${cwd}`);
+  }
+}
+
 const app = Fastify({
-  logger: true
+  logger: true,
 });
 
 await app.register(cors, {
-  origin: true
+  origin: true,
 });
+
+const store = new SessionStore();
+await store.load();
+
+const codex = new CodexAppServerClient();
+await codex.ensureStarted();
+
+codex.on('debug', (message) => {
+  app.log.info(message);
+});
+
+codex.on('notification', (message: JsonRpcNotification) => {
+  void handleNotification(message);
+});
+
+codex.on('serverRequest', (message: JsonRpcServerRequest) => {
+  void handleServerRequest(message);
+});
+
+async function handleNotification(message: JsonRpcNotification) {
+  const threadId = extractThreadId(message.params);
+  if (!threadId) return;
+
+  const session = store.findByThreadId(threadId);
+  if (!session) return;
+
+  const event: SessionEvent = {
+    id: randomUUID(),
+    method: message.method,
+    summary: summarizeNotification(message.method, (message.params ?? {}) as Record<string, unknown>),
+    createdAt: new Date().toISOString(),
+  };
+  store.addLiveEvent(session.id, event);
+
+  if (message.method === 'thread/status/changed') {
+    const statusType = String(((message.params as Record<string, unknown>).status as { type?: string } | undefined)?.type ?? '');
+    const nextStatus = statusType === 'active' ? 'running' : statusType === 'idle' ? 'idle' : session.status;
+    await store.updateSession(session.id, { status: nextStatus });
+    return;
+  }
+
+  if (message.method === 'turn/completed') {
+    await store.updateSession(session.id, { status: store.getApprovals(session.id).length > 0 ? 'needs-approval' : 'idle' });
+    return;
+  }
+}
+
+async function handleServerRequest(message: JsonRpcServerRequest) {
+  const threadId = extractThreadId(message.params);
+  if (!threadId) {
+    await codex.respond(message.id, { decision: 'cancel' });
+    return;
+  }
+
+  const session = store.findByThreadId(threadId);
+  if (!session) {
+    await codex.respond(message.id, { decision: 'cancel' });
+    return;
+  }
+
+  const approval: PendingApproval = {
+    id: String(message.id),
+    sessionId: session.id,
+    rpcRequestId: message.id,
+    method: message.method,
+    title: approvalTitle(message.method),
+    risk: approvalRisk(message.method, (message.params ?? {}) as Record<string, unknown>),
+    scopeOptions: ['once', 'session'],
+    source: 'codex',
+    payload: message.params ?? {},
+    createdAt: new Date().toISOString(),
+  };
+
+  store.addApproval(approval);
+  store.addLiveEvent(session.id, {
+    id: randomUUID(),
+    method: message.method,
+    summary: approval.title,
+    createdAt: approval.createdAt,
+  });
+  await store.updateSession(session.id, { status: 'needs-approval' });
+}
 
 app.get('/api/health', async () => ({
   ok: true,
-  service: 'remote-vibe-coding-host'
+  service: 'remote-vibe-coding-host',
 }));
 
-app.get('/api/bootstrap', async () => buildBootstrapPayload());
+app.get('/api/bootstrap', async () => {
+  return buildBootstrapPayload(store.listSessions(), store.getAllApprovals());
+});
+
+app.get('/api/sessions/:sessionId', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  let thread: CodexThread | null = null;
+  try {
+    const response = await codex.readThread(session.threadId);
+    if (isCodexThread(response.thread)) {
+      thread = response.thread;
+    }
+  } catch (error) {
+    app.log.warn(`thread/read failed for ${session.threadId}: ${(error as Error).message}`);
+  }
+
+  return {
+    session,
+    approvals: store.getApprovals(session.id),
+    liveEvents: store.getLiveEvents(session.id),
+    thread,
+  };
+});
+
+app.post('/api/sessions', async (request, reply) => {
+  const body = request.body as CreateSessionRequest;
+  const workspace = resolve(body.cwd);
+  await ensureWorkspaceExists(workspace);
+
+  const securityProfile: SecurityProfile = body.securityProfile === 'full-host' ? 'full-host' : 'repo-write';
+  const fullHostEnabled = securityProfile === 'full-host';
+  const threadResponse = await codex.startThread(workspace, fullHostEnabled);
+
+  const session: SessionRecord = {
+    id: randomUUID(),
+    threadId: threadResponse.thread.id,
+    title: body.title?.trim() || basename(workspace),
+    workspace,
+    securityProfile,
+    networkEnabled: false,
+    fullHostEnabled,
+    status: 'idle',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  await store.upsertSession(session);
+  reply.code(201);
+  return { session };
+});
+
+app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
+  const { sessionId } = request.params as { sessionId: string };
+  const body = request.body as CreateTurnRequest;
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  if (!body.prompt?.trim()) {
+    reply.code(400);
+    return { error: 'Prompt is required' };
+  }
+
+  await store.updateSession(sessionId, { status: 'running' });
+  const turn = await codex.startTurn(session.threadId, body.prompt.trim());
+  return { turn };
+});
+
+app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply) => {
+  const { sessionId, approvalId } = request.params as { sessionId: string; approvalId: string };
+  const body = request.body as ResolveApprovalRequest;
+  const session = store.getSession(sessionId);
+  if (!session) {
+    reply.code(404);
+    return { error: 'Session not found' };
+  }
+
+  const approval = store.getApprovals(sessionId).find((entry) => entry.id === approvalId);
+  if (!approval) {
+    reply.code(404);
+    return { error: 'Approval not found' };
+  }
+
+  const scope = body.scope === 'session' ? 'session' : 'once';
+  const accepted = body.decision !== 'decline';
+
+  if (approval.method === 'item/commandExecution/requestApproval') {
+    await codex.respond(approval.rpcRequestId, {
+      decision: accepted ? (scope === 'session' ? 'acceptForSession' : 'accept') : 'decline',
+    });
+  } else if (approval.method === 'item/fileChange/requestApproval') {
+    await codex.respond(approval.rpcRequestId, {
+      decision: accepted ? (scope === 'session' ? 'acceptForSession' : 'accept') : 'decline',
+    });
+  } else if (approval.method === 'item/permissions/requestApproval') {
+    const params = approval.payload as { permissions?: unknown };
+    await codex.respond(approval.rpcRequestId, {
+      permissions: accepted ? (params.permissions ?? {}) : {},
+      scope: scope === 'session' ? 'session' : 'turn',
+    });
+    if (accepted) {
+      await store.updateSession(sessionId, {
+        networkEnabled: true,
+      });
+    }
+  } else {
+    await codex.respond(approval.rpcRequestId, {
+      decision: accepted ? 'accept' : 'cancel',
+    });
+  }
+
+  store.removeApproval(sessionId, approvalId);
+  await store.updateSession(sessionId, {
+    status: store.getApprovals(sessionId).length > 0 ? 'needs-approval' : 'running',
+  });
+  return { ok: true };
+});
+
+const shutdown = async () => {
+  await codex.stop();
+};
+
+process.on('SIGINT', () => {
+  void shutdown();
+});
+process.on('SIGTERM', () => {
+  void shutdown();
+});
 
 try {
   await app.listen({ host, port });
 } catch (error) {
   app.log.error(error);
+  await codex.stop();
   process.exit(1);
 }

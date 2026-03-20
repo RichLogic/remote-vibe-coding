@@ -1,7 +1,6 @@
 export type SecurityProfile = 'repo-write' | 'full-host';
 export type ApprovalScope = 'once' | 'session';
-export type SessionStatus = 'running' | 'needs-approval' | 'idle' | 'error';
-export type TranscriptEventKind = 'user' | 'assistant' | 'tool' | 'status';
+export type SessionStatus = 'idle' | 'running' | 'needs-approval' | 'error';
 
 export interface ProductDefaults {
   executor: 'codex';
@@ -34,6 +33,7 @@ export interface SessionSummary extends SessionRecord {
 export interface PendingApproval {
   id: string;
   sessionId: string;
+  rpcRequestId: number | string;
   method: string;
   title: string;
   risk: string;
@@ -48,15 +48,6 @@ export interface SessionEvent {
   method: string;
   summary: string;
   createdAt: string;
-}
-
-export interface BootstrapPayload {
-  productName: string;
-  subtitle: string;
-  defaults: ProductDefaults;
-  sessions: SessionSummary[];
-  approvals: PendingApproval[];
-  updatedAt: string;
 }
 
 export interface CodexThreadInput {
@@ -114,13 +105,20 @@ export interface CodexFileChangeItem {
   }>;
 }
 
+export interface CodexGenericItem {
+  type: string;
+  id: string;
+  [key: string]: unknown;
+}
+
 export type CodexThreadItem =
   | CodexUserMessageItem
   | CodexAgentMessageItem
   | CodexPlanItem
   | CodexReasoningItem
   | CodexCommandExecutionItem
-  | CodexFileChangeItem;
+  | CodexFileChangeItem
+  | CodexGenericItem;
 
 export interface CodexTurn {
   id: string;
@@ -142,6 +140,15 @@ export interface CodexThread {
   } | string;
   updatedAt: number;
   turns: CodexTurn[];
+}
+
+export interface BootstrapPayload {
+  productName: string;
+  subtitle: string;
+  defaults: ProductDefaults;
+  sessions: SessionSummary[];
+  approvals: PendingApproval[];
+  updatedAt: string;
 }
 
 export interface SessionDetailResponse {
