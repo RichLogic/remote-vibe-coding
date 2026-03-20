@@ -138,6 +138,7 @@ code {
   justify-content: space-between;
   gap: 10px;
   padding-top: 4px;
+  margin-bottom: 12px;
 }
 
 .rail-actions {
@@ -149,7 +150,8 @@ code {
 }
 
 .rail-header h2 {
-  line-height: 1.2;
+  font-size: 1.2rem;
+  line-height: 1.15;
 }
 
 .rail-subhead {
@@ -875,8 +877,8 @@ code {
 }
 
 .composer-docked {
-  margin-top: 16px;
-  padding-top: 16px;
+  margin-top: 10px;
+  padding-top: 10px;
   border-top: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(246, 241, 231, 0), rgba(246, 241, 231, 0.92) 16%, rgba(246, 241, 231, 0.98) 100%);
   flex-shrink: 0;
@@ -886,11 +888,16 @@ code {
   gap: 6px;
 }
 
+.composer-docked .field > span {
+  display: none;
+}
+
 .composer-config-row {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  margin-bottom: 6px;
 }
 
 .composer-config-field {

@@ -1356,7 +1356,8 @@ export function App() {
                       onKeyDown={handlePromptKeyDown}
                       onCompositionStart={handlePromptCompositionStart}
                       onCompositionEnd={handlePromptCompositionEnd}
-                      rows={5}
+                      rows={3}
+                      placeholder={copy.prompt}
                       disabled={sessionIsArchived}
                     />
                     <div className="composer-actions">
