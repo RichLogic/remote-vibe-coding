@@ -137,6 +137,7 @@ code {
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  padding-top: 4px;
 }
 
 .rail-actions {
@@ -145,6 +146,10 @@ code {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.rail-header h2 {
+  line-height: 1.2;
 }
 
 .rail-subhead {
