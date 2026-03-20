@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -490,38 +490,6 @@ function defaultUserForm(): UserFormState {
   };
 }
 
-function PencilIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M13.6 3.2a1.8 1.8 0 0 1 2.5 0l.7.7a1.8 1.8 0 0 1 0 2.5l-8.5 8.5-3.6.6.6-3.6 8.3-8.7Z" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function ArchiveIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M3 5.2h14M5 7.8h10v7.9a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7.8Zm3.8 3.4h2.4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function RestoreIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M6.2 8.2V4.8m0 0H2.8m3.4 0A6.2 6.2 0 1 1 4 10" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function TrashIcon() {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M4.8 5.4h10.4m-9.1 0 .4 9.1a1 1 0 0 0 1 .9h4.9a1 1 0 0 0 1-.9l.4-9.1M7.8 5.4V4a.8.8 0 0 1 .8-.8h2.8a.8.8 0 0 1 .8.8v1.4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 function InfoIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -544,32 +512,6 @@ function StopIcon() {
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <rect x="5.7" y="5.7" width="8.6" height="8.6" rx="1.4" fill="currentColor" />
     </svg>
-  );
-}
-
-function SessionActionButton(
-  props: {
-    label: string;
-    danger?: boolean;
-    disabled?: boolean;
-    onClick: () => void;
-    children: ReactNode;
-  },
-) {
-  return (
-    <button
-      type="button"
-      className={props.danger ? 'session-action-button session-action-danger' : 'session-action-button'}
-      aria-label={props.label}
-      title={props.label}
-      onClick={(event) => {
-        event.stopPropagation();
-        props.onClick();
-      }}
-      disabled={props.disabled}
-    >
-      {props.children}
-    </button>
   );
 }
 
@@ -1148,34 +1090,6 @@ export function App() {
                   <div className="session-status-row">
                     <span className={`status-pill status-${session.status}`}>{STATUS_LABELS[language][session.status]}</span>
                   </div>
-                  <div className="session-actions">
-                    <SessionActionButton
-                      label={copy.rename}
-                      disabled={busy === `rename-${session.id}`}
-                      onClick={() => openRenameModal(session.id, session.title)}
-                    >
-                      <PencilIcon />
-                    </SessionActionButton>
-                    <SessionActionButton
-                      label={copy.archive}
-                      disabled={busy === `archive-${session.id}`}
-                      onClick={() => {
-                        void handleArchiveToggle(session.id, true);
-                      }}
-                    >
-                      <ArchiveIcon />
-                    </SessionActionButton>
-                    <SessionActionButton
-                      label={copy.delete}
-                      danger
-                      disabled={busy === `delete-${session.id}`}
-                      onClick={() => {
-                        void handleDeleteSession(session.id);
-                      }}
-                    >
-                      <TrashIcon />
-                    </SessionActionButton>
-                  </div>
                 </li>
               ))
             )}
@@ -1202,34 +1116,6 @@ export function App() {
                       </div>
                       <div className="session-status-row">
                         <span className="status-pill status-idle">{copy.archived}</span>
-                      </div>
-                      <div className="session-actions">
-                        <SessionActionButton
-                          label={copy.rename}
-                          disabled={busy === `rename-${session.id}`}
-                          onClick={() => openRenameModal(session.id, session.title)}
-                        >
-                          <PencilIcon />
-                        </SessionActionButton>
-                        <SessionActionButton
-                          label={copy.restore}
-                          disabled={busy === `restore-${session.id}`}
-                          onClick={() => {
-                            void handleArchiveToggle(session.id, false);
-                          }}
-                        >
-                          <RestoreIcon />
-                        </SessionActionButton>
-                        <SessionActionButton
-                          label={copy.delete}
-                          danger
-                          disabled={busy === `delete-${session.id}`}
-                          onClick={() => {
-                            void handleDeleteSession(session.id);
-                          }}
-                        >
-                          <TrashIcon />
-                        </SessionActionButton>
                       </div>
                     </li>
                   ))}
@@ -1644,6 +1530,52 @@ export function App() {
                 <div className="detail-card-head">
                   <strong>{detail.session.title}</strong>
                   <span>{STATUS_LABELS[language][detail.session.status]}</span>
+                </div>
+                <div className="info-actions">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSessionInfoOpen(false);
+                      openRenameModal(detail.session.id, detail.session.title);
+                    }}
+                    disabled={busy === `rename-${detail.session.id}`}
+                  >
+                    {busy === `rename-${detail.session.id}` ? copy.renaming : copy.rename}
+                  </button>
+                  {detail.session.archivedAt ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSessionInfoOpen(false);
+                        void handleArchiveToggle(detail.session.id, false);
+                      }}
+                      disabled={busy === `restore-${detail.session.id}`}
+                    >
+                      {busy === `restore-${detail.session.id}` ? copy.restoring : copy.restore}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSessionInfoOpen(false);
+                        void handleArchiveToggle(detail.session.id, true);
+                      }}
+                      disabled={busy === `archive-${detail.session.id}`}
+                    >
+                      {busy === `archive-${detail.session.id}` ? copy.archiving : copy.archive}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="button-danger"
+                    onClick={() => {
+                      setSessionInfoOpen(false);
+                      void handleDeleteSession(detail.session.id);
+                    }}
+                    disabled={busy === `delete-${detail.session.id}`}
+                  >
+                    {busy === `delete-${detail.session.id}` ? copy.deleting : copy.delete}
+                  </button>
                 </div>
                 <p className="detail-card-meta">{copy.workspace}: {detail.session.workspace}</p>
                 <p className="detail-card-meta">{copy.sessionOwner}: {detail.session.ownerUsername}</p>

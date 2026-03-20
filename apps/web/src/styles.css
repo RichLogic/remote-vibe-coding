@@ -406,7 +406,6 @@ code {
   cursor: pointer;
   transition: transform 150ms ease, border-color 150ms ease;
   position: relative;
-  padding-right: 94px;
 }
 
 .session-card-archived {
@@ -472,51 +471,6 @@ code {
 
 .session-foot {
   margin-top: 8px;
-}
-
-.session-actions {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.session-card:hover .session-actions,
-.session-card:focus-within .session-actions {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.session-action-button {
-  width: 28px;
-  height: 28px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: rgba(255, 250, 240, 0.96);
-  color: var(--ink);
-  cursor: pointer;
-  transition: transform 120ms ease, border-color 120ms ease;
-}
-
-.session-action-button svg {
-  width: 14px;
-  height: 14px;
-}
-
-.session-action-button:hover {
-  transform: translateY(-1px);
-  border-color: rgba(15, 118, 110, 0.28);
-}
-
-.session-action-danger {
-  color: #991b1b;
 }
 
 .session-empty {
@@ -866,6 +820,13 @@ code {
 .detail-list {
   display: grid;
   gap: 12px;
+}
+
+.info-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .info-button {
