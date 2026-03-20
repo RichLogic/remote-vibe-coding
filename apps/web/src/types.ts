@@ -3,7 +3,7 @@ export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'running' | 'needs-approval' | 'idle' | 'error';
 export type TranscriptEventKind = 'user' | 'assistant' | 'tool' | 'status';
 export type CloudflareTunnelState = 'idle' | 'connecting' | 'connected' | 'error';
-export type CloudflareTunnelMode = 'quick' | 'token';
+export type CloudflareTunnelMode = 'quick' | 'token' | 'named';
 export type CloudflareTargetSource = 'host' | 'dev-web' | 'override';
 
 export interface ProductDefaults {

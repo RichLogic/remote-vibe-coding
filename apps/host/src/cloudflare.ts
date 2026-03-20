@@ -1,6 +1,8 @@
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { spawn, type ChildProcessByStdio, execFile as execFileCallback } from 'node:child_process';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
@@ -10,6 +12,19 @@ import type { CloudflareStatus, CloudflareTunnelMode, CloudflareTargetSource } f
 const execFile = promisify(execFileCallback);
 const DEV_WEB_URL = 'http://127.0.0.1:5173';
 const QUICK_TUNNEL_URL_PATTERN = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/gi;
+const CLOUDFLARED_CONFIG_PATH = join(homedir(), '.cloudflared', 'config.yml');
+
+interface ParsedIngressEntry {
+  hostname: string | null;
+  service: string | null;
+}
+
+interface NamedTunnelConfig {
+  configPath: string;
+  publicUrl: string;
+  service: string;
+  tunnelName: string;
+}
 
 function createInitialStatus(): CloudflareStatus {
   return {
@@ -55,6 +70,55 @@ function parsePublicUrlFromLine(line: string) {
   return line.match(QUICK_TUNNEL_URL_PATTERN)?.[0] ?? null;
 }
 
+function parseCloudflaredConfig(content: string) {
+  const entries: ParsedIngressEntry[] = [];
+  let tunnelName: string | null = null;
+  let current: ParsedIngressEntry | null = null;
+
+  for (const line of content.split(/\r?\n/)) {
+    const tunnelMatch = line.match(/^\s*tunnel:\s*(\S+)/);
+    if (tunnelMatch && !tunnelName) {
+      tunnelName = tunnelMatch[1]?.trim() ?? null;
+      continue;
+    }
+
+    const hostnameMatch = line.match(/^\s*-\s*hostname:\s*(\S+)/);
+    if (hostnameMatch) {
+      current = {
+        hostname: hostnameMatch[1]?.trim() ?? null,
+        service: null,
+      };
+      entries.push(current);
+      continue;
+    }
+
+    const serviceMatch = line.match(/^\s*service:\s*(\S+)/);
+    if (serviceMatch && current && !current.service) {
+      current.service = serviceMatch[1]?.trim() ?? null;
+    }
+  }
+
+  return {
+    tunnelName,
+    entries,
+  };
+}
+
+function serviceTargetsTargetUrl(service: string | null, targetUrl: string) {
+  if (!service) return false;
+
+  try {
+    const serviceUrl = new URL(service);
+    const target = new URL(targetUrl);
+    const normalizedServicePort = serviceUrl.port || (serviceUrl.protocol === 'https:' ? '443' : '80');
+    const normalizedTargetPort = target.port || (target.protocol === 'https:' ? '443' : '80');
+
+    return serviceUrl.protocol === target.protocol && normalizedServicePort === normalizedTargetPort;
+  } catch {
+    return false;
+  }
+}
+
 export class CloudflareTunnelManager {
   private status: CloudflareStatus = createInitialStatus();
   private process: ChildProcessByStdio<null, Readable, Readable> | null = null;
@@ -65,10 +129,21 @@ export class CloudflareTunnelManager {
     await this.refreshInstallation();
     if (!this.process) {
       const target = await this.resolveTarget();
+      const namedTunnel = await this.resolveNamedTunnel(target.url);
+      const runtime = cloudflareRuntimeConfig();
       this.status.targetUrl = target.url;
       this.status.targetSource = target.source;
       if (this.status.state !== 'error') {
-        this.status.mode = this.status.mode ?? (cloudflareRuntimeConfig().tunnelToken ? 'token' : null);
+        if (runtime.tunnelToken) {
+          this.status.mode = 'token';
+          this.status.publicUrl = runtime.publicUrl;
+        } else if (namedTunnel) {
+          this.status.mode = 'named';
+          this.status.publicUrl = namedTunnel.publicUrl;
+        } else {
+          this.status.mode = null;
+          this.status.publicUrl = null;
+        }
       }
     }
     return this.snapshot();
@@ -136,13 +211,15 @@ export class CloudflareTunnelManager {
 
     const runtime = cloudflareRuntimeConfig();
     const target = await this.resolveTarget();
-    const mode: CloudflareTunnelMode = runtime.tunnelToken ? 'token' : 'quick';
+    const namedTunnel = runtime.tunnelToken ? null : await this.resolveNamedTunnel(target.url);
+    const mode: CloudflareTunnelMode = runtime.tunnelToken ? 'token' : namedTunnel ? 'named' : 'quick';
+    const stablePublicUrl = runtime.tunnelToken ? runtime.publicUrl : namedTunnel?.publicUrl ?? null;
 
     this.status = {
       ...this.status,
       state: 'connecting',
       mode,
-      publicUrl: mode === 'token' ? runtime.publicUrl : null,
+      publicUrl: stablePublicUrl,
       targetUrl: target.url,
       targetSource: target.source,
       startedAt: new Date().toISOString(),
@@ -152,7 +229,9 @@ export class CloudflareTunnelManager {
 
     const args = runtime.tunnelToken
       ? ['--no-autoupdate', 'tunnel', 'run', '--token', runtime.tunnelToken]
-      : ['--no-autoupdate', 'tunnel', '--url', target.url];
+      : namedTunnel
+        ? ['--no-autoupdate', '--config', namedTunnel.configPath, 'tunnel', 'run', namedTunnel.tunnelName]
+        : ['--no-autoupdate', 'tunnel', '--url', target.url];
 
     const child = spawn('cloudflared', args, {
       env: process.env,
@@ -204,8 +283,8 @@ export class CloudflareTunnelManager {
           return;
         }
 
-        if (runtime.publicUrl && connectionReadyPattern.test(line)) {
-          markConnected(runtime.publicUrl);
+        if (stablePublicUrl && connectionReadyPattern.test(line)) {
+          markConnected(stablePublicUrl);
         }
       };
 
@@ -293,6 +372,32 @@ export class CloudflareTunnelManager {
     return {
       url: localHostUrl(),
       source: 'host',
+    };
+  }
+
+  private async resolveNamedTunnel(targetUrl: string): Promise<NamedTunnelConfig | null> {
+    if (!(await pathExists(CLOUDFLARED_CONFIG_PATH))) {
+      return null;
+    }
+
+    const content = await readFile(CLOUDFLARED_CONFIG_PATH, 'utf8');
+    const parsed = parseCloudflaredConfig(content);
+    if (!parsed.tunnelName) {
+      return null;
+    }
+
+    const matchingEntry = parsed.entries.find((entry) =>
+      serviceTargetsTargetUrl(entry.service, targetUrl) && entry.hostname,
+    );
+    if (!matchingEntry?.hostname || !matchingEntry.service) {
+      return null;
+    }
+
+    return {
+      configPath: CLOUDFLARED_CONFIG_PATH,
+      publicUrl: `https://${matchingEntry.hostname}`,
+      service: matchingEntry.service,
+      tunnelName: parsed.tunnelName,
     };
   }
 

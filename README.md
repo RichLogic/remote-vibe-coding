@@ -37,6 +37,7 @@ Phase 1 now ships the first Cloudflare integration slice:
 - the host can serve the built web client from the same origin as the API
 - the browser can connect and disconnect a local `cloudflared` tunnel
 - quick tunnels work out of the box when `cloudflared` is installed
+- existing named tunnels in `~/.cloudflared/config.yml` are auto-detected when they already map a hostname to the local host port
 - managed tunnels are supported through environment variables
 
 For a single-origin remote build:
@@ -48,6 +49,16 @@ npm run start:host
 ```
 
 Then open `http://127.0.0.1:8787`, use the Cloudflare card in the browser shell, and connect the tunnel.
+
+If the machine already has a named tunnel config like:
+
+```yaml
+ingress:
+  - hostname: codex.example.com
+    service: http://127.0.0.1:8787
+```
+
+the browser shell will surface that hostname as the stable public URL and prefer the named tunnel path over a quick tunnel.
 
 Optional environment variables:
 

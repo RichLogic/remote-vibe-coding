@@ -98,6 +98,7 @@ The first remote-access slice is intentionally narrow:
 
 - when the built web client exists, the host serves it directly from the same origin as the API
 - the host can launch `cloudflared` quick tunnels without extra config
+- if `~/.cloudflared/config.yml` already maps a hostname to the host port, phase 1 should prefer that named tunnel path and surface the stable hostname in the UI
 - if `CLOUDFLARE_TUNNEL_TOKEN` is set, the host uses a managed tunnel instead
 - if `CLOUDFLARE_PUBLIC_URL` is set, the browser shows the stable hostname instead of waiting for a quick-tunnel URL
 - if the built web client does not exist, the tunnel manager can fall back to the local Vite dev server on `127.0.0.1:5173`
