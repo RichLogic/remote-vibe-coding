@@ -31,7 +31,6 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  overflow: hidden;
 }
 
 button,
@@ -44,12 +43,11 @@ code {
 }
 
 .shell {
-  height: 100vh;
+  min-height: 100vh;
   display: grid;
   grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 24px;
   padding: 24px;
-  overflow: hidden;
 }
 
 .shell-loading,
@@ -221,6 +219,8 @@ code {
   grid-template-columns: 320px minmax(0, 1fr) 340px;
   gap: 20px;
   min-height: 0;
+  height: min(72vh, 960px);
+  min-height: 640px;
 }
 
 .panel {
@@ -671,14 +671,8 @@ code {
 }
 
 @media (max-width: 1120px) {
-  body {
-    overflow: auto;
-  }
-
   .shell {
-    height: auto;
     min-height: 100vh;
-    overflow: visible;
   }
 
   .hero-grid {
@@ -691,6 +685,8 @@ code {
 
   .workspace {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
   }
 
   .runtime-alert {
