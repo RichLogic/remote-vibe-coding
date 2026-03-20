@@ -27,6 +27,7 @@ import type {
 } from './types';
 
 type DetailView = 'transcript' | 'commands' | 'changes' | 'activity';
+type Language = 'en' | 'zh';
 
 interface TranscriptEvent {
   kind: TranscriptEventKind;
@@ -51,23 +52,269 @@ interface FileChangeEvent {
   diff: string | null;
 }
 
-const STATUS_LABELS: Record<SessionStatus, string> = {
-  running: 'Running',
-  'needs-approval': 'Needs approval',
-  idle: 'Idle',
-  error: 'Error',
-  stale: 'Stale',
+const STATUS_LABELS: Record<Language, Record<SessionStatus, string>> = {
+  en: {
+    running: 'Running',
+    'needs-approval': 'Needs approval',
+    idle: 'Idle',
+    error: 'Error',
+    stale: 'Stale',
+  },
+  zh: {
+    running: '运行中',
+    'needs-approval': '等待审批',
+    idle: '空闲',
+    error: '错误',
+    stale: '已失效',
+  },
 };
 
-const CLOUDFLARE_STATE_LABELS = {
-  idle: 'Idle',
-  connecting: 'Connecting',
-  connected: 'Connected',
-  error: 'Error',
+const CLOUDFLARE_STATE_LABELS: Record<Language, Record<'idle' | 'connecting' | 'connected' | 'error', string>> = {
+  en: {
+    idle: 'Idle',
+    connecting: 'Connecting',
+    connected: 'Connected',
+    error: 'Error',
+  },
+  zh: {
+    idle: '未连接',
+    connecting: '连接中',
+    connected: '已连接',
+    error: '异常',
+  },
+};
+
+const COPY = {
+  en: {
+    unknownError: 'Unknown error',
+    hostUnavailable: 'Host unavailable',
+    hostUnavailableTitle: 'Could not reach the local host service',
+    hostUnavailableHint: 'Start `npm run dev:host` and refresh the page.',
+    eyebrow: 'Codex-first remote coding',
+    active: 'active',
+    archived: 'archived',
+    approvals: 'approvals',
+    settings: 'Settings',
+    sessions: 'Sessions',
+    existingWork: 'Existing work',
+    hideArchived: 'Hide archived',
+    newSession: 'New session',
+    noActiveSessions: 'No active sessions yet.',
+    history: 'History',
+    archivedSession: 'Archived session',
+    archive: 'Archive',
+    archiving: 'Archiving...',
+    delete: 'Delete',
+    deleting: 'Deleting...',
+    restore: 'Restore',
+    restoring: 'Restoring...',
+    codingSurface: 'Coding-first surface',
+    selectOrCreate: 'Select or create a session',
+    transcript: 'Transcript',
+    commands: 'Commands',
+    changes: 'Changes',
+    activity: 'Activity',
+    runtimeReset: 'Runtime reset detected',
+    threadMissing: 'Codex no longer has this thread loaded',
+    restartSession: 'Restart session',
+    restarting: 'Restarting...',
+    archivedEyebrow: 'Archived session',
+    historyMode: 'This session is in history mode',
+    historyModeHint: 'Restore it if you want to continue prompting in the same workspace.',
+    restoreSession: 'Restore session',
+    noTurnsYet: 'No turns yet',
+    threadUnavailable: 'Thread unavailable',
+    noTurnsHint: 'Start the first prompt from the composer below.',
+    staleHint: 'This session needs a fresh thread before it can accept a new prompt.',
+    noCommandsYet: 'No command executions yet',
+    noCommandsHint: 'Command output from Codex will land here once the thread starts using tools.',
+    noChangesYet: 'No file changes yet',
+    noChangesHint: 'When Codex proposes edits, this view will show paths and inline diffs.',
+    noInlineDiff: 'No inline diff payload was reported for this change.',
+    sessionState: 'Session state',
+    liveEvents: 'Live host events',
+    noTransportEvents: 'No transport events captured yet.',
+    createdAt: 'Created',
+    updatedAt: 'Updated',
+    prompt: 'Prompt',
+    restoreRequired: 'Restore required',
+    restartRequired: 'Restart required',
+    sending: 'Sending...',
+    sendPrompt: 'Send prompt',
+    noActiveSelection: 'No active selection',
+    pickSessionHint: 'Pick an existing session, or use the New session button to start a fresh Codex thread.',
+    approvalCenter: 'Approval center',
+    pendingRequests: 'pending request(s)',
+    noPendingApprovals: 'No pending approvals',
+    approvalsHint: 'Network, extra file access, and high-risk commands will appear here when Codex requests them.',
+    approveOnce: 'Approve once',
+    approveSession: 'Approve session',
+    decline: 'Decline',
+    settingsTitle: 'System information and controls',
+    close: 'Close',
+    product: 'Product',
+    defaults: 'Defaults',
+    currentSession: 'Current session',
+    noActiveSession: 'No active session',
+    inspectWorkspaceHint: 'Select a session to inspect its workspace.',
+    remoteAccess: 'Remote access',
+    tunnelUnavailable: 'Tunnel status unavailable',
+    noPublicUrl: 'No public URL available yet',
+    cloudflare: 'Cloudflare',
+    notConnected: 'not connected',
+    cloudflareMissing: 'cloudflared is not installed on this machine yet.',
+    tunnelLive: 'Tunnel already live',
+    connecting: 'Connecting...',
+    connectTunnel: 'Connect tunnel',
+    managedBySystem: 'Managed by system',
+    disconnecting: 'Disconnecting...',
+    disconnect: 'Disconnect',
+    account: 'Account',
+    accountHint: 'Use this panel for machine-level controls. Keep the main screen focused on session management and chat.',
+    signingOut: 'Signing out...',
+    signOut: 'Sign out',
+    newSessionTitle: 'Create a workspace thread',
+    workspace: 'Workspace',
+    title: 'Title',
+    optionalSessionTitle: 'Optional session title',
+    securityProfile: 'Security profile',
+    creating: 'Creating...',
+    createSession: 'Create session',
+    sessionLabel: 'Session',
+    threadLabel: 'Thread',
+    gitLabel: 'Git',
+    runtimeLabel: 'Runtime',
+    networkEnabled: 'Network enabled',
+    networkDisabled: 'Network disabled',
+    staleSession: 'stale session',
+    freshThread: 'Fresh thread or not yet loaded',
+    noGitMetadata: 'No git metadata',
+    noRemoteReported: 'No remote reported yet',
+    localHost: 'local host',
+    browserShell: 'Codex-first browser shell',
+    networkOnByDefault: 'Network on by default',
+    networkOffByDefault: 'Network off by default',
+    languageButton: '中文',
+    archivedHistory: 'Archived',
+    sessionDeletedConfirm: 'Delete "{title}" permanently? This only removes it from remote-vibe-coding.',
+  },
+  zh: {
+    unknownError: '未知错误',
+    hostUnavailable: '主机不可用',
+    hostUnavailableTitle: '无法连接本地 Host 服务',
+    hostUnavailableHint: '先启动 `npm run dev:host`，然后刷新页面。',
+    eyebrow: 'Codex 优先的远程编码',
+    active: '活跃',
+    archived: '归档',
+    approvals: '审批',
+    settings: '设置',
+    sessions: '会话',
+    existingWork: '已有工作',
+    hideArchived: '收起归档',
+    newSession: '新建会话',
+    noActiveSessions: '暂时还没有活跃会话。',
+    history: '历史',
+    archivedSession: '已归档会话',
+    archive: '归档',
+    archiving: '归档中...',
+    delete: '删除',
+    deleting: '删除中...',
+    restore: '恢复',
+    restoring: '恢复中...',
+    codingSurface: '开发工作区',
+    selectOrCreate: '选择或新建一个会话',
+    transcript: '聊天',
+    commands: '命令',
+    changes: '改动',
+    activity: '活动',
+    runtimeReset: '运行时已重置',
+    threadMissing: 'Codex 已经不再持有这个 thread',
+    restartSession: '重启会话',
+    restarting: '重启中...',
+    archivedEyebrow: '已归档会话',
+    historyMode: '这个会话目前处于历史模式',
+    historyModeHint: '如果你想继续在同一个 workspace 里对话，先恢复它。',
+    restoreSession: '恢复会话',
+    noTurnsYet: '还没有对话',
+    threadUnavailable: '线程不可用',
+    noTurnsHint: '从下面的输入框发出第一条 prompt。',
+    staleHint: '这个会话需要先创建一个新的 thread，才能继续输入。',
+    noCommandsYet: '还没有命令执行',
+    noCommandsHint: 'Codex 开始调用工具后，命令输出会显示在这里。',
+    noChangesYet: '还没有文件改动',
+    noChangesHint: '当 Codex 提议修改文件时，这里会显示路径和 diff。',
+    noInlineDiff: '这条改动没有携带内联 diff。',
+    sessionState: '会话状态',
+    liveEvents: '实时 Host 事件',
+    noTransportEvents: '暂时还没有传输层事件。',
+    createdAt: '创建于',
+    updatedAt: '更新于',
+    prompt: '输入内容',
+    restoreRequired: '需要先恢复',
+    restartRequired: '需要先重启',
+    sending: '发送中...',
+    sendPrompt: '发送',
+    noActiveSelection: '当前没有选中会话',
+    pickSessionHint: '选择一个已有会话，或者用 New session 按钮开启新的 Codex thread。',
+    approvalCenter: '审批中心',
+    pendingRequests: '个待处理请求',
+    noPendingApprovals: '没有待审批项',
+    approvalsHint: '网络、额外文件访问和高风险命令会在 Codex 请求时出现在这里。',
+    approveOnce: '仅批准这次',
+    approveSession: '本会话内批准',
+    decline: '拒绝',
+    settingsTitle: '系统信息与控制',
+    close: '关闭',
+    product: '产品',
+    defaults: '默认值',
+    currentSession: '当前会话',
+    noActiveSession: '当前没有活跃会话',
+    inspectWorkspaceHint: '选中一个会话后，这里会显示它的 workspace。',
+    remoteAccess: '远程访问',
+    tunnelUnavailable: 'Tunnel 状态暂不可用',
+    noPublicUrl: '还没有公网地址',
+    cloudflare: 'Cloudflare',
+    notConnected: '未连接',
+    cloudflareMissing: '这台机器还没有安装 cloudflared。',
+    tunnelLive: 'Tunnel 已经在线',
+    connecting: '连接中...',
+    connectTunnel: '连接 Tunnel',
+    managedBySystem: '由系统托管',
+    disconnecting: '断开中...',
+    disconnect: '断开连接',
+    account: '账户',
+    accountHint: '这里放机器级的设置和控制，让主界面保持在 session 和 chat 上。',
+    signingOut: '退出中...',
+    signOut: '退出登录',
+    newSessionTitle: '创建一个 workspace thread',
+    workspace: '工作目录',
+    title: '标题',
+    optionalSessionTitle: '可选的会话标题',
+    securityProfile: '安全档位',
+    creating: '创建中...',
+    createSession: '创建会话',
+    sessionLabel: '会话',
+    threadLabel: '线程',
+    gitLabel: 'Git',
+    runtimeLabel: '运行时',
+    networkEnabled: '已开启网络',
+    networkDisabled: '未开启网络',
+    staleSession: '已失效会话',
+    freshThread: '新的 thread，或暂时还没加载',
+    noGitMetadata: '没有 Git 元信息',
+    noRemoteReported: '还没有上报远端仓库信息',
+    localHost: '本地 host',
+    browserShell: 'Codex 优先的浏览器壳',
+    networkOnByDefault: '默认开启网络',
+    networkOffByDefault: '默认关闭网络',
+    languageButton: 'EN',
+    archivedHistory: '归档',
+    sessionDeletedConfirm: '确定永久删除 “{title}” 吗？这只会把它从 remote-vibe-coding 中移除。',
+  },
 } as const;
 
-function formatTimestamp(value: string) {
-  return new Date(value).toLocaleString();
+function formatTimestamp(value: string, language: Language) {
+  return new Date(value).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US');
 }
 
 function shortThreadId(threadId: string) {
@@ -84,6 +331,38 @@ function pickPreferredSessionId(
   sessions: Array<{ id: string; archivedAt: string | null }>,
 ) {
   return sessions.find((session) => !session.archivedAt)?.id ?? sessions[0]?.id ?? null;
+}
+
+function sessionSummaryText(
+  session: {
+    archivedAt: string | null;
+    pendingApprovalCount: number;
+    status: SessionStatus;
+    lastIssue: string | null;
+  },
+  language: Language,
+) {
+  if (session.archivedAt) {
+    return COPY[language].archivedSession;
+  }
+  if (session.pendingApprovalCount > 0) {
+    return language === 'zh'
+      ? `等待 ${session.pendingApprovalCount} 个审批`
+      : `${session.pendingApprovalCount} approval${session.pendingApprovalCount === 1 ? '' : 's'} waiting`;
+  }
+  if (session.status === 'running') {
+    return language === 'zh' ? '正在执行 Codex turn' : 'Streaming Codex turn';
+  }
+  if (session.status === 'needs-approval') {
+    return language === 'zh' ? '等待你的决定' : 'Waiting on user decision';
+  }
+  if (session.status === 'stale') {
+    return session.lastIssue ?? (language === 'zh' ? '运行时已重启，请先重启会话。' : 'Codex runtime restarted. Restart this session.');
+  }
+  if (session.status === 'error') {
+    return session.lastIssue ?? (language === 'zh' ? '上一次操作失败了' : 'Last action failed');
+  }
+  return language === 'zh' ? '可以继续下一条 prompt' : 'Ready for the next prompt';
 }
 
 function itemToEvent(item: CodexThreadItem): TranscriptEvent | null {
@@ -161,6 +440,12 @@ function collectFileChanges(thread: CodexThread | null): FileChangeEvent[] {
 }
 
 export function App() {
+  const [language, setLanguage] = useState<Language>(() => {
+    if (typeof window === 'undefined') return 'en';
+    const stored = window.localStorage.getItem('rvc-language');
+    if (stored === 'zh' || stored === 'en') return stored;
+    return window.navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  });
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
@@ -174,6 +459,11 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const copy = COPY[language];
+
+  useEffect(() => {
+    window.localStorage.setItem('rvc-language', language);
+  }, [language]);
 
   useEffect(() => {
     let cancelled = false;
@@ -189,7 +479,7 @@ export function App() {
         }
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Unknown error');
+          setError(loadError instanceof Error ? loadError.message : copy.unknownError);
         }
       }
     }
@@ -222,7 +512,7 @@ export function App() {
         setError(null);
       } catch (loadError) {
         if (!cancelled) {
-          setError(loadError instanceof Error ? loadError.message : 'Unknown error');
+          setError(loadError instanceof Error ? loadError.message : copy.unknownError);
         }
       }
     }
@@ -253,7 +543,7 @@ export function App() {
       const nextBootstrap = await fetchBootstrap();
       setBootstrap(nextBootstrap);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : 'Failed to create session');
+      setError(createError instanceof Error ? createError.message : copy.createSession);
     } finally {
       setBusy(null);
     }
@@ -268,7 +558,7 @@ export function App() {
       const nextDetail = await fetchSessionDetail(selectedSessionId);
       setDetail(nextDetail);
     } catch (turnError) {
-      setError(turnError instanceof Error ? turnError.message : 'Failed to start turn');
+      setError(turnError instanceof Error ? turnError.message : copy.sendPrompt);
     } finally {
       setBusy(null);
     }
@@ -287,7 +577,7 @@ export function App() {
       setDetail(nextDetail);
       setError(null);
     } catch (restartError) {
-      setError(restartError instanceof Error ? restartError.message : 'Failed to restart session');
+      setError(restartError instanceof Error ? restartError.message : copy.restartSession);
     } finally {
       setBusy(null);
     }
@@ -312,7 +602,7 @@ export function App() {
       }
       setError(null);
     } catch (archiveError) {
-      setError(archiveError instanceof Error ? archiveError.message : 'Failed to update session archive state');
+      setError(archiveError instanceof Error ? archiveError.message : copy.archive);
     } finally {
       setBusy(null);
     }
@@ -322,7 +612,7 @@ export function App() {
     const session = bootstrap?.sessions.find((entry) => entry.id === sessionId);
     if (!session) return;
 
-    const confirmed = window.confirm(`Delete "${session.title}" permanently? This only removes it from remote-vibe-coding.`);
+    const confirmed = window.confirm(copy.sessionDeletedConfirm.replace('{title}', session.title));
     if (!confirmed) return;
 
     setBusy(`delete-${sessionId}`);
@@ -343,7 +633,7 @@ export function App() {
       }
       setError(null);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete session');
+      setError(deleteError instanceof Error ? deleteError.message : copy.delete);
     } finally {
       setBusy(null);
     }
@@ -363,7 +653,7 @@ export function App() {
         setDetail(nextDetail);
       }
     } catch (approvalError) {
-      setError(approvalError instanceof Error ? approvalError.message : 'Failed to resolve approval');
+      setError(approvalError instanceof Error ? approvalError.message : copy.decline);
     } finally {
       setBusy(null);
     }
@@ -376,7 +666,7 @@ export function App() {
       setBootstrap(await fetchBootstrap());
       setError(null);
     } catch (connectError) {
-      setError(connectError instanceof Error ? connectError.message : 'Failed to connect Cloudflare tunnel');
+      setError(connectError instanceof Error ? connectError.message : copy.connectTunnel);
     } finally {
       setBusy(null);
     }
@@ -389,7 +679,7 @@ export function App() {
       setBootstrap(await fetchBootstrap());
       setError(null);
     } catch (disconnectError) {
-      setError(disconnectError instanceof Error ? disconnectError.message : 'Failed to disconnect Cloudflare tunnel');
+      setError(disconnectError instanceof Error ? disconnectError.message : copy.disconnect);
     } finally {
       setBusy(null);
     }
@@ -415,7 +705,7 @@ export function App() {
   const threadStatus = detail?.thread?.status && typeof detail.thread.status === 'object' ? detail.thread.status.type : 'idle';
   const sessionGitLabel = detail?.thread?.gitInfo?.branch
     ? `${detail.thread.gitInfo.branch}${detail.thread.gitInfo.sha ? ` @ ${detail.thread.gitInfo.sha.slice(0, 7)}` : ''}`
-    : 'No git metadata';
+    : copy.noGitMetadata;
   const activeSessions = (bootstrap?.sessions ?? []).filter((session) => !session.archivedAt);
   const archivedSessions = (bootstrap?.sessions ?? []).filter((session) => Boolean(session.archivedAt));
 
@@ -423,10 +713,10 @@ export function App() {
     return (
       <main className="shell shell-error">
         <section className="error-card">
-          <p className="eyebrow">Host unavailable</p>
-          <h1>Could not reach the local host service</h1>
+          <p className="eyebrow">{copy.hostUnavailable}</p>
+          <h1>{copy.hostUnavailableTitle}</h1>
           <p>{error}</p>
-          <p>Start <code>npm run dev:host</code> and refresh the page.</p>
+          <p>{copy.hostUnavailableHint}</p>
         </section>
       </main>
     );
@@ -436,15 +726,18 @@ export function App() {
     <main className="shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Codex-first remote coding</p>
+          <p className="eyebrow">{copy.eyebrow}</p>
           <h1>{bootstrap?.productName ?? 'remote-vibe-coding'}</h1>
         </div>
         <div className="topbar-meta">
-          <span>{activeSessions.length} active</span>
-          {archivedSessions.length > 0 ? <span>{archivedSessions.length} archived</span> : null}
-          <span>{bootstrap?.approvals.length ?? 0} approvals</span>
+          <span>{activeSessions.length} {copy.active}</span>
+          {archivedSessions.length > 0 ? <span>{archivedSessions.length} {copy.archived}</span> : null}
+          <span>{bootstrap?.approvals.length ?? 0} {copy.approvals}</span>
+          <button type="button" className="button-secondary topbar-button" onClick={() => setLanguage((value) => value === 'zh' ? 'en' : 'zh')}>
+            {copy.languageButton}
+          </button>
           <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(true)}>
-            Settings
+            {copy.settings}
           </button>
         </div>
       </header>
@@ -453,24 +746,24 @@ export function App() {
         <aside className="panel rail">
           <div className="panel-header rail-header">
             <div>
-              <p className="eyebrow">Sessions</p>
-              <h2>Existing work</h2>
+              <p className="eyebrow">{copy.sessions}</p>
+              <h2>{copy.existingWork}</h2>
             </div>
             <div className="rail-actions">
               {archivedSessions.length > 0 ? (
                 <button type="button" className="button-secondary" onClick={() => setShowArchived((value) => !value)}>
-                  {showArchived ? 'Hide archived' : `Archived (${archivedSessions.length})`}
+                  {showArchived ? copy.hideArchived : `${copy.archivedHistory} (${archivedSessions.length})`}
                 </button>
               ) : null}
               <button type="button" onClick={() => setNewSessionOpen(true)} disabled={busy === 'create-session'}>
-                New session
+                {copy.newSession}
               </button>
             </div>
           </div>
 
           <ul className="session-list">
             {activeSessions.length === 0 ? (
-              <li className="session-empty">No active sessions yet.</li>
+              <li className="session-empty">{copy.noActiveSessions}</li>
             ) : activeSessions.map((session) => (
               <li
                 key={session.id}
@@ -479,12 +772,12 @@ export function App() {
               >
                 <div className="session-row session-card-head">
                   <h3>{session.title}</h3>
-                  <span className={`status-pill status-${session.status}`}>{STATUS_LABELS[session.status]}</span>
+                  <span className={`status-pill status-${session.status}`}>{STATUS_LABELS[language][session.status]}</span>
                 </div>
                 <p className="session-workspace">{compactWorkspacePath(session.workspace)}</p>
                 <div className="session-row session-foot">
-                  <span>{session.lastUpdate}</span>
-                  {session.pendingApprovalCount > 0 ? <span>{session.pendingApprovalCount} approval</span> : null}
+                  <span>{sessionSummaryText(session, language)}</span>
+                  {session.pendingApprovalCount > 0 ? <span>{session.pendingApprovalCount} {copy.approvals}</span> : null}
                 </div>
                 {selectedSessionId === session.id ? (
                   <div className="session-actions" onClick={(event) => event.stopPropagation()}>
@@ -494,7 +787,7 @@ export function App() {
                       onClick={() => void handleArchiveToggle(session.id, true)}
                       disabled={busy === `archive-${session.id}`}
                     >
-                      {busy === `archive-${session.id}` ? 'Archiving...' : 'Archive'}
+                      {busy === `archive-${session.id}` ? copy.archiving : copy.archive}
                     </button>
                     <button
                       type="button"
@@ -502,7 +795,7 @@ export function App() {
                       onClick={() => void handleDeleteSession(session.id)}
                       disabled={busy === `delete-${session.id}`}
                     >
-                      {busy === `delete-${session.id}` ? 'Deleting...' : 'Delete'}
+                      {busy === `delete-${session.id}` ? copy.deleting : copy.delete}
                     </button>
                   </div>
                 ) : null}
@@ -513,8 +806,8 @@ export function App() {
           {showArchived && archivedSessions.length > 0 ? (
             <>
               <div className="rail-subhead">
-                <p className="eyebrow">Archived</p>
-                <h2>History</h2>
+                <p className="eyebrow">{copy.archivedHistory}</p>
+                <h2>{copy.history}</h2>
               </div>
               <ul className="session-list archived-session-list">
                 {archivedSessions.map((session) => (
@@ -525,12 +818,12 @@ export function App() {
                   >
                     <div className="session-row session-card-head">
                       <h3>{session.title}</h3>
-                      <span className="status-pill status-idle">Archived</span>
+                      <span className="status-pill status-idle">{copy.archived}</span>
                     </div>
                     <p className="session-workspace">{compactWorkspacePath(session.workspace)}</p>
                     <div className="session-row session-foot">
-                      <span>Archived session</span>
-                      <span>{session.lastUpdate}</span>
+                      <span>{copy.archivedSession}</span>
+                      <span>{sessionSummaryText(session, language)}</span>
                     </div>
                     {selectedSessionId === session.id ? (
                       <div className="session-actions" onClick={(event) => event.stopPropagation()}>
@@ -540,7 +833,7 @@ export function App() {
                           onClick={() => void handleArchiveToggle(session.id, false)}
                           disabled={busy === `restore-${session.id}`}
                         >
-                          {busy === `restore-${session.id}` ? 'Restoring...' : 'Restore'}
+                          {busy === `restore-${session.id}` ? copy.restoring : copy.restore}
                         </button>
                         <button
                           type="button"
@@ -548,7 +841,7 @@ export function App() {
                           onClick={() => void handleDeleteSession(session.id)}
                           disabled={busy === `delete-${session.id}`}
                         >
-                          {busy === `delete-${session.id}` ? 'Deleting...' : 'Delete'}
+                          {busy === `delete-${session.id}` ? copy.deleting : copy.delete}
                         </button>
                       </div>
                     ) : null}
@@ -561,8 +854,8 @@ export function App() {
 
         <section className="panel transcript">
           <div className="panel-header">
-            <p className="eyebrow">Coding-first surface</p>
-            <h2>{detail?.session.title ?? 'Select or create a session'}</h2>
+            <p className="eyebrow">{copy.codingSurface}</p>
+            <h2>{detail?.session.title ?? copy.selectOrCreate}</h2>
           </div>
 
           {detail ? (
@@ -570,47 +863,47 @@ export function App() {
               <div className="transcript-scroll">
                 <div className="view-tabs">
                   <button type="button" className={detailView === 'transcript' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('transcript')}>
-                    Transcript
+                    {copy.transcript}
                   </button>
                   <button type="button" className={detailView === 'commands' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('commands')}>
-                    Commands {commandEvents.length > 0 ? `(${commandEvents.length})` : ''}
+                    {copy.commands} {commandEvents.length > 0 ? `(${commandEvents.length})` : ''}
                   </button>
                   <button type="button" className={detailView === 'changes' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('changes')}>
-                    Changes {fileChanges.length > 0 ? `(${fileChanges.length})` : ''}
+                    {copy.changes} {fileChanges.length > 0 ? `(${fileChanges.length})` : ''}
                   </button>
                   <button type="button" className={detailView === 'activity' ? 'view-tab view-tab-active' : 'view-tab'} onClick={() => setDetailView('activity')}>
-                    Activity {detail.liveEvents.length > 0 ? `(${detail.liveEvents.length})` : ''}
+                    {copy.activity} {detail.liveEvents.length > 0 ? `(${detail.liveEvents.length})` : ''}
                   </button>
                 </div>
 
                 {sessionIsArchived ? (
                   <section className="runtime-alert runtime-alert-muted">
                     <div>
-                      <p className="eyebrow">Archived session</p>
-                      <h3>This session is in history mode</h3>
-                      <p>Restore it if you want to continue prompting in the same workspace.</p>
+                      <p className="eyebrow">{copy.archivedEyebrow}</p>
+                      <h3>{copy.historyMode}</h3>
+                      <p>{copy.historyModeHint}</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => detail && void handleArchiveToggle(detail.session.id, false)}
                       disabled={!detail || busy === `restore-${detail.session.id}`}
                     >
-                      {!detail || busy !== `restore-${detail.session.id}` ? 'Restore session' : 'Restoring...'}
+                      {!detail || busy !== `restore-${detail.session.id}` ? copy.restoreSession : copy.restoring}
                     </button>
                   </section>
                 ) : sessionIsStale ? (
                   <section className="runtime-alert">
                     <div>
-                      <p className="eyebrow">Runtime reset detected</p>
-                      <h3>Codex no longer has this thread loaded</h3>
-                      <p>{detail.session.lastIssue ?? 'Restart this session to create a fresh thread in the same workspace.'}</p>
+                      <p className="eyebrow">{copy.runtimeReset}</p>
+                      <h3>{copy.threadMissing}</h3>
+                      <p>{detail.session.lastIssue ?? (language === 'zh' ? '重启这个会话，在同一个 workspace 下创建新的 thread。' : 'Restart this session to create a fresh thread in the same workspace.')}</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => void handleRestartSession()}
                       disabled={busy === 'restart-session'}
                     >
-                      {busy === 'restart-session' ? 'Restarting...' : 'Restart session'}
+                      {busy === 'restart-session' ? copy.restarting : copy.restartSession}
                     </button>
                   </section>
                 ) : null}
@@ -620,31 +913,31 @@ export function App() {
                     <div className="detail-meta">
                       <span>{detail.session.workspace}</span>
                       <span>{detail.session.securityProfile}</span>
-                      <span>{detail.session.networkEnabled ? 'Network enabled' : 'Network disabled'}</span>
-                      <span>{sessionIsStale ? 'stale session' : threadStatus}</span>
+                      <span>{detail.session.networkEnabled ? copy.networkEnabled : copy.networkDisabled}</span>
+                      <span>{sessionIsStale ? copy.staleSession : threadStatus}</span>
                     </div>
 
                     <section className="detail-summary-grid">
                       <article className="summary-card">
-                        <p className="eyebrow">Session</p>
+                        <p className="eyebrow">{copy.sessionLabel}</p>
                         <strong>{detail.session.title}</strong>
                         <p>{detail.session.workspace}</p>
                       </article>
                       <article className="summary-card">
-                        <p className="eyebrow">Thread</p>
+                        <p className="eyebrow">{copy.threadLabel}</p>
                         <strong>{shortThreadId(detail.session.threadId)}</strong>
-                        <p>{detail.thread?.path ?? 'Fresh thread or not yet loaded'}</p>
+                        <p>{detail.thread?.path ?? copy.freshThread}</p>
                       </article>
                       <article className="summary-card">
-                        <p className="eyebrow">Git</p>
+                        <p className="eyebrow">{copy.gitLabel}</p>
                         <strong>{sessionGitLabel}</strong>
-                        <p>{detail.thread?.gitInfo?.originUrl ?? 'No remote reported yet'}</p>
+                        <p>{detail.thread?.gitInfo?.originUrl ?? copy.noRemoteReported}</p>
                       </article>
                       <article className="summary-card">
-                        <p className="eyebrow">Runtime</p>
+                        <p className="eyebrow">{copy.runtimeLabel}</p>
                         <strong>{detail.thread?.modelProvider ?? 'codex'}</strong>
                         <p>
-                          {detail.thread?.source ?? 'local host'}
+                          {detail.thread?.source ?? copy.localHost}
                           {detail.thread?.cliVersion ? ` · CLI ${detail.thread.cliVersion}` : ''}
                         </p>
                       </article>
@@ -657,13 +950,13 @@ export function App() {
                     {threadEvents.length === 0 ? (
                       <article className="event-card event-status">
                         <div className="event-meta">
-                          <span>Status</span>
-                          <strong>{sessionIsStale ? 'Thread unavailable' : 'No turns yet'}</strong>
+                          <span>{copy.sessionState}</span>
+                          <strong>{sessionIsStale ? copy.threadUnavailable : copy.noTurnsYet}</strong>
                         </div>
                         <p>
                           {sessionIsStale
-                            ? 'This session needs a fresh thread before it can accept a new prompt.'
-                            : 'Start the first prompt from the composer below.'}
+                            ? copy.staleHint
+                            : copy.noTurnsHint}
                         </p>
                       </article>
                     ) : (
@@ -688,8 +981,8 @@ export function App() {
                   <div className="detail-list">
                     {commandEvents.length === 0 ? (
                       <article className="detail-card">
-                        <strong>No command executions yet</strong>
-                        <p>Command output from Codex will land here once the thread starts using tools.</p>
+                        <strong>{copy.noCommandsYet}</strong>
+                        <p>{copy.noCommandsHint}</p>
                       </article>
                     ) : (
                       commandEvents.map((command) => (
@@ -710,8 +1003,8 @@ export function App() {
                   <div className="detail-list">
                     {fileChanges.length === 0 ? (
                       <article className="detail-card">
-                        <strong>No file changes yet</strong>
-                        <p>When Codex proposes edits, this view will show paths and inline diffs.</p>
+                        <strong>{copy.noChangesYet}</strong>
+                        <p>{copy.noChangesHint}</p>
                       </article>
                     ) : (
                       fileChanges.map((change) => (
@@ -720,7 +1013,7 @@ export function App() {
                             <strong>{change.path}</strong>
                             <span>{change.kind} · {change.status}</span>
                           </div>
-                          {change.diff ? <pre className="event-body">{change.diff}</pre> : <p className="detail-card-meta">No inline diff payload was reported for this change.</p>}
+                          {change.diff ? <pre className="event-body">{change.diff}</pre> : <p className="detail-card-meta">{copy.noInlineDiff}</p>}
                         </article>
                       ))
                     )}
@@ -731,21 +1024,21 @@ export function App() {
                   <div className="detail-list">
                     <article className="detail-card">
                       <div className="detail-card-head">
-                        <strong>Session state</strong>
-                        <span>{detail.session.status}</span>
+                        <strong>{copy.sessionState}</strong>
+                        <span>{STATUS_LABELS[language][detail.session.status]}</span>
                       </div>
-                      <p className="detail-card-meta">Created {formatTimestamp(detail.session.createdAt)}</p>
-                      <p className="detail-card-meta">Updated {formatTimestamp(detail.session.updatedAt)}</p>
+                      <p className="detail-card-meta">{copy.createdAt} {formatTimestamp(detail.session.createdAt, language)}</p>
+                      <p className="detail-card-meta">{copy.updatedAt} {formatTimestamp(detail.session.updatedAt, language)}</p>
                       {detail.session.lastIssue ? <p>{detail.session.lastIssue}</p> : null}
                     </article>
 
                     <article className="detail-card">
                       <div className="detail-card-head">
-                        <strong>Live host events</strong>
+                        <strong>{copy.liveEvents}</strong>
                         <span>{detail.liveEvents.length}</span>
                       </div>
                       {detail.liveEvents.length === 0 ? (
-                        <p className="detail-card-meta">No transport events captured yet.</p>
+                        <p className="detail-card-meta">{copy.noTransportEvents}</p>
                       ) : (
                         <div className="activity-stream">
                           {detail.liveEvents.map((event) => (
@@ -763,7 +1056,7 @@ export function App() {
 
               <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
                 <label className="field">
-                  <span>Prompt</span>
+                  <span>{copy.prompt}</span>
                   <textarea
                     value={prompt}
                     onChange={(event) => setPrompt(event.target.value)}
@@ -772,31 +1065,31 @@ export function App() {
                   />
                 </label>
                 <button type="submit" disabled={busy === 'start-turn' || sessionIsStale || sessionIsArchived}>
-                  {sessionIsArchived ? 'Restore required' : sessionIsStale ? 'Restart required' : busy === 'start-turn' ? 'Sending...' : 'Send prompt'}
+                  {sessionIsArchived ? copy.restoreRequired : sessionIsStale ? copy.restartRequired : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
                 </button>
               </form>
             </div>
           ) : (
             <section className="empty-state">
-              <p className="eyebrow">No active selection</p>
-              <h2>Pick an existing session, or use the New session button to start a fresh Codex thread.</h2>
+              <p className="eyebrow">{copy.noActiveSelection}</p>
+              <h2>{copy.pickSessionHint}</h2>
             </section>
           )}
         </section>
 
         <aside className="panel approvals">
           <div className="panel-header">
-            <p className="eyebrow">Approval center</p>
-            <h2>{detail?.approvals.length ?? bootstrap?.approvals.length ?? 0} pending request(s)</h2>
+            <p className="eyebrow">{copy.approvalCenter}</p>
+            <h2>{detail?.approvals.length ?? bootstrap?.approvals.length ?? 0} {copy.pendingRequests}</h2>
           </div>
           <div className="approval-list">
             {(detail?.approvals ?? []).length === 0 ? (
               <article className="approval-card">
                 <div className="approval-head">
-                  <strong>No pending approvals</strong>
+                  <strong>{copy.noPendingApprovals}</strong>
                   <span>codex</span>
                 </div>
-                <p>Network, extra file access, and high-risk commands will appear here when Codex requests them.</p>
+                <p>{copy.approvalsHint}</p>
               </article>
             ) : (
               detail?.approvals.map((approval) => (
@@ -808,13 +1101,13 @@ export function App() {
                   <p>{approval.risk}</p>
                   <div className="approval-actions">
                     <button type="button" onClick={() => void handleApprovalAction(approval, 'accept', 'once')} disabled={busy === approval.id}>
-                      Approve once
+                      {copy.approveOnce}
                     </button>
                     <button type="button" onClick={() => void handleApprovalAction(approval, 'accept', 'session')} disabled={busy === approval.id}>
-                      Approve session
+                      {copy.approveSession}
                     </button>
                     <button type="button" className="button-secondary" onClick={() => void handleApprovalAction(approval, 'decline', 'once')} disabled={busy === approval.id}>
-                      Decline
+                      {copy.decline}
                     </button>
                   </div>
                 </article>
@@ -829,46 +1122,48 @@ export function App() {
           <aside className="settings-sheet" onClick={(event) => event.stopPropagation()}>
             <div className="panel-header settings-header">
               <div>
-                <p className="eyebrow">Settings</p>
-                <h2>System information and controls</h2>
+                <p className="eyebrow">{copy.settings}</p>
+                <h2>{copy.settingsTitle}</h2>
               </div>
               <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(false)}>
-                Close
+                {copy.close}
               </button>
             </div>
 
             <section className="detail-summary-grid">
               <article className="summary-card">
-                <p className="eyebrow">Product</p>
+                <p className="eyebrow">{copy.product}</p>
                 <strong>{bootstrap?.productName ?? 'remote-vibe-coding'}</strong>
-                <p>{bootstrap?.subtitle ?? 'Codex-first browser shell'}</p>
+                <p>{language === 'zh' ? copy.browserShell : (bootstrap?.subtitle ?? copy.browserShell)}</p>
               </article>
               <article className="summary-card">
-                <p className="eyebrow">Defaults</p>
+                <p className="eyebrow">{copy.defaults}</p>
                 <strong>{bootstrap?.defaults.defaultSecurityProfile ?? 'repo-write'}</strong>
-                <p>{bootstrap?.defaults.networkEnabledByDefault ? 'Network on by default' : 'Network off by default'}</p>
+                <p>{bootstrap?.defaults.networkEnabledByDefault ? copy.networkOnByDefault : copy.networkOffByDefault}</p>
               </article>
               <article className="summary-card">
-                <p className="eyebrow">Current session</p>
-                <strong>{detail?.session.title ?? 'No active session'}</strong>
-                <p>{detail?.session.workspace ?? 'Select a session to inspect its workspace.'}</p>
+                <p className="eyebrow">{copy.currentSession}</p>
+                <strong>{detail?.session.title ?? copy.noActiveSession}</strong>
+                <p>{detail?.session.workspace ?? copy.inspectWorkspaceHint}</p>
               </article>
               <article className="summary-card">
-                <p className="eyebrow">Remote access</p>
-                <strong>{cloudflare ? `${CLOUDFLARE_STATE_LABELS[cloudflare.state]} tunnel` : 'Tunnel status unavailable'}</strong>
-                <p>{cloudflare?.publicUrl ?? cloudflare?.targetUrl ?? 'No public URL available yet'}</p>
+                <p className="eyebrow">{copy.remoteAccess}</p>
+                <strong>{cloudflare ? `${CLOUDFLARE_STATE_LABELS[language][cloudflare.state]} tunnel` : copy.tunnelUnavailable}</strong>
+                <p>{cloudflare?.publicUrl ?? cloudflare?.targetUrl ?? copy.noPublicUrl}</p>
               </article>
             </section>
 
             <section className="settings-section">
               <div className="settings-section-head">
-                <strong>Cloudflare</strong>
-                <span>{cloudflare?.mode ?? 'not connected'}</span>
+                <strong>{copy.cloudflare}</strong>
+                <span>{cloudflare?.mode ?? copy.notConnected}</span>
               </div>
               <p className="detail-card-meta">
                 {cloudflare?.installed
-                  ? `Targeting ${cloudflare.targetUrl} from ${cloudflare.targetSource}.`
-                  : 'cloudflared is not installed on this machine yet.'}
+                  ? (language === 'zh'
+                    ? `当前指向 ${cloudflare.targetSource} 提供的 ${cloudflare.targetUrl}。`
+                    : `Targeting ${cloudflare.targetUrl} from ${cloudflare.targetSource}.`)
+                  : copy.cloudflareMissing}
               </p>
               {cloudflare?.publicUrl ? (
                 <p className="remote-access-url">
@@ -885,10 +1180,10 @@ export function App() {
                   disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting' || cloudflareManagedBySystem}
                 >
                   {cloudflareManagedBySystem
-                    ? 'Tunnel already live'
+                    ? copy.tunnelLive
                     : busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'
-                      ? 'Connecting...'
-                      : 'Connect tunnel'}
+                      ? copy.connecting
+                      : copy.connectTunnel}
                 </button>
                 <button
                   type="button"
@@ -897,22 +1192,22 @@ export function App() {
                   disabled={!cloudflare?.installed || !cloudflareManagedLocally || busy === 'disconnect-cloudflare'}
                 >
                   {cloudflareManagedBySystem
-                    ? 'Managed by system'
+                    ? copy.managedBySystem
                     : busy === 'disconnect-cloudflare'
-                      ? 'Disconnecting...'
-                      : 'Disconnect'}
+                      ? copy.disconnecting
+                      : copy.disconnect}
                 </button>
               </div>
             </section>
 
             <section className="settings-section">
               <div className="settings-section-head">
-                <strong>Account</strong>
+                <strong>{copy.account}</strong>
                 <span>{bootstrap?.defaults.executor ?? 'codex'}</span>
               </div>
-              <p className="detail-card-meta">Use this panel for machine-level controls. Keep the main screen focused on session management and chat.</p>
+              <p className="detail-card-meta">{copy.accountHint}</p>
               <button type="button" className="button-secondary settings-signout" onClick={() => void handleLogout()} disabled={busy === 'logout'}>
-                {busy === 'logout' ? 'Signing out...' : 'Sign out'}
+                {busy === 'logout' ? copy.signingOut : copy.signOut}
               </button>
             </section>
           </aside>
@@ -924,32 +1219,32 @@ export function App() {
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <div className="panel-header settings-header">
               <div>
-                <p className="eyebrow">New session</p>
-                <h2>Create a workspace thread</h2>
+                <p className="eyebrow">{copy.newSession}</p>
+                <h2>{copy.newSessionTitle}</h2>
               </div>
               <button type="button" className="button-secondary topbar-button" onClick={() => setNewSessionOpen(false)}>
-                Close
+                {copy.close}
               </button>
             </div>
 
             <form className="create-form" onSubmit={handleCreateSession}>
               <label className="field">
-                <span>Workspace</span>
+                <span>{copy.workspace}</span>
                 <input value={workspace} onChange={(event) => setWorkspace(event.target.value)} />
               </label>
               <label className="field">
-                <span>Title</span>
-                <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional session title" />
+                <span>{copy.title}</span>
+                <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder={copy.optionalSessionTitle} />
               </label>
               <label className="field">
-                <span>Security profile</span>
+                <span>{copy.securityProfile}</span>
                 <select value={securityProfile} onChange={(event) => setSecurityProfile(event.target.value as 'repo-write' | 'full-host')}>
                   <option value="repo-write">repo-write</option>
                   <option value="full-host">full-host</option>
                 </select>
               </label>
               <button type="submit" disabled={busy === 'create-session'}>
-                {busy === 'create-session' ? 'Creating...' : 'Create session'}
+                {busy === 'create-session' ? copy.creating : copy.createSession}
               </button>
             </form>
           </div>
