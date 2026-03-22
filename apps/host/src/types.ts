@@ -1,11 +1,17 @@
 export type SecurityProfile = 'read-only' | 'repo-write' | 'full-host';
+export type ApprovalMode = 'less-approval' | 'full-approval';
 export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'idle' | 'running' | 'needs-approval' | 'error' | 'stale';
 export type SessionType = 'code' | 'chat';
+export type UserRole = 'user' | 'developer' | 'admin';
+export type AppMode = 'chat' | 'developer';
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type TranscriptEventKind = 'user' | 'assistant' | 'tool' | 'status';
 export type CloudflareTunnelState = 'idle' | 'connecting' | 'connected' | 'error';
 export type CloudflareTunnelMode = 'quick' | 'token' | 'named';
 export type CloudflareTargetSource = 'host' | 'dev-web' | 'override';
+export type SessionAttachmentKind = 'image' | 'file' | 'pdf';
+export type AttachmentOwnerKind = 'conversation' | 'session';
 
 export interface ModelOption {
   id: string;
@@ -26,6 +32,7 @@ export interface ProductDefaults {
   fullHostAvailable: boolean;
   approvalScopes: ApprovalScope[];
   primaryClient: 'web';
+  modes: AppMode[];
   sessionTypes: SessionType[];
 }
 
@@ -48,6 +55,8 @@ export interface CloudflareStatus {
 export interface UserRecord {
   id: string;
   username: string;
+  roles: UserRole[];
+  preferredMode: AppMode | null;
   isAdmin: boolean;
   allowedSessionTypes: SessionType[];
   canUseFullHost: boolean;
@@ -59,7 +68,7 @@ export interface AdminUserRecord extends UserRecord {
   token: string;
 }
 
-export interface SessionRecord {
+export interface BaseTurnRecord {
   id: string;
   ownerUserId: string;
   ownerUsername: string;
@@ -67,23 +76,45 @@ export interface SessionRecord {
   threadId: string;
   activeTurnId: string | null;
   title: string;
+  autoTitle: boolean;
   workspace: string;
   archivedAt: string | null;
   securityProfile: SecurityProfile;
+  approvalMode: ApprovalMode;
   networkEnabled: boolean;
   fullHostEnabled: boolean;
   status: SessionStatus;
   lastIssue: string | null;
+  hasTranscript: boolean;
   model: string | null;
   reasoningEffort: ReasoningEffort | null;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface ConversationRecord extends BaseTurnRecord {
+  sessionType: 'chat';
+}
+
+export interface SessionRecord extends BaseTurnRecord {
+  sessionType: 'code';
+  workspaceId: string;
+  securityProfile: SecurityProfile;
+  approvalMode: ApprovalMode;
+  networkEnabled: boolean;
+  fullHostEnabled: boolean;
+}
+
 export interface SessionSummary extends SessionRecord {
   lastUpdate: string;
   pendingApprovalCount: number;
 }
+
+export interface ConversationSummary extends ConversationRecord {
+  lastUpdate: string;
+}
+
+export type TurnRecord = ConversationRecord | SessionRecord;
 
 export interface PendingApproval {
   id: string;
@@ -105,11 +136,62 @@ export interface SessionEvent {
   createdAt: string;
 }
 
-export interface CodexThreadInput {
+export interface SessionAttachmentRecord {
+  id: string;
+  ownerKind: AttachmentOwnerKind;
+  ownerId: string;
+  sessionId: string;
+  ownerUserId: string;
+  ownerUsername: string;
+  kind: SessionAttachmentKind;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  storagePath: string;
+  extractedText: string | null;
+  consumedAt: string | null;
+  createdAt: string;
+}
+
+export interface SessionAttachmentSummary {
+  id: string;
+  kind: SessionAttachmentKind;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  url: string;
+  createdAt: string;
+}
+
+export interface WorkspaceSummary {
+  id: string;
+  name: string;
+  path: string;
+  visible: boolean;
+  sortOrder: number;
+}
+
+export interface WorkspaceRecord extends WorkspaceSummary {
+  ownerUserId: string;
+  ownerUsername: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CodexThreadTextInput {
   type: 'text';
   text: string;
   text_elements: unknown[];
 }
+
+export interface CodexThreadLocalImageInput {
+  type: 'localImage';
+  path: string;
+}
+
+export type CodexThreadInput =
+  | CodexThreadTextInput
+  | CodexThreadLocalImageInput;
 
 export interface CodexUserMessageItem {
   type: 'userMessage';
@@ -206,45 +288,153 @@ export interface CodexThread {
   turns: CodexTurn[];
 }
 
+export interface CodexThreadSummary {
+  id: string;
+  preview: string;
+  cwd: string;
+  name: string | null;
+  path?: string | null;
+  cliVersion?: string | null;
+  source?: string | null;
+  modelProvider?: string | null;
+  gitInfo?: {
+    sha?: string;
+    branch?: string;
+    originUrl?: string;
+  };
+  status: {
+    type: string;
+    activeFlags?: string[];
+  } | string;
+  updatedAt: number;
+}
+
+export interface SessionTranscriptEntry {
+  id: string;
+  index: number;
+  kind: TranscriptEventKind;
+  body: string;
+  markdown: boolean;
+  label: string | null;
+  title: string | null;
+  meta: string | null;
+  attachments: SessionAttachmentSummary[];
+  fileChanges?: SessionFileChange[];
+}
+
+export interface SessionCommandEvent {
+  id: string;
+  index: number;
+  command: string;
+  cwd: string;
+  status: string;
+  exitCode: number | null;
+  output: string;
+}
+
+export interface SessionFileChange {
+  path: string;
+  kind: string;
+  diff: string | null;
+}
+
+export interface SessionFileChangeEvent {
+  id: string;
+  index: number;
+  path: string;
+  kind: string;
+  status: string;
+  diff: string | null;
+}
+
 export interface BootstrapPayload {
   productName: string;
   subtitle: string;
   defaults: ProductDefaults;
   cloudflare: CloudflareStatus;
   currentUser: UserRecord;
+  availableModes: AppMode[];
+  defaultMode: AppMode;
+  workspaceRoot: string;
+  workspaces: WorkspaceSummary[];
   availableModels: ModelOption[];
   sessions: SessionSummary[];
+  conversations: ConversationSummary[];
   approvals: PendingApproval[];
   updatedAt: string;
 }
 
 export interface SessionDetailResponse {
-  session: SessionRecord;
+  session: TurnRecord;
   approvals: PendingApproval[];
   liveEvents: SessionEvent[];
-  thread: CodexThread | null;
+  thread: CodexThreadSummary | null;
+  transcriptTotal: number;
+  commands: SessionCommandEvent[];
+  changes: SessionFileChangeEvent[];
+  draftAttachments: SessionAttachmentSummary[];
+}
+
+export interface ConversationDetailResponse {
+  conversation: ConversationRecord;
+  thread: CodexThreadSummary | null;
+  transcriptTotal: number;
+  draftAttachments: SessionAttachmentSummary[];
+}
+
+export interface SessionTranscriptPageResponse {
+  items: SessionTranscriptEntry[];
+  nextCursor: string | null;
+  total: number;
 }
 
 export interface CreateSessionRequest {
   sessionType?: SessionType;
+  workspaceId?: string;
   cwd?: string;
+  workspaceName?: string;
   title?: string;
   securityProfile?: SecurityProfile;
+  approvalMode?: ApprovalMode;
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+}
+
+export interface CreateConversationRequest {
+  title?: string;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
 }
 
 export interface CreateTurnRequest {
-  prompt: string;
+  prompt?: string;
+  attachmentIds?: string[];
 }
 
-export interface RenameSessionRequest {
-  title: string;
+export interface UpdateSessionRequest {
+  title?: string;
+  workspaceName?: string;
+  securityProfile?: SecurityProfile;
+  approvalMode?: ApprovalMode;
+}
+
+export interface UpdateConversationRequest {
+  title?: string;
+}
+
+export interface CreateWorkspaceRequest {
+  name?: string;
+}
+
+export interface UpdateWorkspaceRequest {
+  visible?: boolean;
+  sortOrder?: number;
 }
 
 export interface UpdateSessionPreferencesRequest {
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
+  approvalMode?: ApprovalMode;
 }
 
 export interface ResolveApprovalRequest {
@@ -255,6 +445,8 @@ export interface ResolveApprovalRequest {
 export interface CreateUserRequest {
   username: string;
   password: string;
+  roles?: UserRole[];
+  preferredMode?: AppMode | null;
   isAdmin?: boolean;
   allowedSessionTypes?: SessionType[];
   canUseFullHost?: boolean;
@@ -263,6 +455,8 @@ export interface CreateUserRequest {
 export interface UpdateUserRequest {
   username?: string;
   password?: string;
+  roles?: UserRole[];
+  preferredMode?: AppMode | null;
   isAdmin?: boolean;
   allowedSessionTypes?: SessionType[];
   canUseFullHost?: boolean;

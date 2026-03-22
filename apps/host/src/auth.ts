@@ -1,27 +1,55 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { chmod, readFile, writeFile } from 'node:fs/promises';
+import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
 
-import { AUTH_FILE, ensureDataDir } from './config.js';
+import { AUTH_BACKUP_FILE, AUTH_FILE, ensureDataDir } from './config.js';
 import type {
+  AppMode,
   AdminUserRecord,
   CreateUserRequest,
   SessionType,
+  UserRole,
   UpdateUserRequest,
   UserRecord,
 } from './types.js';
 
 export const AUTH_COOKIE_NAME = 'rvc_session';
 
-interface AuthFileUser extends UserRecord {
+interface AuthFileUser {
+  id: string;
+  username: string;
+  roles: UserRole[];
+  preferredMode: AppMode | null;
+  canUseFullHost: boolean;
+  createdAt: string;
+  updatedAt: string;
   passwordHash: string;
   token: string;
 }
 
 interface AuthFile {
-  version: 2;
+  version: 3;
   createdAt: string;
   updatedAt: string;
   users: AuthFileUser[];
+}
+
+interface LegacyAuthFileUserV2 {
+  id: string;
+  username: string;
+  isAdmin: boolean;
+  allowedSessionTypes: SessionType[];
+  canUseFullHost: boolean;
+  createdAt: string;
+  updatedAt: string;
+  passwordHash: string;
+  token: string;
+}
+
+interface LegacyAuthFileV2 {
+  version: 2;
+  createdAt: string;
+  updatedAt: string;
+  users: LegacyAuthFileUserV2[];
 }
 
 interface LegacyOwnerAuthConfig {
@@ -63,17 +91,89 @@ function verifyPasswordHash(password: string, passwordHash: string) {
   return safeEqual(actualHash, expectedHash);
 }
 
-function normalizedSessionTypes(sessionTypes: SessionType[] | undefined, fallback: SessionType[]) {
-  const allowed = Array.from(new Set((sessionTypes ?? fallback).filter((entry): entry is SessionType => entry === 'code' || entry === 'chat')));
-  return allowed.length > 0 ? allowed : fallback;
+function orderedRoles(roles: Iterable<UserRole>) {
+  const priority: UserRole[] = ['user', 'developer', 'admin'];
+  const roleSet = new Set(roles);
+  return priority.filter((role) => roleSet.has(role));
+}
+
+function allowedSessionTypesFromRoles(roles: UserRole[]) {
+  const allowed: SessionType[] = [];
+  if (roles.includes('developer')) {
+    allowed.push('code');
+  }
+  if (roles.includes('user')) {
+    allowed.push('chat');
+  }
+  return allowed;
+}
+
+function deriveDefaultMode(roles: UserRole[]): AppMode {
+  return roles.includes('developer') ? 'developer' : 'chat';
+}
+
+function normalizePreferredMode(preferredMode: AppMode | null | undefined, roles: UserRole[]) {
+  const allowedModes = new Set<AppMode>([
+    ...(roles.includes('user') ? (['chat'] as const) : []),
+    ...(roles.includes('developer') ? (['developer'] as const) : []),
+  ]);
+  if (allowedModes.size === 0) {
+    return 'chat' as const;
+  }
+  if (preferredMode && allowedModes.has(preferredMode)) {
+    return preferredMode;
+  }
+  return deriveDefaultMode(roles);
+}
+
+function normalizedRoles(roles: UserRole[] | undefined, fallback: UserRole[]) {
+  const filtered = orderedRoles((roles ?? fallback).filter((entry): entry is UserRole => (
+    entry === 'user' || entry === 'developer' || entry === 'admin'
+  )));
+  if (!filtered.includes('user') && !filtered.includes('developer')) {
+    return orderedRoles(['user', ...filtered]);
+  }
+  return filtered.length > 0 ? filtered : orderedRoles(fallback);
+}
+
+function rolesFromLegacy(user: Pick<LegacyAuthFileUserV2, 'allowedSessionTypes' | 'isAdmin'>) {
+  const roles: UserRole[] = [];
+  const allowedSessionTypes = Array.from(new Set((user.allowedSessionTypes ?? []).filter((entry): entry is SessionType => entry === 'code' || entry === 'chat')));
+  if (allowedSessionTypes.includes('chat')) {
+    roles.push('user');
+  }
+  if (allowedSessionTypes.includes('code')) {
+    roles.push('developer');
+  }
+  if (user.isAdmin) {
+    roles.push('admin');
+  }
+  return normalizedRoles(roles, ['user']);
+}
+
+function resolveRolesFromInput(
+  input: Pick<CreateUserRequest | UpdateUserRequest, 'roles' | 'allowedSessionTypes' | 'isAdmin'>,
+  fallback: UserRole[],
+) {
+  if (Array.isArray(input.roles)) {
+    return normalizedRoles(input.roles, fallback);
+  }
+  const legacyRoles = rolesFromLegacy({
+    allowedSessionTypes: input.allowedSessionTypes ?? allowedSessionTypesFromRoles(fallback),
+    isAdmin: Boolean(input.isAdmin ?? fallback.includes('admin')),
+  });
+  return normalizedRoles(legacyRoles, fallback);
 }
 
 function sanitizeUser(user: AuthFileUser): UserRecord {
+  const roles = normalizedRoles(user.roles, ['user']);
   return {
     id: user.id,
     username: user.username,
-    isAdmin: user.isAdmin,
-    allowedSessionTypes: [...user.allowedSessionTypes],
+    roles,
+    preferredMode: normalizePreferredMode(user.preferredMode, roles),
+    isAdmin: roles.includes('admin'),
+    allowedSessionTypes: allowedSessionTypesFromRoles(roles),
     canUseFullHost: user.canUseFullHost,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt,
@@ -87,11 +187,64 @@ function sanitizeAdminUser(user: AuthFileUser): AdminUserRecord {
   };
 }
 
-async function persistAuth(auth: AuthFile) {
-  await writeFile(AUTH_FILE, `${JSON.stringify(auth, null, 2)}\n`, {
-    mode: 0o600,
+function isMissingFileError(error: unknown): error is NodeJS.ErrnoException {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT');
+}
+
+function formatPersistenceError(context: string, filePath: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`Failed to load ${context} from ${filePath}: ${message}`);
+}
+
+async function loadPersistedAuthFile<T>(primaryPath: string, backupPath: string, context: string): Promise<T | null> {
+  let primaryError: Error | null = null;
+
+  try {
+    return JSON.parse(await readFile(primaryPath, 'utf8')) as T;
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      primaryError = formatPersistenceError(context, primaryPath, error);
+    }
+  }
+
+  try {
+    return JSON.parse(await readFile(backupPath, 'utf8')) as T;
+  } catch (error) {
+    if (isMissingFileError(error)) {
+      if (primaryError) {
+        throw primaryError;
+      }
+      return null;
+    }
+    throw formatPersistenceError(context, backupPath, error);
+  }
+}
+
+async function writePersistedAuthFile(primaryPath: string, backupPath: string, content: string, mode: number) {
+  const tempPath = `${primaryPath}.${process.pid}.${Date.now()}.tmp`;
+  const previousContent = await readFile(primaryPath, 'utf8').catch((error: unknown) => {
+    if (isMissingFileError(error)) {
+      return null;
+    }
+    throw error;
   });
-  await chmod(AUTH_FILE, 0o600);
+
+  await writeFile(tempPath, content, { mode });
+  if (previousContent !== null) {
+    await writeFile(backupPath, previousContent, { mode });
+    await chmod(backupPath, mode);
+  }
+  await rename(tempPath, primaryPath);
+  await chmod(primaryPath, mode);
+}
+
+async function persistAuth(auth: AuthFile) {
+  await writePersistedAuthFile(
+    AUTH_FILE,
+    AUTH_BACKUP_FILE,
+    `${JSON.stringify(auth, null, 2)}\n`,
+    0o600,
+  );
 }
 
 function createAdminUser(username: string, password: string, createdAt: string): AuthFileUser {
@@ -100,8 +253,8 @@ function createAdminUser(username: string, password: string, createdAt: string):
     username,
     passwordHash: hashPassword(password),
     token: randomSecret(32),
-    isAdmin: true,
-    allowedSessionTypes: ['code', 'chat'],
+    roles: ['user', 'developer', 'admin'],
+    preferredMode: 'developer',
     canUseFullHost: true,
     createdAt,
     updatedAt: createdAt,
@@ -138,28 +291,54 @@ function ensureUniqueUsername(auth: AuthFile, username: string, ignoreUserId?: s
 }
 
 function ensureAdminInvariant(users: AuthFileUser[]) {
-  if (!users.some((entry) => entry.isAdmin)) {
+  if (!users.some((entry) => entry.roles.includes('admin'))) {
     throw new Error('At least one admin user is required');
   }
 }
 
 export async function loadOrCreateAuthState() {
   await ensureDataDir();
+  const parsed = await loadPersistedAuthFile<AuthFile | LegacyAuthFileV2 | LegacyOwnerAuthConfig>(
+    AUTH_FILE,
+    AUTH_BACKUP_FILE,
+    'auth state',
+  );
 
-  try {
-    const content = await readFile(AUTH_FILE, 'utf8');
-    const parsed = JSON.parse(content) as AuthFile | LegacyOwnerAuthConfig;
-
-    if ('version' in parsed && parsed.version === 2 && Array.isArray(parsed.users)) {
+  if (parsed) {
+    if ('version' in parsed && parsed.version === 3 && Array.isArray(parsed.users)) {
       return {
         ...parsed,
         users: parsed.users.map((user) => ({
           ...user,
-          allowedSessionTypes: normalizedSessionTypes(user.allowedSessionTypes, ['chat']),
+          roles: normalizedRoles(user.roles, ['user']),
+          preferredMode: normalizePreferredMode(user.preferredMode, normalizedRoles(user.roles, ['user'])),
           canUseFullHost: Boolean(user.canUseFullHost),
-          isAdmin: Boolean(user.isAdmin),
         })),
       } satisfies AuthFile;
+    }
+
+    if ('version' in parsed && parsed.version === 2 && Array.isArray(parsed.users)) {
+      const migrated: AuthFile = {
+        version: 3,
+        createdAt: parsed.createdAt,
+        updatedAt: new Date().toISOString(),
+        users: parsed.users.map((user) => {
+          const roles = rolesFromLegacy(user);
+          return {
+            id: user.id,
+            username: user.username,
+            roles,
+            preferredMode: normalizePreferredMode(null, roles),
+            canUseFullHost: Boolean(user.canUseFullHost) && roles.includes('developer'),
+            createdAt: user.createdAt,
+            updatedAt: user.updatedAt,
+            passwordHash: user.passwordHash,
+            token: user.token,
+          };
+        }),
+      };
+      await persistAuth(migrated);
+      return migrated;
     }
 
     const legacy = parsed as LegacyOwnerAuthConfig;
@@ -170,43 +349,43 @@ export async function loadOrCreateAuthState() {
       username: legacy.username,
       passwordHash: legacy.passwordHash ?? hashPassword(password ?? randomSecret(18)),
       token: legacy.token,
-      isAdmin: true,
-      allowedSessionTypes: ['code', 'chat'],
+      roles: ['user', 'developer', 'admin'],
+      preferredMode: 'developer',
       canUseFullHost: true,
       createdAt,
       updatedAt: createdAt,
     };
     const migrated: AuthFile = {
-      version: 2,
+      version: 3,
       createdAt,
       updatedAt: new Date().toISOString(),
       users: [migratedUser],
     };
     await persistAuth(migrated);
     return migrated;
-  } catch {
-    const envUsername = process.env.RVC_AUTH_USERNAME?.trim();
-    const envPassword = process.env.RVC_AUTH_PASSWORD?.trim();
-    const createdAt = new Date().toISOString();
-    const seedUser = envUsername && envPassword
-      ? createAdminUser(envUsername, envPassword, createdAt)
-      : createAdminUser('owner', randomSecret(18), createdAt);
-
-    const auth: AuthFile = {
-      version: 2,
-      createdAt,
-      updatedAt: createdAt,
-      users: [
-        {
-          ...seedUser,
-          token: process.env.RVC_AUTH_TOKEN?.trim() || seedUser.token,
-        },
-      ],
-    };
-
-    await persistAuth(auth);
-    return auth;
   }
+
+  const envUsername = process.env.RVC_AUTH_USERNAME?.trim();
+  const envPassword = process.env.RVC_AUTH_PASSWORD?.trim();
+  const createdAt = new Date().toISOString();
+  const seedUser = envUsername && envPassword
+    ? createAdminUser(envUsername, envPassword, createdAt)
+    : createAdminUser('owner', randomSecret(18), createdAt);
+
+  const auth: AuthFile = {
+    version: 3,
+    createdAt,
+    updatedAt: createdAt,
+    users: [
+      {
+        ...seedUser,
+        token: process.env.RVC_AUTH_TOKEN?.trim() || seedUser.token,
+      },
+    ],
+  };
+
+  await persistAuth(auth);
+  return auth;
 }
 
 export function getPublicUsers(auth: AuthFile) {
@@ -230,14 +409,15 @@ export async function createUser(auth: AuthFile, input: CreateUserRequest) {
   ensureUniqueUsername(auth, username);
   const password = validatePassword(input.password, true);
   const createdAt = new Date().toISOString();
+  const roles = resolveRolesFromInput(input, ['user']);
   const user: AuthFileUser = {
     id: randomUUID(),
     username,
     passwordHash: hashPassword(password ?? randomSecret(18)),
     token: randomSecret(32),
-    isAdmin: Boolean(input.isAdmin),
-    allowedSessionTypes: normalizedSessionTypes(input.allowedSessionTypes, ['chat']),
-    canUseFullHost: Boolean(input.canUseFullHost),
+    roles,
+    preferredMode: normalizePreferredMode(input.preferredMode, roles),
+    canUseFullHost: Boolean(input.canUseFullHost) && roles.includes('developer'),
     createdAt,
     updatedAt: createdAt,
   };
@@ -265,14 +445,15 @@ export async function updateUser(auth: AuthFile, userId: string, input: UpdateUs
 
   const password = validatePassword(input.password, false);
   const updatedAt = new Date().toISOString();
+  const roles = resolveRolesFromInput(input, current.roles);
   const nextUser: AuthFileUser = {
     ...current,
     username,
-    isAdmin: input.isAdmin ?? current.isAdmin,
-    allowedSessionTypes: input.allowedSessionTypes
-      ? normalizedSessionTypes(input.allowedSessionTypes, current.allowedSessionTypes)
-      : current.allowedSessionTypes,
-    canUseFullHost: input.canUseFullHost ?? current.canUseFullHost,
+    roles,
+    preferredMode: Object.prototype.hasOwnProperty.call(input, 'preferredMode')
+      ? normalizePreferredMode(input.preferredMode ?? null, roles)
+      : normalizePreferredMode(current.preferredMode, roles),
+    canUseFullHost: (input.canUseFullHost ?? current.canUseFullHost) && roles.includes('developer'),
     passwordHash: password ? hashPassword(password) : current.passwordHash,
     token: input.regenerateToken ? randomSecret(32) : current.token,
     updatedAt,

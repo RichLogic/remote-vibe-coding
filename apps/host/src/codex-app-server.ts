@@ -4,7 +4,7 @@ import { createServer } from 'node:net';
 
 import WebSocket from 'ws';
 
-import type { ModelOption, ReasoningEffort, SecurityProfile } from './types.js';
+import type { CodexThreadInput, ModelOption, ReasoningEffort, SecurityProfile } from './types.js';
 
 type JsonRpcId = number | string;
 
@@ -258,7 +258,7 @@ export class CodexAppServerClient extends EventEmitter {
     });
   }
 
-  async startTurn(threadId: string, prompt: string, options?: { model?: string | null; effort?: ReasoningEffort | null }) {
+  async startTurn(threadId: string, input: CodexThreadInput[], options?: { model?: string | null; effort?: ReasoningEffort | null }) {
     return this.request<{
       turn: {
         id: string;
@@ -266,13 +266,7 @@ export class CodexAppServerClient extends EventEmitter {
       };
     }>('turn/start', {
       threadId,
-      input: [
-        {
-          type: 'text',
-          text: prompt,
-          text_elements: [],
-        },
-      ],
+      input,
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.effort ? { effort: options.effort } : {}),
     });

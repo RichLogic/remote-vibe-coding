@@ -1,25 +1,30 @@
 import type {
+  AppMode,
+  BaseTurnRecord,
   BootstrapPayload,
   CloudflareStatus,
+  ConversationRecord,
+  ConversationSummary,
   ModelOption,
   PendingApproval,
   SessionRecord,
   SessionSummary,
   UserRecord,
+  WorkspaceSummary,
 } from './types.js';
 
-function describeStatus(session: SessionRecord, approvalCount: number) {
-  if (session.archivedAt) return 'Archived';
+function describeStatus(record: BaseTurnRecord, approvalCount: number) {
+  if (record.archivedAt) return 'Archived';
   if (approvalCount > 0) return `${approvalCount} approval${approvalCount === 1 ? '' : 's'} waiting`;
-  switch (session.status) {
+  switch (record.status) {
     case 'running':
-      return session.sessionType === 'chat' ? 'Streaming chat turn' : 'Streaming Codex turn';
+      return record.sessionType === 'chat' ? 'Streaming chat turn' : 'Streaming Codex turn';
     case 'needs-approval':
       return 'Waiting on user decision';
     case 'stale':
-      return session.lastIssue ?? 'Codex runtime restarted. The next prompt will create a fresh thread.';
+      return 'Ready for the next prompt';
     case 'error':
-      return session.lastIssue ?? 'Last action failed';
+      return record.lastIssue ?? 'Last action failed';
     default:
       return 'Ready for the next prompt';
   }
@@ -33,11 +38,40 @@ export function toSessionSummary(session: SessionRecord, approvalCount: number):
   };
 }
 
+export function toConversationSummary(conversation: ConversationRecord): ConversationSummary {
+  return {
+    ...conversation,
+    lastUpdate: describeStatus(conversation, 0),
+  };
+}
+
+function availableModes(currentUser: UserRecord): AppMode[] {
+  const modes: AppMode[] = [];
+  if (currentUser.roles.includes('developer')) {
+    modes.push('developer');
+  }
+  if (currentUser.roles.includes('user')) {
+    modes.push('chat');
+  }
+  return modes.length > 0 ? modes : ['chat'];
+}
+
+function defaultMode(currentUser: UserRecord): AppMode {
+  return currentUser.preferredMode && availableModes(currentUser).includes(currentUser.preferredMode)
+    ? currentUser.preferredMode
+    : currentUser.roles.includes('developer')
+      ? 'developer'
+      : 'chat';
+}
+
 export function buildBootstrapPayload(
   currentUser: UserRecord,
   sessions: SessionRecord[],
+  conversations: ConversationRecord[],
   approvals: PendingApproval[],
   cloudflare: CloudflareStatus,
+  workspaceRoot: string,
+  workspaces: WorkspaceSummary[],
   availableModels: ModelOption[],
 ): BootstrapPayload {
   const approvalCounts = new Map<string, number>();
@@ -51,6 +85,7 @@ export function buildBootstrapPayload(
   const summaries = sessions.map((session) =>
     toSessionSummary(session, approvalCounts.get(session.id) ?? 0),
   );
+  const conversationSummaries = conversations.map(toConversationSummary);
 
   return {
     productName: 'remote-vibe-coding',
@@ -63,12 +98,18 @@ export function buildBootstrapPayload(
       fullHostAvailable: currentUser.canUseFullHost,
       approvalScopes: ['once', 'session'],
       primaryClient: 'web',
+      modes: availableModes(currentUser),
       sessionTypes: ['code', 'chat'],
     },
     cloudflare,
     currentUser,
+    availableModes: availableModes(currentUser),
+    defaultMode: defaultMode(currentUser),
+    workspaceRoot,
+    workspaces,
     availableModels,
     sessions: summaries,
+    conversations: conversationSummaries,
     approvals,
     updatedAt: new Date().toISOString(),
   };

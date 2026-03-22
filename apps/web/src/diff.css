@@ -1,0 +1,125 @@
+.timeline-tool-output.timeline-tool-files {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.timeline-diff-file {
+  overflow: hidden;
+  border: 1px solid rgba(43, 36, 30, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.timeline-diff-file-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(43, 36, 30, 0.08);
+}
+
+.timeline-diff-file-add .timeline-diff-file-header {
+  background: rgba(22, 163, 74, 0.08);
+}
+
+.timeline-diff-file-remove .timeline-diff-file-header {
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.timeline-diff-file-update .timeline-diff-file-header {
+  background: rgba(14, 116, 144, 0.08);
+}
+
+.timeline-diff-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.86rem;
+  color: var(--ink);
+}
+
+.timeline-diff-kind {
+  flex-shrink: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.timeline-diff-kind-add {
+  background: rgba(22, 163, 74, 0.14);
+  color: #166534;
+}
+
+.timeline-diff-kind-remove {
+  background: rgba(220, 38, 38, 0.14);
+  color: #991b1b;
+}
+
+.timeline-diff-kind-update {
+  background: rgba(14, 116, 144, 0.14);
+  color: #155e75;
+}
+
+.timeline-diff-lines {
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.timeline-diff-line {
+  display: grid;
+  grid-template-columns: 56px 56px minmax(0, 1fr);
+  min-width: max-content;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.timeline-diff-line + .timeline-diff-line {
+  border-top: 1px solid rgba(43, 36, 30, 0.05);
+}
+
+.timeline-diff-line-meta,
+.timeline-diff-line-hunk {
+  color: var(--muted);
+}
+
+.timeline-diff-line-hunk {
+  background: rgba(14, 116, 144, 0.08);
+}
+
+.timeline-diff-line-add {
+  background: rgba(22, 163, 74, 0.1);
+}
+
+.timeline-diff-line-remove {
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.timeline-diff-line-context {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.timeline-diff-gutter {
+  padding: 0 10px;
+  border-right: 1px solid rgba(43, 36, 30, 0.06);
+  color: rgba(87, 74, 60, 0.78);
+  text-align: right;
+  user-select: none;
+}
+
+.timeline-diff-text {
+  display: block;
+  padding: 0 14px;
+  white-space: pre;
+  color: var(--ink);
+}
+
+.timeline-diff-empty {
+  margin: 0;
+  padding: 14px;
+  color: var(--muted);
+}

@@ -2,15 +2,21 @@ import type {
   AdminUserRecord,
   BootstrapPayload,
   CloudflareStatus,
+  ConversationRecord,
+  CreateWorkspaceRequest,
   CreateSessionRequest,
   CreateTurnRequest,
   CreateUserRequest,
-  RenameSessionRequest,
+  SessionAttachmentSummary,
   ResolveApprovalRequest,
   SessionDetailResponse,
   SessionRecord,
+  SessionTranscriptPageResponse,
+  UpdateSessionRequest,
   UpdateSessionPreferencesRequest,
+  UpdateWorkspaceRequest,
   UpdateUserRequest,
+  WorkspaceSummary,
 } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
@@ -62,12 +68,54 @@ export function fetchSessionDetail(sessionId: string) {
   return requestJson<SessionDetailResponse>(`/api/sessions/${sessionId}`);
 }
 
+export function fetchSessionTranscript(sessionId: string, options?: { limit?: number; before?: string | null }) {
+  const params = new URLSearchParams();
+  if (options?.limit) {
+    params.set('limit', String(options.limit));
+  }
+  if (options?.before) {
+    params.set('before', options.before);
+  }
+  const suffix = params.toString();
+  return requestJson<SessionTranscriptPageResponse>(`/api/sessions/${sessionId}/transcript${suffix ? `?${suffix}` : ''}`);
+}
+
 export async function createSession(input: CreateSessionRequest) {
-  const response = await requestJson<{ session: SessionRecord }>('/api/sessions', {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>('/api/sessions', {
     method: 'POST',
     body: JSON.stringify(input),
   });
   return response.session;
+}
+
+export async function forkSession(sessionId: string) {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>(`/api/sessions/${sessionId}/fork`, {
+    method: 'POST',
+    body: '{}',
+  });
+  return response.session;
+}
+
+export async function createWorkspace(input: CreateWorkspaceRequest) {
+  return requestJson<{
+    workspace: WorkspaceSummary;
+    workspaceRoot: string;
+    workspaces: WorkspaceSummary[];
+  }>('/api/workspaces', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateWorkspace(workspaceId: string, input: UpdateWorkspaceRequest) {
+  return requestJson<{
+    workspace: WorkspaceSummary;
+    workspaceRoot: string;
+    workspaces: WorkspaceSummary[];
+  }>(`/api/workspaces/${workspaceId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(input),
+  });
 }
 
 export async function restartSession(sessionId: string) {
@@ -79,29 +127,31 @@ export async function restartSession(sessionId: string) {
 }
 
 export async function archiveSession(sessionId: string) {
-  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/archive`, {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>(`/api/sessions/${sessionId}/archive`, {
     method: 'POST',
+    body: '{}',
   });
   return response.session;
 }
 
 export async function restoreSession(sessionId: string) {
-  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/restore`, {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>(`/api/sessions/${sessionId}/restore`, {
     method: 'POST',
+    body: '{}',
   });
   return response.session;
 }
 
-export async function renameSession(sessionId: string, input: RenameSessionRequest) {
-  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/rename`, {
-    method: 'POST',
+export async function updateSession(sessionId: string, input: UpdateSessionRequest) {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>(`/api/sessions/${sessionId}`, {
+    method: 'PATCH',
     body: JSON.stringify(input),
   });
   return response.session;
 }
 
 export async function updateSessionPreferences(sessionId: string, input: UpdateSessionPreferencesRequest) {
-  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/preferences`, {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>(`/api/sessions/${sessionId}/preferences`, {
     method: 'PATCH',
     body: JSON.stringify(input),
   });
@@ -121,8 +171,32 @@ export async function startTurn(sessionId: string, input: CreateTurnRequest) {
   });
 }
 
+export async function uploadAttachment(sessionId: string, file: File) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/attachments`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null) as { error?: string } | null;
+    throw new Error(errorBody?.error ?? `attachment upload failed with status ${response.status}`);
+  }
+
+  const payload = await response.json() as { attachment: SessionAttachmentSummary };
+  return payload.attachment;
+}
+
+export async function deleteAttachment(sessionId: string, attachmentId: string) {
+  return requestJson<{ ok: true }>(`/api/sessions/${sessionId}/attachments/${attachmentId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function stopSession(sessionId: string) {
-  const response = await requestJson<{ session: SessionRecord }>(`/api/sessions/${sessionId}/stop`, {
+  const response = await requestJson<{ session: SessionRecord | ConversationRecord }>(`/api/sessions/${sessionId}/stop`, {
     method: 'POST',
     body: '{}',
   });
