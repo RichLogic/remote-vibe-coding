@@ -1,103 +1,232 @@
 # remote-vibe-coding
 
-`remote-vibe-coding` is a browser-first remote coding surface for local coding agents.
+[中文说明](./README.zh-CN.md)
 
-The first shipped direction is intentionally narrow:
+`remote-vibe-coding` is a Codex-first browser shell for running local coding and chat workflows through a web UI.
 
-- `Codex` is the first and only executor in phase 1
-- desktop web is the primary client
-- the product is transcript-first instead of terminal-emulator-first
-- the default security profile is `repo-write`
-- network is disabled by default and can be escalated per action or per session
-- `full-host` remains available, but only as an explicit high-trust setting
+The current repo ships a real, usable phase-1 runtime:
 
-## Repo layout
+- desktop web client
+- local host service backed by the real `codex app-server` protocol
+- two product modes: `developer` and `chat`
+- role-based access for `user`, `developer`, and `admin`
+- transcript-first sessions with approvals, attachments, archive/restore, stop, restart, and fork actions
+- managed workspaces under `~/Coding/<username>/...`
+- optional Cloudflare tunnel orchestration from the UI
 
-- `apps/host` — local host service, session policy surface, and API
-- `apps/web` — browser UI shell for the coding-first experience
-- `docs/phase-1-architecture.md` — current product and technical blueprint
+## What It Does
 
-## Local development
+### Developer mode
+
+- Create managed workspaces or clone a Git repository into a managed workspace
+- Start Codex coding sessions bound to one primary workspace
+- Send turns with prompt text and attachments
+- Review transcript events, command output, file changes, and approval requests
+- Restart stale sessions after runtime restarts
+- Archive, restore, fork, rename, and delete sessions
+
+### Chat mode
+
+- Run a general assistant experience on top of Codex in a dedicated shared `chat` workspace
+- Keep durable conversation history in MongoDB
+- Upload images, PDFs, and text-like files as context
+- Use admin-managed chat role presets
+- Archive, restore, fork, stop, and delete conversations
+
+### Permissions and trust model
+
+- Executor: `Codex`
+- Primary client: desktop web
+- Default security profile: `repo-write`
+- Network: disabled by default
+- `full-host`: available only to users who are allowed to use it
+- Approvals: surfaced to the browser instead of being silently auto-approved
+
+## Architecture
+
+- `apps/host`
+  Local Fastify host, auth, session state, approval routing, Cloudflare orchestration, Mongo-backed repositories, and the bridge to `codex app-server`.
+- `apps/web`
+  React + Vite browser client for chat and developer flows.
+- `apps/host/chat-system-prompt.json`
+  Default system prompt used by chat mode.
+- `apps/host/chat-role-presets.json`
+  Bundled chat role presets that admins can manage from the UI.
+- `docs/phase-1-architecture.md`
+  Product and technical blueprint for the current phase.
+
+## Requirements
+
+You need the following on the machine running the host:
+
+- Node.js with `npm`
+- MongoDB reachable at `mongodb://127.0.0.1:27017/?directConnection=true` by default
+- `codex` CLI, because the host starts `codex app-server`
+- `cloudflared` only if you want built-in tunnel support
+
+If `codex` is not on the default path, set `CODEX_BIN`.
+
+## Local Development
+
+Install dependencies:
 
 ```bash
 npm install
+```
+
+Start MongoDB. Any local instance is fine. One simple option is:
+
+```bash
+docker run --name rvc-mongo -p 27017:27017 -d mongo:7
+```
+
+Set login credentials before first start. This is strongly recommended:
+
+```bash
+export RVC_AUTH_USERNAME=owner
+export RVC_AUTH_PASSWORD='change-me'
+```
+
+Start the host and web client in separate terminals:
+
+```bash
 npm run dev:host
+```
+
+```bash
 npm run dev:web
 ```
 
-Host defaults to `http://localhost:8787`.
-Web defaults to `http://localhost:5173`.
+Open `http://127.0.0.1:5173`.
 
-In development the Vite client proxies `/api` to the host, so the browser shell uses same-origin API calls.
+Development defaults:
 
-## Cloudflare tunnel slice
+- host: `http://127.0.0.1:8787`
+- web: `http://127.0.0.1:5173`
+- Vite proxies `/api` to the host
 
-Phase 1 now ships the first Cloudflare integration slice:
+## Single-Origin Build
 
-- the host can serve the built web client from the same origin as the API
-- the browser can connect and disconnect a local `cloudflared` tunnel
-- quick tunnels work out of the box when `cloudflared` is installed
-- existing named tunnels in `~/.cloudflared/config.yml` are auto-detected when they already map a hostname to the local host port
-- managed tunnels are supported through environment variables
-
-## Owner auth
-
-The public surface is now owner-gated by default.
-
-- unauthenticated browser requests are redirected to `/login`
-- password login sets an HTTP-only cookie
-- `?token=...` links still work as a fallback and are cleaned back to `/` after the cookie is set
-- credentials can come from environment variables or `~/.config/remote-vibe-coding/auth.json`
-
-Supported environment overrides:
-
-- `RVC_AUTH_USERNAME`
-- `RVC_AUTH_PASSWORD`
-- `RVC_AUTH_TOKEN`
-
-Without environment overrides, the first startup generates a local owner auth record automatically:
-
-```json
-{
-  "username": "owner",
-  "passwordHash": "...generated and hashed locally...",
-  "token": "...generated locally..."
-}
-```
-
-For a single-origin remote build:
+To serve the built web app from the host:
 
 ```bash
-npm install
 npm run build
 npm run start:host
 ```
 
-Then open `http://127.0.0.1:8787`, use the Cloudflare card in the browser shell, and connect the tunnel.
+Then open `http://127.0.0.1:8787`.
 
-If the machine already has a named tunnel config like:
+## Authentication
 
-```yaml
-ingress:
-  - hostname: codex.example.com
-    service: http://127.0.0.1:8787
+The browser surface is owner-gated by default.
+
+- Unauthenticated browser requests are redirected to `/login`
+- Password login sets an HTTP-only cookie
+- `?token=...` links still work as a fallback
+- Users, roles, preferred mode, and tokens are managed by the host
+
+Recommended setup:
+
+- Set `RVC_AUTH_USERNAME` and `RVC_AUTH_PASSWORD` before the first run
+
+If you start without those environment variables, the app creates an `owner` user automatically and writes auth state to `~/.config/remote-vibe-coding/auth.json`.
+
+Important detail:
+
+- the file stores a password hash, not the plaintext password
+- the file does store the generated token
+
+So if you skipped explicit credentials on first boot, use the token from `~/.config/remote-vibe-coding/auth.json` like this:
+
+```text
+http://127.0.0.1:8787/?token=YOUR_TOKEN
 ```
 
-the browser shell will surface that hostname as the stable public URL and prefer the named tunnel path over a quick tunnel.
+Then you can create or update users from the admin UI.
 
-Optional environment variables:
+## Data and Storage
 
-- `CLOUDFLARE_TUNNEL_TOKEN` — run a pre-created managed tunnel instead of a quick tunnel
-- `CLOUDFLARE_PUBLIC_URL` — stable public URL to display in the UI when using a managed tunnel
-- `CLOUDFLARE_TARGET_URL` — override the local target the tunnel should expose
+The project uses both local files and MongoDB.
 
-## Current scope
+- `~/.config/remote-vibe-coding/auth.json`
+  Auth state and user records.
+- `~/.config/remote-vibe-coding/sessions.json`
+  Local persisted session state and backups.
+- `~/Coding/<username>/...`
+  Managed workspaces created by the app.
+- MongoDB database `remote_vibe_coding`
+  Durable chat history, coding sessions, and workspace records.
 
-This repo currently ships the phase-1 runtime foundation:
+Attachments are written into the managed workspace so Codex can access them in-place.
 
-- a formal architecture/design document
-- a host service that bridges into the real Codex app-server protocol
-- a browser shell that can create sessions, send prompts, render thread history, and surface approval requests
-- explicit stale-session handling after host/runtime restarts, with a restart action that creates a fresh Codex thread for the same workspace
+Current attachment behavior:
 
-It still does not ship Cloudflare Access auth, Flutter, or the full long-running orchestration model yet.
+- max upload size: `20 MB`
+- supported kinds: image, PDF, generic file
+- PDFs and text-like files are text-extracted when possible
+
+## Configuration
+
+### Core runtime
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `HOST` | Host bind address | `127.0.0.1` |
+| `PORT` | Host port | `8787` |
+| `MONGODB_URL` | MongoDB connection string | `mongodb://127.0.0.1:27017/?directConnection=true` |
+| `MONGODB_DB_NAME` | MongoDB database name | `remote_vibe_coding` |
+| `CODEX_BIN` | Path to the Codex executable | platform default |
+
+### Auth
+
+| Variable | Purpose |
+| --- | --- |
+| `RVC_AUTH_USERNAME` | Seed username for the first admin user |
+| `RVC_AUTH_PASSWORD` | Seed password for the first admin user |
+| `RVC_AUTH_TOKEN` | Optional fixed token for the seeded user |
+
+### Cloudflare
+
+| Variable | Purpose |
+| --- | --- |
+| `CLOUDFLARE_TUNNEL_TOKEN` | Use a managed tunnel instead of a quick tunnel |
+| `CLOUDFLARE_PUBLIC_URL` | Stable public URL to display in the UI |
+| `CLOUDFLARE_TARGET_URL` | Override the local target exposed by the tunnel |
+
+### Web
+
+| Variable | Purpose |
+| --- | --- |
+| `VITE_API_BASE_URL` | Optional API base URL when running the web app separately |
+
+## Cloudflare Support
+
+The current Cloudflare slice supports:
+
+- quick tunnels through `cloudflared`
+- named tunnels already defined in `~/.cloudflared/config.yml`
+- managed tunnels via `CLOUDFLARE_TUNNEL_TOKEN`
+- connect and disconnect actions directly from the browser UI
+
+When a built web client exists, the host serves it from the same origin as the API. If the built client is missing, the tunnel logic can target the local Vite dev server instead.
+
+## Current Scope
+
+This repo is still intentionally narrow.
+
+Included now:
+
+- Codex-only execution
+- desktop web only
+- chat mode and developer mode in one browser shell
+- transcript-first session UX
+- explicit approval handling
+- Cloudflare tunnel integration
+- admin-managed users and chat role presets
+
+Not shipped yet:
+
+- mobile client
+- multi-executor abstraction
+- Cloudflare Access integration
+- full long-running orchestration layer beyond the current host/runtime model

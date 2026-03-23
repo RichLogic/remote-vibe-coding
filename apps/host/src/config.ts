@@ -9,7 +9,7 @@ export const SESSIONS_BACKUP_FILE = join(DATA_DIR, 'sessions.json.bak');
 export const AUTH_FILE = join(DATA_DIR, 'auth.json');
 export const AUTH_BACKUP_FILE = join(DATA_DIR, 'auth.json.bak');
 export const WORKSPACE_ROOT = resolve(homedir(), 'Coding');
-export const MONGODB_URL = process.env.MONGODB_URL?.trim() || 'mongodb://127.0.0.1:27017';
+export const MONGODB_URL = process.env.MONGODB_URL?.trim() || 'mongodb://127.0.0.1:27017/?directConnection=true';
 export const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME?.trim() || 'remote_vibe_coding';
 export const PORT = Number.parseInt(process.env.PORT ?? '8787', 10);
 export const HOST = process.env.HOST ?? '127.0.0.1';

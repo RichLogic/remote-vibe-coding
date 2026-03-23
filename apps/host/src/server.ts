@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, extname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -171,6 +171,7 @@ const CHAT_TRANSITION_ONLY_REPLY_PATTERNS = [
 const CHAT_EMPTY_REPLY_MESSAGE = 'Chat turn ended before returning a real answer.';
 const CHAT_INTERRUPTED_MESSAGE = 'This turn was interrupted before it finished. Send the next prompt to retry.';
 const execFileAsync = promisify(execFile);
+const CLOUDFLARE_STATUS_CACHE_TTL_MS = 5000;
 
 interface ChatRolePresetConfigEntry {
   id: string;
@@ -735,6 +736,35 @@ function stripChatPromptPreface(
   return stripped || null;
 }
 
+const CHAT_RECOVERY_PREFACE_LEAD = 'You are continuing an existing chat after the runtime thread was restarted.';
+
+function visibleUserTextFromThreadInput(value: string) {
+  const parsed = extractAttachmentMarkers(value);
+  return parsed.markers.length > 0 ? parsed.visibleText.trim() : value.trim();
+}
+
+function looksLikeChatTurnPrefaceText(
+  value: string,
+  rolePresetId: string | null | undefined,
+  config = cachedChatRolePresetConfig,
+) {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  if (normalized.startsWith(CHAT_RECOVERY_PREFACE_LEAD)) {
+    return true;
+  }
+
+  const promptSections = [
+    cachedChatSystemPromptText?.trim() ?? null,
+    chatRolePresetPromptText(rolePresetId, config)?.trim() ?? null,
+  ];
+
+  return promptSections.some((section) => Boolean(section) && normalized.startsWith(section!));
+}
+
 async function loadChatSystemPromptText() {
   try {
     const raw = await readFile(CHAT_SYSTEM_PROMPT_FILE, 'utf8');
@@ -812,14 +842,16 @@ function extractFirstUserPrompt(
         ? (item as { content: Array<{ type?: string; text?: string }> }).content
         : [];
 
-      const text = content
-        .filter((entry) => entry.type === 'text' && typeof entry.text === 'string')
-        .map((entry) => entry.text)
-        .join(' ')
-        .trim();
+      for (const entry of content) {
+        if (entry.type !== 'text' || typeof entry.text !== 'string') {
+          continue;
+        }
 
-      const visibleText = stripChatPromptPreface(text, rolePresetId, config);
-      if (visibleText) {
+        const visibleText = visibleUserTextFromThreadInput(entry.text);
+        if (!visibleText || looksLikeChatTurnPrefaceText(visibleText, rolePresetId, config)) {
+          continue;
+        }
+
         return visibleText;
       }
     }
@@ -833,8 +865,8 @@ function deriveChatTitleFromThread(
   rolePresetId: string | null | undefined,
   config = cachedChatRolePresetConfig,
 ) {
-  return normalizeGeneratedTitle(stripChatPromptPreface(thread?.preview, rolePresetId, config))
-    ?? normalizeGeneratedTitle(extractFirstUserPrompt(thread, rolePresetId, config));
+  return normalizeGeneratedTitle(extractFirstUserPrompt(thread, rolePresetId, config))
+    ?? normalizeGeneratedTitle(stripChatPromptPreface(thread?.preview, rolePresetId, config));
 }
 
 function extractFirstDeveloperPrompt(thread: CodexThread | null) {
@@ -901,18 +933,102 @@ async function ensureUserWorkspaceRoot(
   return root;
 }
 
+async function syncUserWorkspaceRecords(
+  username: string,
+  userId: string,
+) {
+  const root = await ensureUserWorkspaceRoot(username, userId);
+  const [existingWorkspaces, legacyWorkspaces, entries] = await Promise.all([
+    coding.listWorkspacesForUser(userId),
+    Promise.resolve(store.listWorkspacesForUser(userId)),
+    readdir(root, { withFileTypes: true }),
+  ]);
+
+  const existingByPath = new Map(existingWorkspaces.map((workspace) => [workspace.path, workspace]));
+  const legacyByPath = new Map(
+    legacyWorkspaces
+      .filter((workspace) => workspace.path.startsWith(`${root}/`))
+      .map((workspace) => [workspace.path, workspace]),
+  );
+
+  const directories = entries
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => {
+      const path = join(root, entry.name);
+      const existing = existingByPath.get(path) ?? null;
+      const legacy = legacyByPath.get(path) ?? null;
+      return {
+        path,
+        existing,
+        id: existing?.id ?? legacy?.id ?? randomUUID(),
+        name: legacy?.name ?? existing?.name ?? entry.name,
+        visible: legacy?.visible ?? existing?.visible ?? true,
+        sortHint: legacy?.sortOrder ?? existing?.sortOrder ?? Number.MAX_SAFE_INTEGER,
+        createdAt: existing?.createdAt ?? legacy?.createdAt ?? new Date().toISOString(),
+        updatedAt: existing?.updatedAt ?? legacy?.updatedAt ?? new Date().toISOString(),
+      };
+    })
+    .sort((left, right) => {
+      if (left.sortHint !== right.sortHint) {
+        return left.sortHint - right.sortHint;
+      }
+      return left.name.localeCompare(right.name);
+    });
+
+  await Promise.all(directories.map(async (directory, index) => {
+    if (directory.existing) {
+      if (
+        directory.existing.ownerUsername === username
+        && directory.existing.name === directory.name
+        && directory.existing.visible === directory.visible
+        && directory.existing.sortOrder === index
+      ) {
+        return;
+      }
+
+      await coding.updateWorkspace(directory.existing.id, {
+        ownerUsername: username,
+        name: directory.name,
+        visible: directory.visible,
+        sortOrder: index,
+        updatedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
+    await coding.createWorkspace({
+      id: directory.id,
+      ownerUserId: userId,
+      ownerUsername: username,
+      name: directory.name,
+      path: directory.path,
+      visible: directory.visible,
+      sortOrder: index,
+      createdAt: directory.createdAt,
+      updatedAt: directory.updatedAt,
+    });
+  }));
+
+  return {
+    root,
+    workspacePaths: new Set(directories.map((directory) => directory.path)),
+  };
+}
+
 async function listUserWorkspaces(
   username: string,
   userId: string,
 ): Promise<{ root: string; workspaces: WorkspaceSummary[] }> {
-  const root = await ensureUserWorkspaceRoot(username, userId);
-  const workspaces = (await coding.listWorkspacesForUser(userId)).map((workspace) => ({
+  const { root, workspacePaths } = await syncUserWorkspaceRecords(username, userId);
+  const workspaces = (await coding.listWorkspacesForUser(userId))
+    .filter((workspace) => workspacePaths.has(workspace.path))
+    .map((workspace) => ({
     id: workspace.id,
     name: workspace.name,
     path: workspace.path,
     visible: workspace.visible,
     sortOrder: workspace.sortOrder,
-  }));
+    }));
   return { root, workspaces };
 }
 
@@ -1895,6 +2011,7 @@ const chatHistory = new ChatHistoryRepository(mongoDb);
 const coding = new CodingRepository(mongoDb);
 await chatHistory.ensureIndexes();
 await coding.ensureIndexes();
+await Promise.all(seedUsers.map((user) => syncUserWorkspaceRecords(user.username, user.id)));
 await loadChatSystemPromptText();
 await loadChatRolePresetConfig();
 
@@ -1904,6 +2021,62 @@ await store.markAllStale(STALE_SESSION_MESSAGE);
 await chatHistory.markAllStale(STALE_SESSION_MESSAGE);
 await coding.markAllStale(STALE_SESSION_MESSAGE);
 const cloudflare = new CloudflareTunnelManager();
+let cachedCloudflareStatus: Awaited<ReturnType<CloudflareTunnelManager['getStatus']>> | null = null;
+let cachedCloudflareStatusExpiresAt = 0;
+let cloudflareStatusRequest: Promise<Awaited<ReturnType<CloudflareTunnelManager['getStatus']>>> | null = null;
+
+function primeCloudflareStatusCache(status: Awaited<ReturnType<CloudflareTunnelManager['getStatus']>>) {
+  cachedCloudflareStatus = status;
+  cachedCloudflareStatusExpiresAt = Date.now() + CLOUDFLARE_STATUS_CACHE_TTL_MS;
+}
+
+function clearCloudflareStatusCache() {
+  cachedCloudflareStatus = null;
+  cachedCloudflareStatusExpiresAt = 0;
+  cloudflareStatusRequest = null;
+}
+
+function cloudflareStatusIsFresh() {
+  return cachedCloudflareStatus !== null && Date.now() < cachedCloudflareStatusExpiresAt;
+}
+
+async function refreshCloudflareStatusCache() {
+  if (cloudflareStatusRequest) {
+    return cloudflareStatusRequest;
+  }
+
+  cloudflareStatusRequest = cloudflare.getStatus()
+    .then((status) => {
+      primeCloudflareStatusCache(status);
+      return status;
+    })
+    .finally(() => {
+      cloudflareStatusRequest = null;
+    });
+
+  return cloudflareStatusRequest;
+}
+
+async function getCachedCloudflareStatus(options?: { preferFresh?: boolean }) {
+  if (cloudflareStatusIsFresh()) {
+    return cachedCloudflareStatus!;
+  }
+
+  if (!cachedCloudflareStatus) {
+    return refreshCloudflareStatusCache();
+  }
+
+  const refreshRequest = refreshCloudflareStatusCache();
+
+  if (options?.preferFresh) {
+    return refreshRequest;
+  }
+
+  void refreshRequest.catch(() => undefined);
+  return cachedCloudflareStatus!;
+}
+
+void refreshCloudflareStatusCache().catch(() => undefined);
 
 let availableModels = [...FALLBACK_MODELS];
 
@@ -1961,11 +2134,15 @@ function toCodingWorkspaceSummary(workspace: WorkspaceSummary): CodingWorkspaceS
 }
 
 async function buildCodingBootstrapResponse(currentUser: UserRecord): Promise<CodingBootstrapPayload> {
-  const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
+  const [workspaceState, sessions, approvals] = await Promise.all([
+    listUserWorkspaces(currentUser.username, currentUser.id),
+    coding.listSessionsForUser(currentUser.id),
+    sessionApprovalsForUser(currentUser.id),
+  ]);
   return buildCodingBootstrapPayload(
     currentUser,
-    await coding.listSessionsForUser(currentUser.id),
-    await sessionApprovalsForUser(currentUser.id),
+    sessions,
+    approvals,
     workspaceState.root,
     workspaceState.workspaces,
     availableModels,
@@ -3092,15 +3269,22 @@ app.get('/api/health', async () => ({
 
 app.get('/api/bootstrap', async (request) => {
   const currentUser = getRequestUser(request);
-  const workspaceState = userCanUseMode(currentUser, 'developer')
-    ? await listUserWorkspaces(currentUser.username, currentUser.id)
-    : { root: userWorkspaceRoot(currentUser.username, currentUser.id), workspaces: [] };
+  const workspaceStatePromise = userCanUseMode(currentUser, 'developer')
+    ? listUserWorkspaces(currentUser.username, currentUser.id)
+    : Promise.resolve({ root: userWorkspaceRoot(currentUser.username, currentUser.id), workspaces: [] });
+  const conversations = store.listConversationsForUser(currentUser.id);
+  const [workspaceState, sessions, approvals, cloudflareStatus] = await Promise.all([
+    workspaceStatePromise,
+    coding.listSessionsForUser(currentUser.id),
+    sessionApprovalsForUser(currentUser.id),
+    getCachedCloudflareStatus(),
+  ]);
   return buildBootstrapPayload(
     currentUser,
-    await coding.listSessionsForUser(currentUser.id),
-    store.listConversationsForUser(currentUser.id),
-    await sessionApprovalsForUser(currentUser.id),
-    await cloudflare.getStatus(),
+    sessions,
+    conversations,
+    approvals,
+    cloudflareStatus,
     workspaceState.root,
     workspaceState.workspaces,
     availableModels,
@@ -4575,15 +4759,19 @@ app.delete('/api/admin/users/:userId', async (request, reply) => {
 });
 
 app.get('/api/cloudflare/status', async () => ({
-  cloudflare: await cloudflare.getStatus(),
+  cloudflare: await getCachedCloudflareStatus({ preferFresh: true }),
 }));
 
 app.post('/api/cloudflare/connect', async (_request, reply) => {
   try {
+    clearCloudflareStatusCache();
+    const status = await cloudflare.connect();
+    primeCloudflareStatusCache(status);
     return {
-      cloudflare: await cloudflare.connect(),
+      cloudflare: status,
     };
   } catch (error) {
+    clearCloudflareStatusCache();
     reply.code(500);
     return {
       error: errorMessage(error) || 'Failed to connect Cloudflare tunnel',
@@ -4593,10 +4781,14 @@ app.post('/api/cloudflare/connect', async (_request, reply) => {
 
 app.post('/api/cloudflare/disconnect', async (_request, reply) => {
   try {
+    clearCloudflareStatusCache();
+    const status = await cloudflare.disconnect();
+    primeCloudflareStatusCache(status);
     return {
-      cloudflare: await cloudflare.disconnect(),
+      cloudflare: status,
     };
   } catch (error) {
+    clearCloudflareStatusCache();
     reply.code(500);
     return {
       error: errorMessage(error) || 'Failed to disconnect Cloudflare tunnel',

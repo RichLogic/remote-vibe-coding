@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -85,10 +85,12 @@ import type {
 type Language = 'en' | 'zh';
 type UserModalMode = 'create' | 'edit';
 type WorkspaceModalMode = 'create';
+type WorkspaceDropPosition = 'before' | 'after';
 type SessionConfirmAction = { kind: 'delete'; session: SessionDetailResponse['session'] } | null;
 type UiSessionState = 'normal' | 'new' | 'pending' | 'completed' | 'error' | 'processing' | 'stale';
 type ChatCompletionMarkerMap = Record<string, string>;
 type ChatStatusRecord = Pick<ConversationSummary, 'id' | 'activeTurnId' | 'status' | 'uiStatus' | 'hasTranscript' | 'updatedAt'>;
+type ModeOption = 'detailed' | 'less-interruptive' | 'all-permissions';
 
 interface UserFormState {
   username: string;
@@ -107,6 +109,11 @@ interface ChatRolePresetFormState {
 interface SelectOption {
   value: string;
   label: string;
+}
+
+interface WorkspaceDropIndicator {
+  workspaceId: string;
+  position: WorkspaceDropPosition;
 }
 
 const FALLBACK_REASONING: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
@@ -203,7 +210,7 @@ const COPY = {
     deleteComment: 'Permanently delete this session.',
     modelComment: 'Choose which model this session will use for future turns.',
     thinkingComment: 'Set the reasoning depth for future turns in this session.',
-    auditModelComment: 'Control how often this session asks for approval.',
+    auditModelComment: 'Choose the frontend mode preset for this session.',
     attachComment: 'Attach files to your next prompt.',
     stopComment: 'Stop the active turn.',
     sendComment: 'Send the current prompt.',
@@ -211,6 +218,8 @@ const COPY = {
     removeAttachmentComment: 'Remove this attachment from the draft.',
     newSession: 'New session',
     editWorkspaces: 'Edit',
+    finish: 'Finish',
+    reorderWorkspace: 'Drag to reorder workspace',
     createWorkspaceTitle: 'Create',
     createWorkspaceAction: 'Create',
     visibleWorkspaces: 'Visible',
@@ -313,7 +322,7 @@ const COPY = {
     title: 'Title',
     optionalSessionTitle: 'Optional session title',
     securityProfile: 'Security profile',
-    approvalModeLabel: 'Audit Model',
+    approvalModeLabel: 'MODE',
     model: 'Model',
     thinking: 'Thinking',
     rolePreset: 'Preset role',
@@ -334,8 +343,9 @@ const COPY = {
     readOnlyProfile: 'read-only',
     repoWriteProfile: 'workspace-write',
     fullHostProfile: 'Full',
-    lessApprovalMode: 'Minimal approval',
-    fullApprovalMode: 'Always ask',
+    detailedMode: 'Detailed',
+    lessInterruptiveMode: 'Less interruption',
+    allPermissionsMode: 'All permissions',
     noRolePreset: 'None',
     chatSessionHint: 'Chat sessions can edit files inside the shared chat workspace.',
     chatAutoTitleHint: 'The title will be generated automatically after your first message.',
@@ -442,7 +452,7 @@ const COPY = {
     deleteComment: '永久删除这个会话。',
     modelComment: '选择这个会话后续 turn 使用的模型。',
     thinkingComment: '设置这个会话后续 turn 的思考深度。',
-    auditModelComment: '控制这个会话触发审批的频率。',
+    auditModelComment: '选择这个会话的前端模式占位。',
     attachComment: '给下一条 prompt 附加文件。',
     stopComment: '停止当前正在运行的 turn。',
     sendComment: '发送当前 prompt。',
@@ -450,6 +460,8 @@ const COPY = {
     removeAttachmentComment: '把这个附件从草稿里移除。',
     newSession: '新建会话',
     editWorkspaces: '编辑',
+    finish: '完成',
+    reorderWorkspace: '拖动以调整 workspace 顺序',
     createWorkspaceTitle: '创建',
     createWorkspaceAction: '创建',
     visibleWorkspaces: '展示中',
@@ -552,7 +564,7 @@ const COPY = {
     title: '标题',
     optionalSessionTitle: '可选的会话标题',
     securityProfile: '安全档位',
-    approvalModeLabel: '审批 Model',
+    approvalModeLabel: 'MODE',
     model: '模型',
     thinking: '思考强度',
     rolePreset: '预设角色',
@@ -573,8 +585,9 @@ const COPY = {
     readOnlyProfile: '只读',
     repoWriteProfile: 'Workspace 可写',
     fullHostProfile: 'Full',
-    lessApprovalMode: '尽可能不审批',
-    fullApprovalMode: '全部需要审批',
+    detailedMode: '详细',
+    lessInterruptiveMode: '少打扰',
+    allPermissionsMode: '所有权限',
     noRolePreset: '无',
     chatSessionHint: '聊天会话可以修改共享 Chat workspace 里的文件。',
     chatAutoTitleHint: '发出第一条消息后，会自动生成标题。',
@@ -999,9 +1012,11 @@ function securityProfileLabel(language: Language, sessionType: SessionType, secu
   return securityProfile === 'full-host' ? copy.fullHostProfile : copy.repoWriteProfile;
 }
 
-function approvalModeLabel(language: Language, approvalMode: ApprovalMode) {
+function modeOptionLabel(language: Language, mode: ModeOption) {
   const copy = COPY[language];
-  return approvalMode === 'full-approval' ? copy.fullApprovalMode : copy.lessApprovalMode;
+  if (mode === 'all-permissions') return copy.allPermissionsMode;
+  if (mode === 'less-interruptive') return copy.lessInterruptiveMode;
+  return copy.detailedMode;
 }
 
 function preferredReasoningEffort(option: Pick<ModelOption, 'defaultReasoningEffort' | 'supportedReasoningEfforts'> | null | undefined) {
@@ -1367,6 +1382,19 @@ function ChevronIcon({ open }: { open: boolean }) {
   );
 }
 
+function DragHandleIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="7" cy="6" r="1.2" fill="currentColor" />
+      <circle cx="13" cy="6" r="1.2" fill="currentColor" />
+      <circle cx="7" cy="10" r="1.2" fill="currentColor" />
+      <circle cx="13" cy="10" r="1.2" fill="currentColor" />
+      <circle cx="7" cy="14" r="1.2" fill="currentColor" />
+      <circle cx="13" cy="14" r="1.2" fill="currentColor" />
+    </svg>
+  );
+}
+
 interface AppSelectProps {
   value: string;
   options: SelectOption[];
@@ -1662,6 +1690,8 @@ export function App() {
   const [workspaceModalMode, setWorkspaceModalMode] = useState<WorkspaceModalMode | null>(null);
   const [workspaceEditMode, setWorkspaceEditMode] = useState(false);
   const [dragWorkspaceId, setDragWorkspaceId] = useState<string | null>(null);
+  const [workspaceDropIndicator, setWorkspaceDropIndicator] = useState<WorkspaceDropIndicator | null>(null);
+  const [workspaceLayoutSaving, setWorkspaceLayoutSaving] = useState(false);
   const [chatCompletionMarkers, setChatCompletionMarkers] = useState<ChatCompletionMarkerMap>(() => readChatCompletionMarkers());
   const [optimisticSessions, setOptimisticSessions] = useState<SessionSummary[]>([]);
   const [optimisticConversations, setOptimisticConversations] = useState<ConversationSummary[]>([]);
@@ -1676,6 +1706,7 @@ export function App() {
   const [editWorkspaceName, setEditWorkspaceName] = useState('');
   const [editSecurityProfile, setEditSecurityProfile] = useState<'repo-write' | 'full-host'>('repo-write');
   const [sessionApprovalMode, setSessionApprovalMode] = useState<ApprovalMode>('less-approval');
+  const [sessionModeSelections, setSessionModeSelections] = useState<Record<string, ModeOption>>({});
   const [sessionModel, setSessionModel] = useState('');
   const [sessionEffort, setSessionEffort] = useState<ReasoningEffort>('xhigh');
   const [sessionRolePresetId, setSessionRolePresetId] = useState('');
@@ -1685,7 +1716,7 @@ export function App() {
   const [userForm, setUserForm] = useState<UserFormState>(() => defaultUserForm());
   const [confirmAction, setConfirmAction] = useState<SessionConfirmAction>(null);
   const [chatRailEditMode, setChatRailEditMode] = useState(false);
-  const [chatRailDeleteConfirmId, setChatRailDeleteConfirmId] = useState<string | null>(null);
+  const [railDeleteConfirmId, setRailDeleteConfirmId] = useState<string | null>(null);
   const [transcriptItems, setTranscriptItems] = useState<SessionTranscriptEntry[]>([]);
   const [transcriptNextCursor, setTranscriptNextCursor] = useState<string | null>(null);
   const [transcriptLoadingOlder, setTranscriptLoadingOlder] = useState(false);
@@ -1705,6 +1736,8 @@ export function App() {
   const approvalPromptRef = useRef<HTMLDivElement | null>(null);
   const chatProcessingSnapshotRef = useRef<Record<string, boolean>>({});
   const workspaceExpansionInitializedRef = useRef(false);
+  const dragWorkspaceIdRef = useRef<string | null>(null);
+  const bootstrapRequestVersionRef = useRef(0);
   const copy = COPY[language];
 
   const currentUserRoles = deriveRolesFromLegacy(bootstrap?.currentUser);
@@ -1723,6 +1756,9 @@ export function App() {
     ?? availableModels.find((entry) => entry.isDefault)
     ?? availableModels[0]
     ?? null;
+  const currentSessionMode = detail?.session.sessionType === 'code'
+    ? (sessionModeSelections[detail.session.id] ?? 'detailed')
+    : 'detailed';
   const currentSessionEfforts = currentSessionModelOption?.supportedReasoningEfforts.length
     ? currentSessionModelOption.supportedReasoningEfforts
     : FALLBACK_REASONING;
@@ -1775,6 +1811,37 @@ export function App() {
         : current
     ));
   }
+
+  function invalidateBootstrapRefreshes() {
+    bootstrapRequestVersionRef.current += 1;
+  }
+
+  function applyBootstrapSnapshot(next: BootstrapPayload) {
+    setHostReachable(true);
+    setBootstrap(next);
+    setActiveMode((current) => pickDefaultMode(next, current));
+    setError(null);
+  }
+
+  async function refreshBootstrapState() {
+    const requestVersion = ++bootstrapRequestVersionRef.current;
+
+    try {
+      const next = await fetchBootstrap();
+      if (requestVersion !== bootstrapRequestVersionRef.current) {
+        return null;
+      }
+
+      applyBootstrapSnapshot(next);
+      return next;
+    } catch (refreshError) {
+      if (requestVersion !== bootstrapRequestVersionRef.current) {
+        return null;
+      }
+      throw refreshError;
+    }
+  }
+
   const editingAdminUser = editingUserId
     ? adminUsers?.find((entry) => entry.id === editingUserId) ?? null
     : null;
@@ -1835,12 +1902,8 @@ export function App() {
 
     async function loadBootstrapData() {
       try {
-        const next = await fetchBootstrap();
-        if (cancelled) return;
-        setHostReachable(true);
-        setBootstrap(next);
-        setActiveMode((current) => pickDefaultMode(next, current));
-        setError(null);
+        const next = await refreshBootstrapState();
+        if (cancelled || !next) return;
       } catch (loadError) {
         if (!cancelled) {
           setHostReachable(false);
@@ -1961,15 +2024,13 @@ export function App() {
       if (chatRailEditMode) {
         setChatRailEditMode(false);
       }
-      if (chatRailDeleteConfirmId) {
-        setChatRailDeleteConfirmId(null);
-      }
-      return;
     }
-    if (!chatRailEditMode && chatRailDeleteConfirmId) {
-      setChatRailDeleteConfirmId(null);
+
+    const inlineDeleteEnabled = (activeMode === 'chat' && chatRailEditMode) || (activeMode === 'developer' && workspaceEditMode);
+    if (!inlineDeleteEnabled && railDeleteConfirmId) {
+      setRailDeleteConfirmId(null);
     }
-  }, [activeMode, chatRailEditMode, chatRailDeleteConfirmId]);
+  }, [activeMode, chatRailEditMode, railDeleteConfirmId, workspaceEditMode]);
 
   useEffect(() => {
     if (!settingsOpen || !canManageChatRolePresets) {
@@ -2278,6 +2339,12 @@ export function App() {
   useEffect(() => {
     if (activeMode !== 'developer') {
       workspaceExpansionInitializedRef.current = false;
+      if (dragWorkspaceId) {
+        setDragWorkspaceId(null);
+      }
+      if (workspaceDropIndicator) {
+        setWorkspaceDropIndicator(null);
+      }
       if (expandedWorkspaceIds.length > 0) {
         setExpandedWorkspaceIds([]);
       }
@@ -2285,6 +2352,15 @@ export function App() {
         setWorkspaceEditMode(false);
       }
       return;
+    }
+
+    if (!workspaceEditMode) {
+      if (dragWorkspaceId) {
+        setDragWorkspaceId(null);
+      }
+      if (workspaceDropIndicator) {
+        setWorkspaceDropIndicator(null);
+      }
     }
 
     const nextRailWorkspaces = workspaceEditMode
@@ -2306,7 +2382,7 @@ export function App() {
       workspaceExpansionInitializedRef.current = true;
       return filtered.length > 0 ? filtered : [nextRailWorkspaces[0]!.id];
     });
-  }, [activeMode, bootstrapWorkspaces, optimisticWorkspaces, expandedWorkspaceIds.length, workspaceEditMode]);
+  }, [activeMode, bootstrapWorkspaces, dragWorkspaceId, expandedWorkspaceIds.length, optimisticWorkspaces, workspaceDropIndicator, workspaceEditMode]);
 
   useEffect(() => {
     if (!detail?.session) return;
@@ -2497,9 +2573,10 @@ export function App() {
       label: preset.label,
     })),
   ];
-  const approvalModeSelectOptions: SelectOption[] = [
-    { value: 'less-approval', label: copy.lessApprovalMode },
-    { value: 'full-approval', label: copy.fullApprovalMode },
+  const modeSelectOptions: SelectOption[] = [
+    { value: 'detailed', label: copy.detailedMode },
+    { value: 'less-interruptive', label: copy.lessInterruptiveMode },
+    { value: 'all-permissions', label: copy.allPermissionsMode },
   ];
   const workspaceSelectOptions: SelectOption[] = [
     { value: '', label: copy.workspaceSelect },
@@ -2525,10 +2602,11 @@ export function App() {
   }, [detailSessionState, activeApproval?.id]);
 
   async function refreshCurrentSelection(sessionId = selectedSessionId) {
-    const nextBootstrap = await fetchBootstrap();
-    setBootstrap(nextBootstrap);
+    const nextBootstrap = await refreshBootstrapState();
+    if (!nextBootstrap) {
+      return;
+    }
     const nextMode = pickDefaultMode(nextBootstrap, activeMode);
-    setActiveMode(nextMode);
     const shouldLoadChatBootstrap = nextMode === 'chat' && derivedAvailableModes(nextBootstrap).includes('chat');
     const nextChatBootstrap = shouldLoadChatBootstrap ? await fetchChatBootstrap() : null;
     setChatBootstrap(nextChatBootstrap);
@@ -2811,7 +2889,9 @@ export function App() {
   }
 
   async function persistWorkspaceLayout(nextWorkspaces: WorkspaceSummary[], previousBootstrap: BootstrapPayload | null) {
+    invalidateBootstrapRefreshes();
     setBootstrapWorkspaces(nextWorkspaces);
+    setWorkspaceLayoutSaving(true);
     try {
       const changedWorkspaces = nextWorkspaces.filter((workspace) => {
         if (workspace.id.startsWith(OPTIMISTIC_WORKSPACE_PREFIX)) {
@@ -2836,11 +2916,12 @@ export function App() {
         });
       }
 
-      setBootstrap(await fetchBootstrap());
-      setError(null);
+      await refreshBootstrapState();
     } catch (workspaceError) {
       setBootstrap(previousBootstrap);
       setError(workspaceError instanceof Error ? workspaceError.message : copy.editWorkspaces);
+    } finally {
+      setWorkspaceLayoutSaving(false);
     }
   }
 
@@ -2905,28 +2986,41 @@ export function App() {
     await persistWorkspaceLayout(nextWorkspaces, previousBootstrap);
   }
 
-  async function handleWorkspaceDrop(targetWorkspaceId: string) {
-    if (!dragWorkspaceId || dragWorkspaceId === targetWorkspaceId) {
-      setDragWorkspaceId(null);
+  function clearWorkspaceDragState() {
+    dragWorkspaceIdRef.current = null;
+    setDragWorkspaceId(null);
+    setWorkspaceDropIndicator(null);
+  }
+
+  function workspaceDropPositionFromEvent(event: ReactDragEvent<HTMLElement>): WorkspaceDropPosition {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return event.clientY - bounds.top < bounds.height / 2 ? 'before' : 'after';
+  }
+
+  async function handleWorkspaceDrop(targetWorkspaceId: string, position: WorkspaceDropPosition) {
+    const activeDragWorkspaceId = dragWorkspaceIdRef.current;
+    if (!activeDragWorkspaceId || activeDragWorkspaceId === targetWorkspaceId) {
+      clearWorkspaceDragState();
       return;
     }
 
     const previousBootstrap = bootstrap;
     const reordered = [...editableVisibleWorkspaces];
-    const currentIndex = reordered.findIndex((workspace) => workspace.id === dragWorkspaceId);
-    const nextIndex = reordered.findIndex((workspace) => workspace.id === targetWorkspaceId);
-    if (currentIndex === -1 || nextIndex === -1) {
-      setDragWorkspaceId(null);
-      return;
-    }
-    const [draggedWorkspace] = reordered.splice(currentIndex, 1);
+    const draggedWorkspace = reordered.find((workspace) => workspace.id === activeDragWorkspaceId);
     if (!draggedWorkspace) {
-      setDragWorkspaceId(null);
+      clearWorkspaceDragState();
       return;
     }
-    reordered.splice(nextIndex, 0, draggedWorkspace);
+    const remaining = reordered.filter((workspace) => workspace.id !== activeDragWorkspaceId);
+    const targetIndex = remaining.findIndex((workspace) => workspace.id === targetWorkspaceId);
+    if (targetIndex === -1) {
+      clearWorkspaceDragState();
+      return;
+    }
+    const insertIndex = position === 'after' ? targetIndex + 1 : targetIndex;
+    remaining.splice(insertIndex, 0, draggedWorkspace);
     const hiddenWorkspaces = sortWorkspaceSummaries(allWorkspaces.filter((workspace) => !workspace.visible));
-    const normalizedVisible = reordered.map((entry, index) => ({
+    const normalizedVisible = remaining.map((entry, index) => ({
       ...entry,
       sortOrder: index,
     }));
@@ -2937,7 +3031,7 @@ export function App() {
     const visibleMap = new Map([...normalizedVisible, ...normalizedHidden].map((entry) => [entry.id, entry]));
     const nextWorkspaces = allWorkspaces.map((entry) => visibleMap.get(entry.id) ?? entry);
 
-    setDragWorkspaceId(null);
+    clearWorkspaceDragState();
     await persistWorkspaceLayout(nextWorkspaces, previousBootstrap);
   }
 
@@ -2988,7 +3082,7 @@ export function App() {
 
     setOptimisticConversations((current) => [optimisticConversation, ...current]);
     setSessionMenuSessionId(null);
-    setChatRailDeleteConfirmId(null);
+    setRailDeleteConfirmId(null);
     setSelectedSessionId(optimisticId);
     setDetail(optimisticDetail(optimisticConversation));
     setTranscriptItems([]);
@@ -3313,6 +3407,15 @@ export function App() {
   function handleSessionApprovalModeChange(nextApprovalMode: ApprovalMode) {
     setSessionApprovalMode(nextApprovalMode);
     void handleSessionPreferencesChange(sessionModel, sessionEffort, nextApprovalMode);
+  }
+
+  function handleSessionModeChange(nextMode: string) {
+    if (!detail || detail.session.sessionType !== 'code') return;
+    if (nextMode !== 'detailed' && nextMode !== 'less-interruptive' && nextMode !== 'all-permissions') return;
+    setSessionModeSelections((current) => ({
+      ...current,
+      [detail.session.id]: nextMode,
+    }));
   }
 
   async function handleChatRolePresetChange(nextRolePresetValue: string) {
@@ -3878,7 +3981,7 @@ export function App() {
 
   async function handleDeleteSession(sessionId: string) {
     setSessionMenuSessionId(null);
-    setChatRailDeleteConfirmId(null);
+    setRailDeleteConfirmId(null);
     const previousSelectedSessionId = selectedSessionId;
     const previousBootstrap = bootstrap;
     const previousChatBootstrap = chatBootstrap;
@@ -4103,8 +4206,7 @@ export function App() {
     setBusy('connect-cloudflare');
     try {
       await connectCloudflareTunnel();
-      setBootstrap(await fetchBootstrap());
-      setError(null);
+      await refreshBootstrapState();
     } catch (connectError) {
       setError(connectError instanceof Error ? connectError.message : copy.connectTunnel);
     } finally {
@@ -4116,8 +4218,7 @@ export function App() {
     setBusy('disconnect-cloudflare');
     try {
       await disconnectCloudflareTunnel();
-      setBootstrap(await fetchBootstrap());
-      setError(null);
+      await refreshBootstrapState();
     } catch (disconnectError) {
       setError(disconnectError instanceof Error ? disconnectError.message : copy.disconnect);
     } finally {
@@ -4182,7 +4283,7 @@ export function App() {
           canUseFullHost: roles.includes('developer') ? userForm.canUseFullHost : false,
         });
         setAdminUsers(response.users);
-        setBootstrap(await fetchBootstrap());
+        await refreshBootstrapState();
       }
       setUserModalOpen(false);
       setError(null);
@@ -4204,8 +4305,7 @@ export function App() {
         regenerateToken: true,
       });
       setAdminUsers(response.users);
-      setBootstrap(await fetchBootstrap());
-      setError(null);
+      await refreshBootstrapState();
     } catch (regenerateError) {
       setError(regenerateError instanceof Error ? regenerateError.message : copy.regenerateToken);
     } finally {
@@ -4219,8 +4319,7 @@ export function App() {
     setBusy(`delete-user-${user.id}`);
     try {
       setAdminUsers(await deleteAdminUser(user.id));
-      setBootstrap(await fetchBootstrap());
-      setError(null);
+      await refreshBootstrapState();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : copy.deleteUser);
     } finally {
@@ -4241,7 +4340,7 @@ export function App() {
   function selectSessionFromRail(session: SessionSummary | ConversationSummary) {
     setDetailMenuOpen(false);
     setSessionMenuSessionId(null);
-    setChatRailDeleteConfirmId((current) => current === session.id ? null : current);
+    setRailDeleteConfirmId((current) => current === session.id ? null : current);
     if (isOptimisticSessionId(session.id)) {
       if (session.sessionType === 'chat') {
         setSelectedSessionId(session.id);
@@ -4259,160 +4358,264 @@ export function App() {
     const sessionState = deriveSummarySessionState(session, chatCompletionMarkers);
     const sessionPending = isOptimisticSessionId(session.id);
     const isChatConversation = session.sessionType === 'chat';
-    const showChatDeleteButton = isChatConversation && chatRailEditMode;
-    const chatDeleteConfirming = showChatDeleteButton && chatRailDeleteConfirmId === session.id;
+    const showInlineDeleteButton = isChatConversation
+      ? chatRailEditMode
+      : workspaceEditMode && !sessionPending;
+    const railDeleteConfirming = showInlineDeleteButton && railDeleteConfirmId === session.id;
     const markerShapeClass = isChatConversation
       ? 'session-node-marker-chat'
       : 'session-node-marker-code';
-    const chatLabel = chatDeleteConfirming
+    const chatLabel = railDeleteConfirming
       ? `${copy.deleteInlineConfirm} · ${session.title}`
       : session.title;
+    const handleSessionTrigger = () => {
+      if (railDeleteConfirming) {
+        setRailDeleteConfirmId(null);
+      }
+      selectSessionFromRail(session);
+    };
+    const renderLeading = () => (
+      <span className="session-node-leading">
+        {showInlineDeleteButton ? (
+          <button
+            type="button"
+            className={`session-inline-delete-button ${isChatConversation ? 'session-inline-delete-button-chat' : 'session-inline-delete-button-code'} ${railDeleteConfirming ? 'session-inline-delete-button-confirm' : ''}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              setDetailMenuOpen(false);
+              setSessionMenuSessionId(null);
+              if (railDeleteConfirming) {
+                void handleDeleteSession(session.id);
+                return;
+              }
+              setRailDeleteConfirmId(session.id);
+            }}
+            title={railDeleteConfirming ? copy.confirmAction : copy.delete}
+            aria-label={railDeleteConfirming ? copy.confirmAction : copy.delete}
+            disabled={busy === `delete-${session.id}`}
+          >
+            {railDeleteConfirming ? <CheckIcon /> : <TrashIcon />}
+          </button>
+        ) : (
+          <span className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`} aria-hidden="true" />
+        )}
+      </span>
+    );
 
     return (
       <li
         key={session.id}
-        className={`session-node ${selectedSessionId === session.id ? 'session-node-active' : ''} ${sessionPending ? 'session-node-pending' : ''} ${isChatConversation ? 'session-node-chat' : ''} ${chatDeleteConfirming ? 'session-node-chat-confirming' : ''}`}
+        className={`session-node ${selectedSessionId === session.id ? 'session-node-active' : ''} ${sessionPending ? 'session-node-pending' : ''} ${isChatConversation ? 'session-node-chat' : ''} ${railDeleteConfirming ? 'session-node-delete-confirming' : ''}`}
       >
-        <button
-          type="button"
-          className={`session-node-trigger ${isChatConversation ? 'session-node-trigger-chat' : ''}`}
-          onClick={() => {
-            if (chatDeleteConfirming) {
-              setChatRailDeleteConfirmId(null);
-            }
-            selectSessionFromRail(session);
-          }}
-          disabled={sessionPending && !isChatConversation}
-        >
-          <div className="session-node-copy">
-            {isChatConversation ? (
-              <span className="session-node-leading">
-                {showChatDeleteButton ? (
-                  <button
-                    type="button"
-                    className={`session-inline-delete-button ${chatDeleteConfirming ? 'session-inline-delete-button-confirm' : ''}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setDetailMenuOpen(false);
-                      setSessionMenuSessionId(null);
-                      if (chatDeleteConfirming) {
-                        void handleDeleteSession(session.id);
-                        return;
-                      }
-                      setChatRailDeleteConfirmId(session.id);
-                    }}
-                    title={chatDeleteConfirming ? copy.confirmAction : copy.delete}
-                    aria-label={chatDeleteConfirming ? copy.confirmAction : copy.delete}
-                    disabled={busy === `delete-${session.id}`}
-                  >
-                    {chatDeleteConfirming ? <CheckIcon /> : <TrashIcon />}
-                  </button>
-                ) : (
-                  <span className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`} aria-hidden="true" />
-                )}
-              </span>
-            ) : (
-              <span className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`} aria-hidden="true" />
-            )}
-            <span className="session-node-label" title={chatLabel}>{chatLabel}</span>
+        {isChatConversation || showInlineDeleteButton ? (
+          <div
+            role="button"
+            tabIndex={0}
+            className="session-node-trigger session-node-trigger-chat"
+            onClick={handleSessionTrigger}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                handleSessionTrigger();
+              }
+            }}
+          >
+            <div className="session-node-copy">
+              {renderLeading()}
+              <span className="session-node-label" title={chatLabel}>{chatLabel}</span>
+            </div>
           </div>
-        </button>
+        ) : (
+          <button
+            type="button"
+            className="session-node-trigger"
+            onClick={handleSessionTrigger}
+            disabled={sessionPending}
+          >
+            <div className="session-node-copy">
+              {renderLeading()}
+              <span className="session-node-label" title={chatLabel}>{chatLabel}</span>
+            </div>
+          </button>
+        )}
       </li>
     );
   }
 
   function renderWorkspaceRailItem(workspace: WorkspaceSummary) {
     const workspaceSessions = allSessions.filter((session) => session.workspaceId === workspace.id);
-    const workspaceOpen = expandedWorkspaceIds.includes(workspace.id);
+    const workspaceExpanded = expandedWorkspaceIds.includes(workspace.id);
+    const workspaceOpen = workspaceExpanded || workspaceEditMode;
     const workspacePending = workspace.id.startsWith(OPTIMISTIC_WORKSPACE_PREFIX);
     const workspaceHidden = !workspace.visible;
-    const workspaceDraggable = workspaceEditMode && !workspaceHidden && !workspacePending;
+    const workspaceDraggable = workspaceEditMode && !workspaceHidden && !workspacePending && !workspaceLayoutSaving;
+    const workspaceDragging = dragWorkspaceId === workspace.id;
+    const workspaceDropPreview = workspaceDropIndicator?.workspaceId === workspace.id
+      ? workspaceDropIndicator.position
+      : null;
+    const workspaceDropTarget = workspaceDropPreview !== null;
+
+    const renderWorkspaceDropSlot = (position: WorkspaceDropPosition) => {
+      if (!workspaceDropTarget || workspaceDropPreview !== position || !dragWorkspaceIdRef.current) {
+        return null;
+      }
+
+      return (
+        <li
+          key={`${workspace.id}-${position}-slot`}
+          className={`workspace-drop-slot workspace-drop-slot-${position}`}
+          onDragOver={(event: ReactDragEvent<HTMLLIElement>) => {
+            if (!dragWorkspaceIdRef.current) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            setWorkspaceDropIndicator((current) => (
+              current?.workspaceId === workspace.id && current.position === position
+                ? current
+                : { workspaceId: workspace.id, position }
+            ));
+          }}
+          onDrop={(event: ReactDragEvent<HTMLLIElement>) => {
+            if (!dragWorkspaceIdRef.current) return;
+            event.preventDefault();
+            void handleWorkspaceDrop(workspace.id, position);
+          }}
+          aria-hidden="true"
+        >
+          <span className="workspace-drop-slot-line" />
+        </li>
+      );
+    };
 
     return (
-      <li
-        key={workspace.id}
-        className={`session-card workspace-card ${workspaceOpen ? 'workspace-card-open' : ''} ${workspacePending ? 'session-card-pending' : ''} ${workspaceEditMode && workspaceHidden ? 'workspace-card-hidden' : ''}`}
-        draggable={workspaceDraggable}
-        onDragStart={() => {
-          if (!workspaceDraggable) return;
-          setDragWorkspaceId(workspace.id);
-        }}
-        onDragEnd={() => setDragWorkspaceId(null)}
-        onDragOver={(event: ReactDragEvent<HTMLLIElement>) => {
-          if (!workspaceDraggable) return;
-          event.preventDefault();
-        }}
-        onDrop={(event: ReactDragEvent<HTMLLIElement>) => {
-          if (!workspaceDraggable) return;
-          event.preventDefault();
-          void handleWorkspaceDrop(workspace.id);
-        }}
-      >
-        <div className="workspace-card-header">
-          <div className="workspace-manager-title-row">
-            <button
-              type="button"
-              className="workspace-card-trigger"
-              onClick={() => {
-                if (workspacePending) return;
-                toggleWorkspaceExpanded(workspace.id);
-              }}
-            >
-              <div className="session-card-title workspace-card-title">
-                <h3 title={workspace.path}>{workspace.name}</h3>
-              </div>
-            </button>
-            {workspaceEditMode ? (
-              <button
-                type="button"
-                className="button-secondary workspace-visibility-button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  void handleToggleWorkspaceVisibility(workspace.id);
-                }}
-                disabled={workspacePending}
-              >
-                {workspace.visible ? copy.hideWorkspace : copy.showWorkspace}
-              </button>
-            ) : null}
-          </div>
-        </div>
-
-        {workspaceOpen ? (
-          <div className="workspace-children">
-            <ul className="session-list workspace-session-list">
-              {workspaceSessions.map((session) => renderSessionRailItem(session))}
+      <Fragment key={workspace.id}>
+        {renderWorkspaceDropSlot('before')}
+        <li
+          className={`session-card workspace-card ${workspaceOpen ? 'workspace-card-open' : ''} ${workspacePending ? 'session-card-pending' : ''} ${workspaceEditMode && workspaceHidden ? 'workspace-card-hidden' : ''} ${workspaceDragging ? 'workspace-card-dragging' : ''} ${workspaceDropTarget ? 'workspace-card-drop-target' : ''}`}
+          onDragOver={(event: ReactDragEvent<HTMLLIElement>) => {
+            const activeDragWorkspaceId = dragWorkspaceIdRef.current;
+            if (!workspaceDraggable || !activeDragWorkspaceId || activeDragWorkspaceId === workspace.id) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            const nextPosition = workspaceDropPositionFromEvent(event);
+            setWorkspaceDropIndicator((current) => (
+              current?.workspaceId === workspace.id && current.position === nextPosition
+                ? current
+                : { workspaceId: workspace.id, position: nextPosition }
+            ));
+          }}
+          onDrop={(event: ReactDragEvent<HTMLLIElement>) => {
+            const activeDragWorkspaceId = dragWorkspaceIdRef.current;
+            if (!workspaceDraggable || !activeDragWorkspaceId || activeDragWorkspaceId === workspace.id) return;
+            event.preventDefault();
+            const nextPosition = workspaceDropPositionFromEvent(event);
+            void handleWorkspaceDrop(workspace.id, nextPosition);
+          }}
+        >
+          <div className="workspace-card-header">
+            <div className="workspace-manager-title-row">
               {workspaceEditMode ? (
-                <li className="session-node session-node-create">
+                workspaceDraggable ? (
                   <button
                     type="button"
-                    className="session-node-trigger session-node-trigger-create"
-                    onClick={() => {
-                      void handleCreateWorkspaceSession(workspace);
+                    className={`workspace-drag-handle ${workspaceDragging ? 'workspace-drag-handle-dragging' : ''}`}
+                    draggable
+                    onDragStart={(event) => {
+                      dragWorkspaceIdRef.current = workspace.id;
+                      setDragWorkspaceId(workspace.id);
+                      setWorkspaceDropIndicator(null);
+                      event.dataTransfer.effectAllowed = 'move';
+                      event.dataTransfer.setData('text/plain', workspace.id);
+                      const workspaceCard = event.currentTarget.closest('.workspace-card');
+                      if (workspaceCard instanceof HTMLElement) {
+                        const bounds = workspaceCard.getBoundingClientRect();
+                        const fallbackX = Math.min(32, bounds.width / 2);
+                        const fallbackY = Math.min(Math.max(bounds.height / 2, 18), bounds.height - 8);
+                        const offsetX = event.clientX > 0
+                          ? Math.min(Math.max(event.clientX - bounds.left, 0), bounds.width)
+                          : fallbackX;
+                        const offsetY = event.clientY > 0
+                          ? Math.min(Math.max(event.clientY - bounds.top, 0), bounds.height)
+                          : fallbackY;
+                        event.dataTransfer.setDragImage(workspaceCard, offsetX, offsetY);
+                      }
                     }}
-                    disabled={busy === 'create-session' || workspacePending}
+                    onDragEnd={() => clearWorkspaceDragState()}
+                    aria-label={copy.reorderWorkspace}
+                    title={copy.reorderWorkspace}
                   >
-                    <div className="session-node-copy">
-                      <span className="session-node-marker session-node-marker-empty" aria-hidden="true" />
-                      <span className="session-node-label session-node-label-empty">{copy.createSession}</span>
-                    </div>
+                    <DragHandleIcon />
                   </button>
-                </li>
+                ) : (
+                  <span className="workspace-drag-handle workspace-drag-handle-disabled" aria-hidden="true">
+                    <DragHandleIcon />
+                  </span>
+                )
               ) : null}
-              {!workspaceEditMode && workspaceSessions.length === 0 ? (
-                <li className="session-node session-node-empty">
-                  <div className="session-node-trigger session-node-trigger-empty">
-                    <div className="session-node-copy">
-                      <span className="session-node-marker session-node-marker-empty" aria-hidden="true" />
-                      <span className="session-node-label session-node-label-empty">{railEmptyLabel}</span>
-                    </div>
-                  </div>
-                </li>
+              <button
+                type="button"
+                className="workspace-card-trigger"
+                onClick={() => {
+                  if (workspacePending || workspaceEditMode) return;
+                  toggleWorkspaceExpanded(workspace.id);
+                }}
+              >
+                <div className="session-card-title workspace-card-title">
+                  <h3 title={workspace.path}>{workspace.name}</h3>
+                </div>
+              </button>
+              {workspaceEditMode ? (
+                <button
+                  type="button"
+                  className="button-secondary workspace-visibility-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleToggleWorkspaceVisibility(workspace.id);
+                  }}
+                  disabled={workspacePending || workspaceLayoutSaving}
+                >
+                  {workspace.visible ? copy.hideWorkspace : copy.showWorkspace}
+                </button>
               ) : null}
-            </ul>
+            </div>
           </div>
-        ) : null}
-      </li>
+
+          {workspaceOpen ? (
+            <div className="workspace-children">
+              <ul className="session-list workspace-session-list">
+                {workspaceSessions.map((session) => renderSessionRailItem(session))}
+                {workspaceEditMode ? (
+                  <li className="session-node session-node-create">
+                    <button
+                      type="button"
+                      className="session-node-trigger session-node-trigger-create"
+                      onClick={() => {
+                        void handleCreateWorkspaceSession(workspace);
+                      }}
+                      disabled={busy === 'create-session' || workspacePending}
+                    >
+                      <div className="session-node-copy">
+                        <span className="session-node-marker session-node-marker-empty" aria-hidden="true" />
+                        <span className="session-node-label session-node-label-empty">{copy.createSession}</span>
+                      </div>
+                    </button>
+                  </li>
+                ) : null}
+                {!workspaceEditMode && workspaceSessions.length === 0 ? (
+                  <li className="session-node session-node-empty">
+                    <div className="session-node-trigger session-node-trigger-empty">
+                      <div className="session-node-copy">
+                        <span className="session-node-marker session-node-marker-empty" aria-hidden="true" />
+                        <span className="session-node-label session-node-label-empty">{railEmptyLabel}</span>
+                      </div>
+                    </div>
+                  </li>
+                ) : null}
+              </ul>
+            </div>
+          ) : null}
+        </li>
+        {renderWorkspaceDropSlot('after')}
+      </Fragment>
     );
   }
 
@@ -4569,15 +4772,15 @@ export function App() {
           <div className="rail-footer">
             {activeMode === 'developer' ? (
               <div className="rail-footer-actions">
-                <button type="button" className="button-secondary" onClick={() => openWorkspaceManager('create')}>
-                  {copy.createWorkspaceAction}
-                </button>
                 <button
                   type="button"
-                  className={workspaceEditMode ? 'rail-footer-button-active' : undefined}
+                  className={`button-secondary ${workspaceEditMode ? 'rail-footer-button-active' : ''}`}
                   onClick={() => setWorkspaceEditMode((current) => !current)}
                 >
-                  {copy.editWorkspaces}
+                  {workspaceEditMode ? copy.finish : copy.editWorkspaces}
+                </button>
+                <button type="button" onClick={() => openWorkspaceManager('create')}>
+                  {copy.createWorkspaceAction}
                 </button>
               </div>
             ) : (
@@ -4587,7 +4790,7 @@ export function App() {
                   className={`button-secondary ${chatRailEditMode ? 'rail-footer-button-active' : ''}`}
                   onClick={() => setChatRailEditMode((current) => !current)}
                 >
-                  {copy.rename}
+                  {chatRailEditMode ? copy.finish : copy.rename}
                 </button>
                 <button
                   type="button"
@@ -4666,39 +4869,15 @@ export function App() {
                       onClick={(event) => {
                         event.stopPropagation();
                         setSessionMenuSessionId(null);
-                        setDetailMenuOpen((current) => !current);
+                        setDetailMenuOpen(false);
+                        setSessionInfoOpen(true);
                       }}
-                      title={copy.moreActions}
-                      aria-label={copy.moreActions}
+                      title={copy.info}
+                      aria-label={copy.info}
                       disabled={selectedSessionIsOptimistic}
                     >
-                      <OverflowIcon />
+                      <InfoIcon />
                     </button>
-                    {detailMenuOpen ? (
-                      <div className="session-context-menu header-context-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-                        <button
-                          type="button"
-                          className="session-context-item"
-                          role="menuitem"
-                          onClick={() => openSessionEditor(detail.session)}
-                          disabled={selectedSessionIsOptimistic || inlineRenameBusy}
-                        >
-                          {copy.rename}
-                        </button>
-                        <button
-                          type="button"
-                          className="session-context-item"
-                          role="menuitem"
-                          onClick={() => {
-                            setDetailMenuOpen(false);
-                            setSessionInfoOpen(true);
-                          }}
-                          disabled={selectedSessionIsOptimistic}
-                        >
-                          {copy.info}
-                        </button>
-                      </div>
-                    ) : null}
                   </div>
                 )
               ) : null}
@@ -4937,11 +5116,11 @@ export function App() {
                           <span>{copy.approvalModeLabel}</span>
                           <AppSelect
                             className="app-select-compact"
-                            value={sessionApprovalMode}
-                            options={approvalModeSelectOptions}
-                            onChange={(nextValue) => handleSessionApprovalModeChange(nextValue as ApprovalMode)}
+                            value={currentSessionMode}
+                            options={modeSelectOptions}
+                            onChange={handleSessionModeChange}
                             ariaLabel={copy.approvalModeLabel}
-                            disabled={busy === 'update-session-preferences'}
+                            disabled={!detail || detail.session.sessionType !== 'code'}
                           />
                         </label>
                       ) : null}
@@ -5326,7 +5505,7 @@ export function App() {
                 <p className="detail-card-meta">{copy.sessionOwner}: {detail.session.ownerUsername}</p>
                 <p className="detail-card-meta">{copy.securityLabel}: {securityProfileLabel(language, detail.session.sessionType, detail.session.securityProfile)}</p>
                 {detail.session.sessionType === 'code' ? (
-                  <p className="detail-card-meta">{copy.approvalModeLabel}: {approvalModeLabel(language, detail.session.approvalMode)}</p>
+                  <p className="detail-card-meta">{copy.approvalModeLabel}: {modeOptionLabel(language, currentSessionMode)}</p>
                 ) : null}
                 <p className="detail-card-meta">{copy.modelLabel}: {detail.session.model ?? 'codex'}</p>
                 <p className="detail-card-meta">{copy.thinkingLabel}: {detail.session.reasoningEffort ?? 'xhigh'}</p>

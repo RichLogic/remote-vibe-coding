@@ -734,6 +734,7 @@ button:disabled {
   border-radius: 12px;
   background: transparent;
   color: inherit;
+  font: inherit;
   text-align: left;
   box-shadow: none;
   cursor: pointer;
@@ -892,6 +893,14 @@ button:disabled {
   box-shadow: none;
 }
 
+.session-inline-delete-button-chat {
+  height: 20px;
+}
+
+.session-inline-delete-button-code {
+  height: 16px;
+}
+
 .session-inline-delete-button:hover,
 .session-inline-delete-button:focus-visible {
   background: rgba(185, 28, 28, 0.12);
@@ -910,11 +919,11 @@ button:disabled {
   color: #991b1b;
 }
 
-.session-node-chat-confirming .session-node-trigger {
+.session-node-delete-confirming .session-node-trigger {
   background: rgba(185, 28, 28, 0.08);
 }
 
-.session-node-chat-confirming .session-node-label {
+.session-node-delete-confirming .session-node-label {
   color: #991b1b;
 }
 
@@ -1023,8 +1032,16 @@ button:disabled {
 }
 
 .workspace-card {
+  position: relative;
   padding: 0;
   overflow: visible;
+  transform-origin: center;
+  transition:
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 180ms ease;
 }
 
 .workspace-card-open {
@@ -1049,12 +1066,49 @@ button:disabled {
   padding: 10px 12px;
 }
 
-.workspace-card[draggable="true"] {
-  cursor: grab;
+.workspace-card-dragging {
+  opacity: 0.42;
+  transform: scale(0.985);
+  box-shadow: 0 14px 26px rgba(43, 36, 30, 0.08);
 }
 
-.workspace-card[draggable="true"]:active {
-  cursor: grabbing;
+.workspace-card-drop-target {
+  border-color: rgba(15, 118, 110, 0.22);
+  box-shadow: 0 10px 24px rgba(15, 118, 110, 0.08);
+}
+
+.workspace-drop-slot {
+  list-style: none;
+  position: relative;
+  height: 20px;
+  margin: -2px 0;
+  animation: workspace-drop-slot-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.workspace-drop-slot-line {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 50%;
+  height: 8px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(15, 118, 110, 0.16), rgba(15, 118, 110, 0.72), rgba(15, 118, 110, 0.16));
+  box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.08);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+@keyframes workspace-drop-slot-in {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+
+  to {
+    height: 20px;
+    opacity: 1;
+  }
 }
 
 .workspace-card-trigger {
@@ -1125,6 +1179,46 @@ button:disabled {
   justify-content: flex-start;
   gap: 8px;
   flex-wrap: nowrap;
+}
+
+.workspace-drag-handle {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: rgba(91, 85, 77, 0.78);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-shadow: none;
+  cursor: grab;
+}
+
+.workspace-drag-handle:hover,
+.workspace-drag-handle:focus-visible {
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--accent);
+  transform: none;
+  box-shadow: none;
+}
+
+.workspace-drag-handle:active,
+.workspace-drag-handle-dragging {
+  cursor: grabbing;
+}
+
+.workspace-drag-handle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.workspace-drag-handle-disabled {
+  opacity: 0.22;
+  pointer-events: none;
+  cursor: default;
 }
 
 .workspace-manager-title-row .workspace-card-trigger {
