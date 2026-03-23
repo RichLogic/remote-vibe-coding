@@ -71,7 +71,22 @@ export interface AppendChatMessageInput {
 interface ChatConversationDocument {
   _id: string;
   ownerUserId: string;
+  ownerUsername?: string;
   currentThreadId: string;
+  activeTurnId?: string | null;
+  title?: string;
+  autoTitle?: boolean;
+  workspace?: string;
+  archivedAt?: string | null;
+  networkEnabled?: boolean;
+  status?: ConversationRecord['status'];
+  recoveryState?: ConversationRecord['recoveryState'];
+  retryable?: boolean;
+  lastIssue?: string | null;
+  hasTranscript?: boolean;
+  model?: string | null;
+  reasoningEffort?: ConversationRecord['reasoningEffort'];
+  rolePresetId?: string | null;
   threadGeneration: number;
   recoveryAppliedGeneration: number;
   nextMessageSeq: number;
@@ -110,6 +125,35 @@ function asConversationState(document: ChatConversationDocument): ChatConversati
   };
 }
 
+function asConversationRecord(document: ChatConversationDocument): ConversationRecord {
+  return {
+    id: document._id,
+    ownerUserId: document.ownerUserId,
+    ownerUsername: document.ownerUsername ?? document.ownerUserId,
+    sessionType: 'chat',
+    threadId: document.currentThreadId,
+    activeTurnId: document.activeTurnId ?? null,
+    title: document.title ?? 'New chat',
+    autoTitle: document.autoTitle ?? false,
+    workspace: document.workspace ?? '',
+    archivedAt: document.archivedAt ?? null,
+    securityProfile: 'repo-write',
+    approvalMode: 'less-approval',
+    networkEnabled: document.networkEnabled ?? false,
+    fullHostEnabled: false,
+    status: document.status ?? 'idle',
+    recoveryState: document.recoveryState ?? (document.status === 'stale' ? 'stale' : 'ready'),
+    retryable: document.retryable ?? (document.status === 'error'),
+    lastIssue: document.lastIssue ?? null,
+    hasTranscript: document.hasTranscript ?? false,
+    model: document.model ?? null,
+    reasoningEffort: document.reasoningEffort ?? null,
+    rolePresetId: document.rolePresetId ?? null,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+}
+
 function asMessageRecord(document: ChatMessageDocument): ChatMessageRecord {
   return {
     id: document._id,
@@ -132,6 +176,10 @@ function isDuplicateKeyError(error: unknown) {
   return error instanceof MongoServerError && (error as MongoServerError).code === 11000;
 }
 
+function interruptedConversation(document: Pick<ChatConversationDocument, 'activeTurnId' | 'status'>) {
+  return Boolean(document.activeTurnId) || document.status === 'running' || document.status === 'error';
+}
+
 export class ChatHistoryRepository {
   private readonly conversations: Collection<ChatConversationDocument>;
   private readonly messages: Collection<ChatMessageDocument>;
@@ -143,6 +191,7 @@ export class ChatHistoryRepository {
 
   async ensureIndexes() {
     await this.conversations.createIndex({ ownerUserId: 1, updatedAt: -1 });
+    await this.conversations.createIndex({ currentThreadId: 1 }, { unique: true });
     await this.messages.createIndex({ conversationId: 1, seq: 1 }, { unique: true });
     await this.messages.createIndex(
       { conversationId: 1, dedupeKey: 1 },
@@ -158,21 +207,80 @@ export class ChatHistoryRepository {
       {
         $setOnInsert: {
           _id: record.id,
-          currentThreadId: record.threadId,
           threadGeneration: 1,
           recoveryAppliedGeneration: 1,
           nextMessageSeq: 0,
           summary: null,
-          createdAt: now,
+          createdAt: record.createdAt ?? now,
         },
         $set: {
           ownerUserId: record.ownerUserId,
-          updatedAt: now,
+          ownerUsername: record.ownerUsername,
+          currentThreadId: record.threadId,
+          activeTurnId: record.activeTurnId,
+          title: record.title,
+          autoTitle: record.autoTitle,
+          workspace: record.workspace,
+          archivedAt: record.archivedAt,
+          networkEnabled: record.networkEnabled,
+          status: record.status,
+          recoveryState: record.recoveryState,
+          retryable: record.retryable,
+          lastIssue: record.lastIssue,
+          hasTranscript: record.hasTranscript,
+          model: record.model,
+          reasoningEffort: record.reasoningEffort,
+          rolePresetId: record.rolePresetId,
+          updatedAt: record.updatedAt ?? now,
         },
       },
       { upsert: true },
     );
     return this.getConversationOrThrow(record.id);
+  }
+
+  async listConversationRecordsForUser(userId: string) {
+    const documents = await this.conversations
+      .find({ ownerUserId: userId })
+      .sort({ updatedAt: -1 })
+      .toArray();
+    return documents.map(asConversationRecord);
+  }
+
+  async getConversationRecord(conversationId: string) {
+    const document = await this.conversations.findOne({ _id: conversationId });
+    return document ? asConversationRecord(document) : null;
+  }
+
+  async getConversationRecordForUser(conversationId: string, userId: string) {
+    const document = await this.conversations.findOne({ _id: conversationId, ownerUserId: userId });
+    return document ? asConversationRecord(document) : null;
+  }
+
+  async findConversationRecordByThreadId(threadId: string) {
+    const document = await this.conversations.findOne({ currentThreadId: threadId });
+    return document ? asConversationRecord(document) : null;
+  }
+
+  async updateConversationRecord(conversationId: string, patch: Partial<ConversationRecord>) {
+    const current = await this.getConversationRecord(conversationId);
+    if (!current) {
+      return null;
+    }
+
+    const next: ConversationRecord = {
+      ...current,
+      ...patch,
+      id: current.id,
+      sessionType: 'chat',
+      securityProfile: 'repo-write',
+      approvalMode: 'less-approval',
+      fullHostEnabled: false,
+      updatedAt: patch.updatedAt ?? new Date().toISOString(),
+    };
+
+    await this.ensureConversation(next);
+    return this.getConversationRecord(conversationId);
   }
 
   async getConversation(conversationId: string) {
@@ -234,6 +342,42 @@ export class ChatHistoryRepository {
   async deleteConversation(conversationId: string) {
     await this.messages.deleteMany({ conversationId });
     await this.conversations.deleteOne({ _id: conversationId });
+  }
+
+  async updateOwnerUsername(userId: string, ownerUsername: string) {
+    await this.conversations.updateMany(
+      { ownerUserId: userId },
+      {
+        $set: {
+          ownerUsername,
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    );
+  }
+
+  async markAllStale(reason: string) {
+    const now = new Date().toISOString();
+    const documents = await this.conversations.find({}).toArray();
+    await Promise.all(documents.map(async (document) => {
+      const interrupted = interruptedConversation(document);
+      await this.conversations.updateOne(
+        { _id: document._id },
+        {
+          $set: {
+            activeTurnId: null,
+            status: interrupted ? 'error' : document.status === 'stale' ? 'stale' : 'idle',
+            recoveryState: 'stale',
+            retryable: interrupted,
+            lastIssue: interrupted
+              ? (document.status === 'error' && document.lastIssue ? document.lastIssue : 'This turn was interrupted before it finished. Send the next prompt to retry.')
+              : reason,
+            networkEnabled: false,
+            updatedAt: now,
+          },
+        },
+      );
+    }));
   }
 
   async updateSummary(

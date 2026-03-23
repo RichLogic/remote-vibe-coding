@@ -80,6 +80,18 @@ function formatPersistenceError(context: string, filePath: string, error: unknow
   return new Error(`Failed to load ${context} from ${filePath}: ${message}`);
 }
 
+function defaultConversationRecoveryState(status: SessionStatus | undefined) {
+  return status === 'stale' ? 'stale' as const : 'ready' as const;
+}
+
+function defaultConversationRetryable(status: SessionStatus | undefined) {
+  return status === 'error';
+}
+
+function interruptedConversation(record: Pick<ConversationRecord, 'activeTurnId' | 'status'>) {
+  return Boolean(record.activeTurnId) || record.status === 'running' || record.status === 'error';
+}
+
 async function loadPersistedState<T>(primaryPath: string, backupPath: string, context: string): Promise<T | null> {
   let primaryError: Error | null = null;
 
@@ -105,7 +117,7 @@ async function loadPersistedState<T>(primaryPath: string, backupPath: string, co
 }
 
 async function writePersistedState(primaryPath: string, backupPath: string, content: string) {
-  const tempPath = `${primaryPath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = `${primaryPath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   const previousContent = await readFile(primaryPath, 'utf8').catch((error: unknown) => {
     if (isMissingFileError(error)) {
       return null;
@@ -127,6 +139,7 @@ export class SessionStore {
   private readonly attachments = new Map<string, SessionAttachmentRecord[]>();
   private readonly approvals = new Map<string, PendingApproval[]>();
   private readonly liveEvents = new Map<string, SessionEvent[]>();
+  private saveQueue: Promise<void> = Promise.resolve();
 
   async load(options: LoadOptions) {
     await ensureDataDir();
@@ -166,6 +179,11 @@ export class SessionStore {
       for (const conversation of parsed.conversations ?? []) {
         this.conversations.set(conversation.id, {
           ...conversation,
+          rolePresetId: conversation.rolePresetId ?? null,
+          recoveryState: conversation.recoveryState ?? defaultConversationRecoveryState(conversation.status),
+          retryable: typeof conversation.retryable === 'boolean'
+            ? conversation.retryable
+            : defaultConversationRetryable(conversation.status),
           hasTranscript: typeof conversation.hasTranscript === 'boolean'
             ? conversation.hasTranscript
             : conversation.createdAt !== conversation.updatedAt,
@@ -193,9 +211,12 @@ export class SessionStore {
         const conversation: ConversationRecord = {
           ...record,
           sessionType: 'chat',
-          securityProfile: 'read-only',
+          securityProfile: 'repo-write',
           approvalMode: 'less-approval',
           fullHostEnabled: false,
+          rolePresetId: null,
+          recoveryState: defaultConversationRecoveryState(record.status),
+          retryable: defaultConversationRetryable(record.status),
         };
         this.conversations.set(conversation.id, conversation);
       } else {
@@ -253,7 +274,7 @@ export class SessionStore {
       workspace: legacy.workspace,
       archivedAt: normalizedArchivedAt,
       securityProfile: legacy.sessionType === 'chat'
-        ? 'read-only'
+        ? 'repo-write'
         : legacy.securityProfile ?? 'repo-write',
       approvalMode: legacy.sessionType === 'chat'
         ? 'less-approval'
@@ -271,19 +292,27 @@ export class SessionStore {
   }
 
   async save() {
-    await ensureDataDir();
-    const state: PersistedState = {
-      version: 3,
-      workspaces: this.listWorkspaces(),
-      sessions: this.listSessions(),
-      conversations: this.listConversations(),
-      attachments: [...this.attachments.values()].flat(),
+    const runSave = async () => {
+      await ensureDataDir();
+      const state: PersistedState = {
+        version: 3,
+        workspaces: this.listWorkspaces(),
+        sessions: this.listSessions(),
+        conversations: this.listConversations(),
+        attachments: [...this.attachments.values()].flat(),
+      };
+      await writePersistedState(
+        SESSIONS_FILE,
+        SESSIONS_BACKUP_FILE,
+        `${JSON.stringify(state, null, 2)}\n`,
+      );
     };
-    await writePersistedState(
-      SESSIONS_FILE,
-      SESSIONS_BACKUP_FILE,
-      `${JSON.stringify(state, null, 2)}\n`,
-    );
+
+    const nextSave = this.saveQueue
+      .catch(() => {})
+      .then(runSave);
+    this.saveQueue = nextSave;
+    await nextSave;
   }
 
   listWorkspaces() {
@@ -665,11 +694,16 @@ export class SessionStore {
     }
 
     for (const conversation of this.conversations.values()) {
+      const interrupted = interruptedConversation(conversation);
       this.conversations.set(conversation.id, {
         ...conversation,
         activeTurnId: null,
-        status: 'stale',
-        lastIssue: reason,
+        status: interrupted ? 'error' : conversation.status === 'stale' ? 'stale' : 'idle',
+        recoveryState: 'stale',
+        retryable: interrupted,
+        lastIssue: interrupted
+          ? (conversation.status === 'error' && conversation.lastIssue ? conversation.lastIssue : 'This turn was interrupted before it finished. Send the next prompt to retry.')
+          : reason,
         networkEnabled: false,
         updatedAt: now,
       });

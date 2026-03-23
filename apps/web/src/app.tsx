@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -6,62 +6,102 @@ import { TranscriptToolCard } from './transcript-tool-card';
 import {
   connectCloudflareTunnel,
   createAdminUser,
-  createWorkspace,
-  createSession,
-  deleteAttachment,
   deleteAdminUser,
-  deleteSession,
   disconnectCloudflareTunnel,
   fetchAdminUsers,
   fetchBootstrap,
-  fetchSessionDetail,
-  fetchSessionTranscript,
-  forkSession,
   logout,
-  resolveApproval,
-  startTurn,
-  stopSession,
-  uploadAttachment,
-  updateSession,
-  updateSessionPreferences,
   updateAdminUser,
-  updateWorkspace,
 } from './api';
+import {
+  createChatRolePreset,
+  createChatConversation,
+  deleteChatAttachment,
+  deleteChatConversation,
+  deleteChatRolePreset,
+  fetchChatBootstrap,
+  fetchChatConversationDetail,
+  fetchChatConversationTranscript,
+  fetchChatRolePresets,
+  forkChatConversation,
+  sendChatMessage,
+  stopChatConversation,
+  updateChatRolePreset,
+  updateChatConversation,
+  updateChatConversationPreferences,
+  uploadChatAttachment,
+} from './chat/api';
+import {
+  createCodingWorkspace,
+  createCodingWorkspaceSession,
+  deleteCodingAttachment,
+  deleteCodingSession,
+  fetchCodingSessionDetail,
+  fetchCodingSessionTranscript,
+  forkCodingSession,
+  reorderCodingWorkspaces,
+  resolveCodingApproval,
+  startCodingTurn,
+  stopCodingSession,
+  updateCodingSession,
+  updateCodingSessionPreferences,
+  updateCodingWorkspace,
+  uploadCodingAttachment,
+} from './coding/api';
+import type {
+  ChatBootstrapPayload,
+  ChatConversation,
+  ChatConversationDetailResponse,
+  ChatRolePresetDetail,
+  ChatRolePresetListResponse,
+  ChatConversationSummary,
+  ChatTranscriptPageResponse,
+} from './chat/types';
+import type {
+  CodingSessionRecord as SessionRecord,
+  CodingSessionSummary as SessionSummary,
+  UpdateCodingSessionRequest as UpdateSessionRequest,
+} from './coding/types';
 import type {
   AdminUserRecord,
   ApprovalMode,
   AppMode,
   BootstrapPayload,
+  ChatUiStatus,
   ConversationSummary,
   ModelOption,
   PendingApproval,
   ReasoningEffort,
   SessionAttachmentSummary,
   SessionDetailResponse,
-  SessionRecord,
-  SessionSummary,
+  SessionEvent,
   SessionTranscriptEntry,
   SessionType,
   SecurityProfile,
-  UpdateSessionRequest,
   UserRole,
   WorkspaceSummary,
 } from './types';
 
 type Language = 'en' | 'zh';
 type UserModalMode = 'create' | 'edit';
-type WorkspaceModalMode = 'create' | 'manage';
+type WorkspaceModalMode = 'create';
 type SessionConfirmAction = { kind: 'delete'; session: SessionDetailResponse['session'] } | null;
-type UiSessionState = 'new' | 'pending' | 'completed' | 'error' | 'processing' | 'stale';
+type UiSessionState = 'normal' | 'new' | 'pending' | 'completed' | 'error' | 'processing' | 'stale';
+type ChatCompletionMarkerMap = Record<string, string>;
+type ChatStatusRecord = Pick<ConversationSummary, 'id' | 'activeTurnId' | 'status' | 'uiStatus' | 'hasTranscript' | 'updatedAt'>;
 
 interface UserFormState {
   username: string;
   password: string;
-  isAdmin: boolean;
-  allowCode: boolean;
-  allowChat: boolean;
+  roles: UserRole[];
   canUseFullHost: boolean;
-  regenerateToken: boolean;
+}
+
+interface ChatRolePresetFormState {
+  label: string;
+  description: string;
+  prompt: string;
+  isDefault: boolean;
 }
 
 interface SelectOption {
@@ -69,15 +109,17 @@ interface SelectOption {
   label: string;
 }
 
-const FALLBACK_REASONING: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high'];
+const FALLBACK_REASONING: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 const TRANSCRIPT_PAGE_SIZE = 40;
 const CREATE_WORKSPACE_OPTION = '__new_workspace__';
 const COMPOSER_MAX_LINES = 6;
 const OPTIMISTIC_SESSION_PREFIX = '__optimistic_session__:';
 const OPTIMISTIC_WORKSPACE_PREFIX = '__optimistic_workspace__:';
+const CHAT_COMPLETION_MARKERS_STORAGE_KEY = 'rvc-chat-completion-markers';
 
 const UI_SESSION_STATE_LABELS: Record<Language, Record<UiSessionState, string>> = {
   en: {
+    normal: 'Normal',
     new: 'New',
     pending: 'Pending',
     completed: 'Completed',
@@ -86,6 +128,7 @@ const UI_SESSION_STATE_LABELS: Record<Language, Record<UiSessionState, string>> 
     stale: 'Stale',
   },
   zh: {
+    normal: '普通',
     new: '新建',
     pending: '待处理',
     completed: '已完成',
@@ -93,6 +136,24 @@ const UI_SESSION_STATE_LABELS: Record<Language, Record<UiSessionState, string>> 
     processing: '处理中',
     stale: '已失效',
   },
+};
+
+const CHAT_ACTIVITY_LABELS: Record<Language, Record<'thinking' | 'searching' | 'drafting', string>> = {
+  en: {
+    thinking: 'Thinking through the answer',
+    searching: 'Searching the web',
+    drafting: 'Drafting the reply',
+  },
+  zh: {
+    thinking: '正在思考答案',
+    searching: '正在搜索网页',
+    drafting: '正在整理回复',
+  },
+};
+
+const CHAT_ACTIVITY_SECTION_LABELS: Record<Language, string> = {
+  en: 'Codex activity',
+  zh: 'Codex 动态',
 };
 
 const CLOUDFLARE_STATE_LABELS: Record<Language, Record<'idle' | 'connecting' | 'connected' | 'error', string>> = {
@@ -149,13 +210,15 @@ const COPY = {
     moreActions: 'More actions',
     removeAttachmentComment: 'Remove this attachment from the draft.',
     newSession: 'New session',
-    manageWorkspaces: 'Manage',
-    manageWorkspacesTitle: 'Manage',
+    editWorkspaces: 'Edit',
     createWorkspaceTitle: 'Create',
     createWorkspaceAction: 'Create',
     visibleWorkspaces: 'Visible',
-    moveWorkspaceUp: 'Move up',
-    moveWorkspaceDown: 'Move down',
+    hideWorkspace: 'Hide',
+    showWorkspace: 'Show',
+    workspaceFromName: 'Name',
+    workspaceFromGit: 'Git',
+    gitRepository: 'Git repository',
     noActiveSessions: 'No active sessions yet.',
     activeSessionsLabel: 'Active',
     archivedSessionsLabel: 'Archived',
@@ -168,7 +231,9 @@ const COPY = {
     activity: 'Activity',
     approvalNeeded: 'Approval required',
     approvalNeededHint: 'Codex is waiting for your decision before continuing this turn.',
+    normalStatus: 'Normal',
     processingStatus: 'Processing',
+    normalHint: 'Ready for the next message.',
     processingHint: 'Codex is still working on this turn. More messages may appear before it ends.',
     approvalPendingStatus: 'Pending',
     approvalPendingHint: 'Waiting for your decision. Once approved, this turn will continue.',
@@ -251,12 +316,28 @@ const COPY = {
     approvalModeLabel: 'Audit Model',
     model: 'Model',
     thinking: 'Thinking',
+    rolePreset: 'Preset role',
+    rolePresetManager: 'Preset roles',
+    rolePresetManagerHint: 'Manage reusable prompt presets for Chat.',
+    rolePresetName: 'Role name',
+    rolePresetDescription: 'Description',
+    rolePresetPrompt: 'Prompt',
+    rolePresetDefault: 'Default preset',
+    newRolePreset: 'New preset',
+    editRolePreset: 'Edit preset',
+    saveRolePreset: 'Save preset',
+    deleteRolePreset: 'Delete preset',
+    noRolePresets: 'No preset roles yet.',
+    rolePresetSaved: 'Preset saved',
+    rolePresetDeleted: 'Preset deleted',
+    deleteRolePresetConfirm: 'Delete preset "{label}"?',
     readOnlyProfile: 'read-only',
-    repoWriteProfile: 'Write Only',
+    repoWriteProfile: 'workspace-write',
     fullHostProfile: 'Full',
     lessApprovalMode: 'Minimal approval',
     fullApprovalMode: 'Always ask',
-    chatSessionHint: 'Chat sessions always run in read-only mode.',
+    noRolePreset: 'None',
+    chatSessionHint: 'Chat sessions can edit files inside the shared chat workspace.',
     chatAutoTitleHint: 'The title will be generated automatically after your first message.',
     workspaceFolder: 'New folder',
     workspacePreview: 'Workspace preview',
@@ -268,11 +349,12 @@ const COPY = {
     saveName: 'Save session',
     renaming: 'Saving...',
     sessionContextResetHint: 'Changing the workspace or code permissions starts a fresh thread for this session.',
-    sessionDeletedConfirm: 'Delete "{title}" permanently? This only removes it from remote-vibe-coding.',
+    sessionDeletedConfirm: 'Are you sure you want to delete this chat history?',
     archiveSessionConfirm: 'Archive "{title}"? You can restore it later.',
     confirmArchiveTitle: 'Archive session',
     confirmDeleteTitle: 'Delete session',
     confirmAction: 'Confirm',
+    deleteInlineConfirm: 'Click again to delete',
     archive: 'Archive',
     restore: 'Restore',
     delete: 'Delete',
@@ -306,6 +388,8 @@ const COPY = {
     creatingUser: 'Creating...',
     savingUser: 'Saving...',
     regenerateToken: 'Regenerate token',
+    regeneratingToken: 'Regenerating token...',
+    regenerateTokenConfirm: 'Regenerate token for "{username}"? Existing token links will stop working.',
     deleteUser: 'Delete user',
     deleteUserConfirm: 'Delete user "{username}"?',
     noUsersYet: 'No users yet',
@@ -313,12 +397,13 @@ const COPY = {
     securityLabel: 'Security',
     modelLabel: 'Model',
     thinkingLabel: 'Thinking',
+    rolePresetLabel: 'Preset role',
     threadLabel: 'Thread',
     info: 'Info',
     sessionInfoTitle: 'Session info',
     archived: 'Archived',
     active: 'active',
-    commandToolingHidden: 'Chat sessions stay in conversation-only mode, so tool views are hidden.',
+    commandToolingHidden: 'Chat can edit files in the shared workspace, but command tooling stays hidden.',
     noActiveSelection: 'No active selection',
     pickSessionHint: 'Pick an existing session, or create a new one.',
     loadingOlderMessages: 'Loading older messages…',
@@ -364,13 +449,15 @@ const COPY = {
     moreActions: '更多操作',
     removeAttachmentComment: '把这个附件从草稿里移除。',
     newSession: '新建会话',
-    manageWorkspaces: '管理 Workspace',
-    manageWorkspacesTitle: '管理 Workspace',
+    editWorkspaces: '编辑',
     createWorkspaceTitle: '创建',
     createWorkspaceAction: '创建',
     visibleWorkspaces: '展示中',
-    moveWorkspaceUp: '上移',
-    moveWorkspaceDown: '下移',
+    hideWorkspace: '隐藏',
+    showWorkspace: '显示',
+    workspaceFromName: '名称',
+    workspaceFromGit: 'Git',
+    gitRepository: 'Git 仓库',
     noActiveSessions: '暂时还没有活跃会话。',
     activeSessionsLabel: '正常',
     archivedSessionsLabel: '归档',
@@ -383,7 +470,9 @@ const COPY = {
     activity: '活动',
     approvalNeeded: '需要审批',
     approvalNeededHint: 'Codex 正在等待你的决定，当前 turn 会在审批后继续。',
+    normalStatus: '普通',
     processingStatus: '处理中',
+    normalHint: '当前是普通状态，可以继续发送下一条消息。',
     processingHint: '当前这一轮还在处理中，结束前还可能继续追加回复。',
     approvalPendingStatus: '待处理',
     approvalPendingHint: '正在等待你的决定，审批通过后这一轮会继续。',
@@ -466,12 +555,28 @@ const COPY = {
     approvalModeLabel: '审批 Model',
     model: '模型',
     thinking: '思考强度',
+    rolePreset: '预设角色',
+    rolePresetManager: '预设角色',
+    rolePresetManagerHint: '管理 Chat 可复用的 Prompt 预设。',
+    rolePresetName: '角色名称',
+    rolePresetDescription: '描述',
+    rolePresetPrompt: 'Prompt',
+    rolePresetDefault: '设为默认预设',
+    newRolePreset: '新建预设',
+    editRolePreset: '编辑预设',
+    saveRolePreset: '保存预设',
+    deleteRolePreset: '删除预设',
+    noRolePresets: '还没有预设角色。',
+    rolePresetSaved: '预设已保存',
+    rolePresetDeleted: '预设已删除',
+    deleteRolePresetConfirm: '确定删除预设 “{label}” 吗？',
     readOnlyProfile: '只读',
-    repoWriteProfile: 'Write Only',
+    repoWriteProfile: 'Workspace 可写',
     fullHostProfile: 'Full',
     lessApprovalMode: '尽可能不审批',
     fullApprovalMode: '全部需要审批',
-    chatSessionHint: '聊天会话固定为只读模式。',
+    noRolePreset: '无',
+    chatSessionHint: '聊天会话可以修改共享 Chat workspace 里的文件。',
     chatAutoTitleHint: '发出第一条消息后，会自动生成标题。',
     workspaceFolder: '新建文件夹',
     workspacePreview: 'Workspace 预览',
@@ -483,11 +588,12 @@ const COPY = {
     saveName: '保存会话',
     renaming: '保存中...',
     sessionContextResetHint: '修改 workspace 或代码权限后，这个会话会从新的 thread 继续。',
-    sessionDeletedConfirm: '确定永久删除 “{title}” 吗？这只会把它从 remote-vibe-coding 中移除。',
+    sessionDeletedConfirm: '你确定要删除这个 chat history 吗？',
     archiveSessionConfirm: '确定归档 “{title}” 吗？之后仍然可以恢复。',
     confirmArchiveTitle: '归档会话',
     confirmDeleteTitle: '删除会话',
     confirmAction: '确认',
+    deleteInlineConfirm: '再次点击即可删除',
     archive: '归档',
     restore: '恢复',
     delete: '删除',
@@ -521,6 +627,8 @@ const COPY = {
     creatingUser: '创建中...',
     savingUser: '保存中...',
     regenerateToken: '重置 token',
+    regeneratingToken: '重置 token 中...',
+    regenerateTokenConfirm: '确定为 “{username}” 重置 token 吗？旧 token 链接将立即失效。',
     deleteUser: '删除用户',
     deleteUserConfirm: '确定删除用户 “{username}” 吗？',
     noUsersYet: '暂时还没有用户',
@@ -528,12 +636,13 @@ const COPY = {
     securityLabel: '安全',
     modelLabel: '模型',
     thinkingLabel: '思考强度',
+    rolePresetLabel: '预设角色',
     threadLabel: '线程',
     info: '信息',
     sessionInfoTitle: '会话信息',
     archived: '归档',
     active: '活跃',
-    commandToolingHidden: '聊天会话保持纯对话模式，所以工具视图默认隐藏。',
+    commandToolingHidden: '聊天会话可以改共享 workspace 里的文件，但命令工具视图仍然隐藏。',
     noActiveSelection: '当前没有选中会话',
     pickSessionHint: '选择一个已有会话，或者新建一个会话。',
     loadingOlderMessages: '正在加载更早的消息…',
@@ -557,6 +666,30 @@ function pickPreferredSessionId(
   return sessions[0]?.id ?? null;
 }
 
+function readChatCompletionMarkers(): ChatCompletionMarkerMap {
+  if (typeof window === 'undefined') {
+    return {};
+  }
+
+  try {
+    const raw = window.localStorage.getItem(CHAT_COMPLETION_MARKERS_STORAGE_KEY);
+    if (!raw) {
+      return {};
+    }
+
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const markers: ChatCompletionMarkerMap = {};
+    for (const [conversationId, value] of Object.entries(parsed)) {
+      if (typeof value === 'string' && value.trim()) {
+        markers[conversationId] = value;
+      }
+    }
+    return markers;
+  } catch {
+    return {};
+  }
+}
+
 function mergeTranscriptEntries(current: SessionTranscriptEntry[], incoming: SessionTranscriptEntry[]) {
   const merged = new Map<number, SessionTranscriptEntry>();
 
@@ -570,7 +703,52 @@ function mergeTranscriptEntries(current: SessionTranscriptEntry[], incoming: Ses
   return [...merged.values()].sort((left, right) => left.index - right.index);
 }
 
-function deriveSummarySessionState(session: SessionSummary | ConversationSummary): UiSessionState {
+function isChatSessionProcessing(
+  session: Pick<ChatStatusRecord, 'activeTurnId' | 'status'> & { uiStatus?: ChatUiStatus },
+) {
+  return session.uiStatus === 'processing' || Boolean(session.activeTurnId) || session.status === 'running';
+}
+
+function chatUiStatusFromConversation(
+  session: Pick<ConversationSummary, 'activeTurnId' | 'status' | 'hasTranscript'> & { uiStatus?: ChatUiStatus },
+): ChatUiStatus {
+  if (session.uiStatus) {
+    return session.uiStatus;
+  }
+  if (isChatSessionProcessing(session)) {
+    return 'processing';
+  }
+  if (session.status === 'error') {
+    return 'error';
+  }
+  return session.hasTranscript ? 'completed' : 'new';
+}
+
+function isUnreadChatCompletion(
+  session: Pick<ChatStatusRecord, 'id' | 'updatedAt' | 'hasTranscript'>,
+  markers: ChatCompletionMarkerMap,
+) {
+  return session.hasTranscript && markers[session.id] === session.updatedAt;
+}
+
+function deriveSummarySessionState(
+  session: SessionSummary | ConversationSummary,
+  markers: ChatCompletionMarkerMap,
+): UiSessionState {
+  if (session.sessionType === 'chat') {
+    const chatUiStatus = chatUiStatusFromConversation(session);
+    if (chatUiStatus === 'processing') {
+      return 'processing';
+    }
+    if (chatUiStatus === 'error') {
+      return 'error';
+    }
+    if (chatUiStatus === 'new') {
+      return 'new';
+    }
+    return isUnreadChatCompletion(session, markers) ? 'completed' : 'normal';
+  }
+
   if ('pendingApprovalCount' in session && session.pendingApprovalCount > 0) {
     return 'pending';
   }
@@ -589,17 +767,73 @@ function deriveSummarySessionState(session: SessionSummary | ConversationSummary
   return session.hasTranscript ? 'completed' : 'new';
 }
 
+function chatRailStateRank(state: UiSessionState) {
+  switch (state) {
+    case 'processing':
+      return 0;
+    case 'error':
+      return 1;
+    case 'new':
+      return 2;
+    case 'completed':
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+function sortChatConversationsForRail(
+  conversations: ConversationSummary[],
+  markers: ChatCompletionMarkerMap,
+) {
+  return [...conversations].sort((left, right) => {
+    const leftState = deriveSummarySessionState(left, markers);
+    const rightState = deriveSummarySessionState(right, markers);
+    const stateDelta = chatRailStateRank(leftState) - chatRailStateRank(rightState);
+    if (stateDelta !== 0) {
+      return stateDelta;
+    }
+    if (leftState === 'normal' && rightState === 'normal' && left.hasTranscript !== right.hasTranscript) {
+      return left.hasTranscript ? -1 : 1;
+    }
+    const updatedDelta = right.updatedAt.localeCompare(left.updatedAt);
+    if (updatedDelta !== 0) {
+      return updatedDelta;
+    }
+    return left.title.localeCompare(right.title);
+  });
+}
+
 function deriveDetailSessionState(
   session: SessionDetailResponse['session'] | null,
   options: {
     activeApproval: PendingApproval | null;
+    chatCompletionMarkers: ChatCompletionMarkerMap;
     transcriptCount: number;
+    transcriptSyncPending: boolean;
     busy: string | null;
     hasActiveTurn: boolean;
+    hasChatActivity: boolean;
   },
 ): UiSessionState | null {
   if (!session) {
     return null;
+  }
+  if (session.sessionType === 'chat') {
+    if (options.busy === 'start-turn') {
+      return 'processing';
+    }
+    const chatUiStatus = chatUiStatusFromConversation(session);
+    if (chatUiStatus === 'processing') {
+      return 'processing';
+    }
+    if (chatUiStatus === 'error') {
+      return 'error';
+    }
+    if (chatUiStatus === 'new') {
+      return 'new';
+    }
+    return 'completed';
   }
   if (options.activeApproval || session.status === 'needs-approval') {
     return 'pending';
@@ -607,7 +841,12 @@ function deriveDetailSessionState(
   if (session.status === 'error') {
     return 'error';
   }
-  if (options.busy === 'start-turn' || options.busy === 'create-session' || options.hasActiveTurn || session.status === 'running') {
+  if (
+    options.busy === 'start-turn'
+    || options.hasActiveTurn
+    || session.status === 'running'
+    || options.transcriptSyncPending
+  ) {
     return 'processing';
   }
   if (session.status === 'stale') {
@@ -670,6 +909,16 @@ function nextForkedSessionTitle(title: string) {
   return `${baseTitle} (${nextIndex + 1})`;
 }
 
+function nextCodingSessionTitle(
+  sessions: Array<Pick<SessionSummary, 'workspaceId'>>,
+  workspaceId: string,
+) {
+  const sessionCount = sessions.reduce((count, session) => (
+    session.workspaceId === workspaceId ? count + 1 : count
+  ), 0);
+  return `Session ${sessionCount + 1}`;
+}
+
 function toSessionSummary(
   session: SessionRecord,
   previous?: SessionSummary | null,
@@ -679,6 +928,53 @@ function toSessionSummary(
     ...session,
     lastUpdate: lastUpdate ?? previous?.lastUpdate ?? session.updatedAt,
     pendingApprovalCount: previous?.pendingApprovalCount ?? 0,
+  };
+}
+
+function chatConversationToConversationSummary(
+  conversation: ChatConversation | ChatConversationSummary,
+  lastUpdate?: string,
+): ConversationSummary {
+  return {
+    id: conversation.id,
+    ownerUserId: conversation.ownerUserId,
+    ownerUsername: conversation.ownerUsername,
+    sessionType: 'chat',
+    threadId: conversation.threadId,
+    activeTurnId: conversation.activeTurnId,
+    title: conversation.title,
+    autoTitle: conversation.autoTitle,
+    workspace: conversation.workspace,
+    archivedAt: conversation.archivedAt,
+    securityProfile: 'repo-write',
+    approvalMode: 'less-approval',
+    networkEnabled: conversation.networkEnabled,
+    fullHostEnabled: false,
+    status: conversation.status,
+    uiStatus: conversation.uiStatus,
+    recoveryState: conversation.recoveryState,
+    retryable: conversation.retryable,
+    lastIssue: conversation.lastIssue,
+    hasTranscript: conversation.hasTranscript,
+    model: conversation.model,
+    reasoningEffort: conversation.reasoningEffort,
+    rolePresetId: conversation.rolePresetId,
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    lastUpdate: lastUpdate ?? ('lastUpdate' in conversation ? conversation.lastUpdate : conversation.updatedAt),
+  };
+}
+
+function chatDetailToSessionDetail(detail: ChatConversationDetailResponse): SessionDetailResponse {
+  return {
+    session: chatConversationToConversationSummary(detail.conversation),
+    approvals: [],
+    liveEvents: [],
+    thread: detail.thread,
+    transcriptTotal: detail.transcriptTotal,
+    commands: [],
+    changes: [],
+    draftAttachments: detail.draftAttachments,
   };
 }
 
@@ -698,7 +994,7 @@ function optimisticDetail(session: SessionDetailResponse['session']): SessionDet
 function securityProfileLabel(language: Language, sessionType: SessionType, securityProfile: SecurityProfile) {
   const copy = COPY[language];
   if (sessionType === 'chat') {
-    return copy.readOnlyProfile;
+    return copy.repoWriteProfile;
   }
   return securityProfile === 'full-host' ? copy.fullHostProfile : copy.repoWriteProfile;
 }
@@ -709,14 +1005,17 @@ function approvalModeLabel(language: Language, approvalMode: ApprovalMode) {
 }
 
 function preferredReasoningEffort(option: Pick<ModelOption, 'defaultReasoningEffort' | 'supportedReasoningEfforts'> | null | undefined) {
-  if (!option) return 'medium' as const;
-  if (option.supportedReasoningEfforts.includes('medium')) {
-    return 'medium' as const;
+  if (!option) return 'xhigh' as const;
+  const preferredEfforts: ReasoningEffort[] = ['xhigh', 'high', 'medium', 'low', 'minimal', 'none'];
+  for (const effort of preferredEfforts) {
+    if (option.supportedReasoningEfforts.includes(effort)) {
+      return effort;
+    }
   }
   if (option.supportedReasoningEfforts.includes(option.defaultReasoningEffort)) {
     return option.defaultReasoningEffort;
   }
-  return option.supportedReasoningEfforts[0] ?? 'medium';
+  return option.supportedReasoningEfforts[0] ?? 'xhigh';
 }
 
 function toolLabel(entry: SessionTranscriptEntry, language: Language) {
@@ -727,6 +1026,70 @@ function toolLabel(entry: SessionTranscriptEntry, language: Language) {
     return language === 'zh' ? '改动' : 'Files';
   }
   return language === 'zh' ? '工具' : 'Tool';
+}
+
+function chatActivityKind(event: SessionEvent): 'thinking' | 'searching' | 'drafting' | null {
+  if (event.method === 'item/agentMessage/delta') {
+    return 'drafting';
+  }
+
+  if (event.method !== 'item/started' && event.method !== 'item/completed') {
+    return null;
+  }
+
+  if (/\breasoning\b/i.test(event.summary)) {
+    return 'thinking';
+  }
+
+  if (/\bwebSearch\b/i.test(event.summary)) {
+    return 'searching';
+  }
+
+  if (/\bagentMessage\b/i.test(event.summary)) {
+    return 'drafting';
+  }
+
+  return null;
+}
+
+function isChatActivityTerminalEvent(event: SessionEvent) {
+  if (event.method === 'turn/completed' || event.method === 'turn/interrupted' || event.method === 'session/restarted') {
+    return true;
+  }
+
+  return event.method === 'thread/status/changed' && /\bidle\b/i.test(event.summary);
+}
+
+function deriveChatActivityItems(events: SessionEvent[], language: Language) {
+  const lastTerminalIndex = [...events].reverse().findIndex(isChatActivityTerminalEvent);
+  const relevantEvents = lastTerminalIndex === -1
+    ? events
+    : events.slice(events.length - lastTerminalIndex);
+  const items: Array<{ id: string; label: string }> = [];
+
+  for (const event of relevantEvents) {
+    const kind = chatActivityKind(event);
+    if (!kind) {
+      continue;
+    }
+
+    const label = CHAT_ACTIVITY_LABELS[language][kind];
+    const previous = items.at(-1);
+    if (previous?.label === label) {
+      items[items.length - 1] = {
+        id: event.id,
+        label,
+      };
+      continue;
+    }
+
+    items.push({
+      id: event.id,
+      label,
+    });
+  }
+
+  return items.slice(-4);
 }
 
 function formatRemainingApprovals(count: number, language: Language) {
@@ -767,6 +1130,22 @@ function roleLabel(language: Language, role: UserRole) {
   return language === 'zh' ? '用户' : 'User';
 }
 
+function orderedUserRoles(roles: Iterable<UserRole>) {
+  const priority: UserRole[] = ['user', 'developer', 'admin'];
+  const roleSet = new Set(roles);
+  return priority.filter((role) => roleSet.has(role));
+}
+
+function toggleUserRole(roles: UserRole[], role: UserRole, enabled: boolean) {
+  const next = new Set(roles);
+  if (enabled) {
+    next.add(role);
+  } else {
+    next.delete(role);
+  }
+  return orderedUserRoles(next);
+}
+
 function deriveRolesFromLegacy(user: BootstrapPayload['currentUser'] | null | undefined): UserRole[] {
   const rawRoles = Array.isArray((user as { roles?: unknown } | null | undefined)?.roles)
     ? (user as { roles: unknown[] }).roles
@@ -774,7 +1153,7 @@ function deriveRolesFromLegacy(user: BootstrapPayload['currentUser'] | null | un
   if (rawRoles) {
     const roles = rawRoles.filter((role): role is UserRole => role === 'user' || role === 'developer' || role === 'admin');
     if (roles.length > 0) {
-      return roles;
+      return orderedUserRoles(roles);
     }
   }
 
@@ -789,7 +1168,7 @@ function deriveRolesFromLegacy(user: BootstrapPayload['currentUser'] | null | un
   if ((user as { isAdmin?: boolean } | null | undefined)?.isAdmin) {
     roles.push('admin');
   }
-  return roles.length > 0 ? roles : ['user'];
+  return roles.length > 0 ? orderedUserRoles(roles) : ['user'];
 }
 
 function derivedAvailableModes(bootstrap: BootstrapPayload | null): AppMode[] {
@@ -859,6 +1238,14 @@ function normalizedConversations(bootstrap: BootstrapPayload | null): Conversati
     }));
 }
 
+function normalizedChatConversations(bootstrap: ChatBootstrapPayload | null): ConversationSummary[] {
+  return (bootstrap?.conversations ?? []).map((conversation) => chatConversationToConversationSummary(conversation));
+}
+
+function isChatTranscriptPageResponse(value: unknown): value is ChatTranscriptPageResponse {
+  return Boolean(value && typeof value === 'object' && 'conversation' in value);
+}
+
 function pickDefaultMode(bootstrap: BootstrapPayload | null, currentMode: AppMode) {
   if (!bootstrap) return currentMode;
   const modes = derivedAvailableModes(bootstrap);
@@ -910,6 +1297,16 @@ function visibleDeveloperWorkspaces(workspaces: WorkspaceSummary[]) {
   );
 }
 
+function normalizeWorkspaceLayoutOrder(workspaces: WorkspaceSummary[]) {
+  return [
+    ...sortWorkspaceSummaries(workspaces.filter((workspace) => workspace.visible)),
+    ...sortWorkspaceSummaries(workspaces.filter((workspace) => !workspace.visible)),
+  ].map((workspace, index) => ({
+    ...workspace,
+    sortOrder: index,
+  }));
+}
+
 function mergeWorkspaceIds(currentIds: string[], ...workspaceIds: Array<string | null | undefined>) {
   const next = [...currentIds];
   for (const workspaceId of workspaceIds) {
@@ -923,11 +1320,17 @@ function defaultUserForm(): UserFormState {
   return {
     username: '',
     password: '',
-    isAdmin: false,
-    allowCode: false,
-    allowChat: true,
+    roles: ['user'],
     canUseFullHost: false,
-    regenerateToken: false,
+  };
+}
+
+function defaultChatRolePresetForm(): ChatRolePresetFormState {
+  return {
+    label: '',
+    description: '',
+    prompt: '',
+    isDefault: false,
   };
 }
 
@@ -1128,7 +1531,7 @@ function SendIcon() {
   );
 }
 
-function MoreIcon() {
+function OverflowIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <circle cx="4.5" cy="10" r="1.4" fill="currentColor" />
@@ -1138,7 +1541,22 @@ function MoreIcon() {
   );
 }
 
-function StopIcon() {
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M6.3 6.8v7.1m3.7-7.1v7.1m3.7-7.1v7.1M4.7 5.3h10.6m-7.6-1.8h4.6m-6.8 1.8.6 9a1.6 1.6 0 0 0 1.6 1.5h4.6a1.6 1.6 0 0 0 1.6-1.5l.6-9"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function StopSquareIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
       <rect x="5.7" y="5.7" width="8.6" height="8.6" rx="1.4" fill="currentColor" />
@@ -1217,6 +1635,7 @@ export function App() {
     return stored === 'chat' || stored === 'developer' ? stored : 'developer';
   });
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
+  const [chatBootstrap, setChatBootstrap] = useState<ChatBootstrapPayload | null>(null);
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
@@ -1237,33 +1656,41 @@ export function App() {
   const [adminOpen, setAdminOpen] = useState(false);
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
   const [adminUsers, setAdminUsers] = useState<AdminUserRecord[] | null>(null);
+  const [chatRolePresetList, setChatRolePresetList] = useState<ChatRolePresetListResponse | null>(null);
+  const [editingChatRolePresetId, setEditingChatRolePresetId] = useState<string | null>(null);
+  const [chatRolePresetForm, setChatRolePresetForm] = useState<ChatRolePresetFormState>(() => defaultChatRolePresetForm());
   const [workspaceModalMode, setWorkspaceModalMode] = useState<WorkspaceModalMode | null>(null);
-  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [workspaceEditMode, setWorkspaceEditMode] = useState(false);
+  const [dragWorkspaceId, setDragWorkspaceId] = useState<string | null>(null);
+  const [chatCompletionMarkers, setChatCompletionMarkers] = useState<ChatCompletionMarkerMap>(() => readChatCompletionMarkers());
   const [optimisticSessions, setOptimisticSessions] = useState<SessionSummary[]>([]);
   const [optimisticConversations, setOptimisticConversations] = useState<ConversationSummary[]>([]);
   const [optimisticWorkspaces, setOptimisticWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [workspaceDraftSource, setWorkspaceDraftSource] = useState<'empty' | 'git'>('empty');
   const [workspaceDraftName, setWorkspaceDraftName] = useState('');
+  const [workspaceDraftGitUrl, setWorkspaceDraftGitUrl] = useState('');
   const [inlineRenameSessionId, setInlineRenameSessionId] = useState<string | null>(null);
   const [inlineRenameTitle, setInlineRenameTitle] = useState('');
   const [editSessionId, setEditSessionId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [editWorkspaceName, setEditWorkspaceName] = useState('');
   const [editSecurityProfile, setEditSecurityProfile] = useState<'repo-write' | 'full-host'>('repo-write');
-  const [workspaceName, setWorkspaceName] = useState('');
-  const [title, setTitle] = useState('');
-  const [securityProfile, setSecurityProfile] = useState<'repo-write' | 'full-host'>('repo-write');
   const [sessionApprovalMode, setSessionApprovalMode] = useState<ApprovalMode>('less-approval');
   const [sessionModel, setSessionModel] = useState('');
-  const [sessionEffort, setSessionEffort] = useState<ReasoningEffort>('medium');
+  const [sessionEffort, setSessionEffort] = useState<ReasoningEffort>('xhigh');
+  const [sessionRolePresetId, setSessionRolePresetId] = useState('');
   const [userModalMode, setUserModalMode] = useState<UserModalMode>('create');
   const [userModalOpen, setUserModalOpen] = useState(false);
   const [editingUserId, setEditingUserId] = useState<string | null>(null);
   const [userForm, setUserForm] = useState<UserFormState>(() => defaultUserForm());
   const [confirmAction, setConfirmAction] = useState<SessionConfirmAction>(null);
+  const [chatRailEditMode, setChatRailEditMode] = useState(false);
+  const [chatRailDeleteConfirmId, setChatRailDeleteConfirmId] = useState<string | null>(null);
   const [transcriptItems, setTranscriptItems] = useState<SessionTranscriptEntry[]>([]);
   const [transcriptNextCursor, setTranscriptNextCursor] = useState<string | null>(null);
   const [transcriptLoadingOlder, setTranscriptLoadingOlder] = useState(false);
   const [transcriptLoadedOlder, setTranscriptLoadedOlder] = useState(false);
+  const [chatLiveEvents, setChatLiveEvents] = useState<SessionEvent[]>([]);
   const [isPromptComposing, setIsPromptComposing] = useState(false);
   const [approvalSelectionIndex, setApprovalSelectionIndex] = useState(0);
   const promptCompositionResetTimerRef = useRef<number | null>(null);
@@ -1276,15 +1703,22 @@ export function App() {
   const workspaceDraftInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const approvalPromptRef = useRef<HTMLDivElement | null>(null);
+  const chatProcessingSnapshotRef = useRef<Record<string, boolean>>({});
+  const workspaceExpansionInitializedRef = useRef(false);
   const copy = COPY[language];
-  const newSessionType: SessionType = activeMode === 'chat' ? 'chat' : 'code';
 
   const currentUserRoles = deriveRolesFromLegacy(bootstrap?.currentUser);
   const availableModes = derivedAvailableModes(bootstrap);
   const bootstrapWorkspaces = normalizedWorkspaces(bootstrap);
   const bootstrapSessions = normalizedDeveloperSessions(bootstrap);
-  const bootstrapConversations = normalizedConversations(bootstrap);
-  const availableModels = bootstrap?.availableModels.length ? bootstrap.availableModels : [];
+  const bootstrapConversations = normalizedChatConversations(chatBootstrap);
+  const availableModels = activeMode === 'chat'
+    ? (chatBootstrap?.availableModels.length
+        ? chatBootstrap.availableModels
+        : (bootstrap?.availableModels.length ? bootstrap.availableModels : []))
+    : (bootstrap?.availableModels.length ? bootstrap.availableModels : []);
+  const availableChatRolePresets = chatBootstrap?.rolePresets ?? [];
+  const canManageChatRolePresets = Boolean(bootstrap?.currentUser.isAdmin && derivedAvailableModes(bootstrap).includes('chat'));
   const currentSessionModelOption = availableModels.find((entry) => entry.model === sessionModel)
     ?? availableModels.find((entry) => entry.isDefault)
     ?? availableModels[0]
@@ -1292,6 +1726,58 @@ export function App() {
   const currentSessionEfforts = currentSessionModelOption?.supportedReasoningEfforts.length
     ? currentSessionModelOption.supportedReasoningEfforts
     : FALLBACK_REASONING;
+  const editingChatRolePreset = chatRolePresetList?.rolePresets.find((preset) => preset.id === editingChatRolePresetId) ?? null;
+
+  function syncChatConversationSnapshot(nextConversation: ChatConversation) {
+    setChatBootstrap((current) => (
+      current
+        ? {
+            ...current,
+            conversations: current.conversations.map((conversation) => (
+              conversation.id === nextConversation.id
+                ? {
+                    ...conversation,
+                    ...nextConversation,
+                    lastUpdate: conversation.lastUpdate,
+                  }
+                : conversation
+            )),
+          }
+        : current
+    ));
+    setDetail((current) => (
+      current && current.session.id === nextConversation.id
+        ? {
+            ...current,
+            session: chatConversationToConversationSummary(nextConversation),
+          }
+        : current
+    ));
+  }
+
+  function applyChatRolePresetList(nextList: ChatRolePresetListResponse) {
+    setChatRolePresetList(nextList);
+    setChatBootstrap((current) => (
+      current
+        ? {
+            ...current,
+            rolePresets: nextList.rolePresets.map(({ id, label, description, isDefault }) => ({
+              id,
+              label,
+              description,
+              isDefault,
+            })),
+            defaults: {
+              ...current.defaults,
+              rolePresetId: nextList.defaultRolePresetId,
+            },
+          }
+        : current
+    ));
+  }
+  const editingAdminUser = editingUserId
+    ? adminUsers?.find((entry) => entry.id === editingUserId) ?? null
+    : null;
 
   useEffect(() => {
     window.localStorage.setItem('rvc-language', language);
@@ -1304,6 +1790,13 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem('rvc-rail-width', String(railWidth));
   }, [railWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      CHAT_COMPLETION_MARKERS_STORAGE_KEY,
+      JSON.stringify(chatCompletionMarkers),
+    );
+  }, [chatCompletionMarkers]);
 
   useEffect(() => {
     if (!sessionMenuSessionId && !detailMenuOpen) return;
@@ -1357,6 +1850,11 @@ export function App() {
     }
 
     void loadBootstrapData();
+    if (activeMode === 'chat') {
+      return () => {
+        cancelled = true;
+      };
+    }
     const timer = window.setInterval(() => {
       void loadBootstrapData();
     }, 2000);
@@ -1368,11 +1866,47 @@ export function App() {
   }, [activeMode, copy.unknownError]);
 
   useEffect(() => {
+    if (!bootstrap || !derivedAvailableModes(bootstrap).includes('chat')) {
+      setChatBootstrap(null);
+      return;
+    }
+    if (activeMode !== 'chat') {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadChatBootstrapData() {
+      try {
+        const next = await fetchChatBootstrap();
+        if (cancelled) return;
+        setChatBootstrap(next);
+        setError(null);
+      } catch (loadError) {
+        if (!cancelled && activeMode === 'chat') {
+          setError(loadError instanceof Error ? loadError.message : copy.unknownError);
+        }
+      }
+    }
+
+    void loadChatBootstrapData();
+    const timer = window.setInterval(() => {
+      void loadChatBootstrapData();
+    }, 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [bootstrap, activeMode, copy.unknownError]);
+
+  useEffect(() => {
     if (!selectedSessionId) {
       setDetail(null);
       setTranscriptItems([]);
       setTranscriptNextCursor(null);
       setTranscriptLoadedOlder(false);
+      setChatLiveEvents([]);
       return;
     }
 
@@ -1393,7 +1927,9 @@ export function App() {
 
     async function loadDetail() {
       try {
-        const next = await fetchSessionDetail(currentSessionId);
+        const next = activeMode === 'chat'
+          ? chatDetailToSessionDetail(await fetchChatConversationDetail(currentSessionId))
+          : await fetchCodingSessionDetail(currentSessionId);
         if (cancelled) return;
         setDetail(next);
         setError(null);
@@ -1405,6 +1941,11 @@ export function App() {
     }
 
     void loadDetail();
+    if (activeMode === 'chat') {
+      return () => {
+        cancelled = true;
+      };
+    }
     const timer = window.setInterval(() => {
       void loadDetail();
     }, 1500);
@@ -1414,6 +1955,47 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [selectedSessionId, activeMode, optimisticSessions, optimisticConversations, copy.unknownError]);
+
+  useEffect(() => {
+    if (activeMode !== 'chat') {
+      if (chatRailEditMode) {
+        setChatRailEditMode(false);
+      }
+      if (chatRailDeleteConfirmId) {
+        setChatRailDeleteConfirmId(null);
+      }
+      return;
+    }
+    if (!chatRailEditMode && chatRailDeleteConfirmId) {
+      setChatRailDeleteConfirmId(null);
+    }
+  }, [activeMode, chatRailEditMode, chatRailDeleteConfirmId]);
+
+  useEffect(() => {
+    if (!settingsOpen || !canManageChatRolePresets) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadRolePresets() {
+      try {
+        const next = await fetchChatRolePresets();
+        if (cancelled) return;
+        applyChatRolePresetList(next);
+        setError(null);
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : copy.unknownError);
+        }
+      }
+    }
+
+    void loadRolePresets();
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsOpen, canManageChatRolePresets, copy.unknownError]);
 
   useEffect(() => {
     if (!inlineRenameSessionId) return;
@@ -1432,6 +2014,18 @@ export function App() {
   }, [inlineRenameSessionId]);
 
   useEffect(() => {
+    if (!settingsOpen) {
+      setEditingChatRolePresetId(null);
+      setChatRolePresetForm(defaultChatRolePresetForm());
+      return;
+    }
+    if (editingChatRolePresetId && chatRolePresetList && !chatRolePresetList.rolePresets.some((preset) => preset.id === editingChatRolePresetId)) {
+      setEditingChatRolePresetId(null);
+      setChatRolePresetForm(defaultChatRolePresetForm());
+    }
+  }, [settingsOpen, editingChatRolePresetId, chatRolePresetList]);
+
+  useEffect(() => {
     if (!pendingSessionRailAction || !detail || detail.session.id !== pendingSessionRailAction.sessionId) {
       return;
     }
@@ -1448,6 +2042,7 @@ export function App() {
     setTranscriptNextCursor(null);
     setTranscriptLoadedOlder(false);
     setTranscriptLoadingOlder(false);
+    setChatLiveEvents([]);
     restoreTranscriptScrollHeightRef.current = null;
     shouldStickTranscriptToBottomRef.current = true;
   }, [selectedSessionId]);
@@ -1457,6 +2052,7 @@ export function App() {
       setTranscriptItems([]);
       setTranscriptNextCursor(null);
       setTranscriptLoadedOlder(false);
+      setChatLiveEvents([]);
       return;
     }
 
@@ -1465,14 +2061,21 @@ export function App() {
       setTranscriptItems([]);
       setTranscriptNextCursor(null);
       setTranscriptLoadedOlder(false);
+      setChatLiveEvents([]);
       return;
     }
 
     let cancelled = false;
+    const shouldPollChatTranscript = activeMode === 'chat'
+      && detail?.session.sessionType === 'chat'
+      && detail.session.id === currentSessionId
+      && isChatSessionProcessing(detail.session);
 
     async function loadLatestTranscript() {
       try {
-        const next = await fetchSessionTranscript(currentSessionId, { limit: TRANSCRIPT_PAGE_SIZE });
+        const next = activeMode === 'chat'
+          ? await fetchChatConversationTranscript(currentSessionId, { limit: TRANSCRIPT_PAGE_SIZE })
+          : await fetchCodingSessionTranscript(currentSessionId, { limit: TRANSCRIPT_PAGE_SIZE });
         if (cancelled) return;
 
         const scrollContainer = transcriptScrollRef.current;
@@ -1493,6 +2096,10 @@ export function App() {
           setTranscriptNextCursor(next.nextCursor);
         }
 
+        if (activeMode === 'chat' && isChatTranscriptPageResponse(next)) {
+          setChatLiveEvents(next.liveEvents);
+          syncChatConversationSnapshot(next.conversation);
+        }
         setError(null);
       } catch (loadError) {
         if (!cancelled) {
@@ -1502,6 +2109,11 @@ export function App() {
     }
 
     void loadLatestTranscript();
+    if (activeMode === 'chat' && !shouldPollChatTranscript) {
+      return () => {
+        cancelled = true;
+      };
+    }
     const timer = window.setInterval(() => {
       void loadLatestTranscript();
     }, 1500);
@@ -1510,7 +2122,94 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedSessionId, transcriptLoadedOlder, copy.unknownError]);
+  }, [selectedSessionId, activeMode, detail, transcriptLoadedOlder, copy.unknownError]);
+
+  useEffect(() => {
+    const currentConversations = new Map<string, ChatStatusRecord>();
+    for (const conversation of bootstrapConversations) {
+      currentConversations.set(conversation.id, conversation);
+    }
+    if (activeMode === 'chat' && detail?.session.sessionType === 'chat') {
+      currentConversations.set(detail.session.id, detail.session);
+    }
+
+    const previousSnapshot = chatProcessingSnapshotRef.current;
+    const nextSnapshot: Record<string, boolean> = {};
+    for (const [conversationId, conversation] of currentConversations) {
+      nextSnapshot[conversationId] = isChatSessionProcessing(conversation);
+    }
+
+    setChatCompletionMarkers((current) => {
+      let next = current;
+      let changed = false;
+
+      for (const [conversationId, conversation] of currentConversations) {
+        const isProcessing = nextSnapshot[conversationId];
+        const wasProcessing = previousSnapshot[conversationId] ?? false;
+        const chatUiStatus = chatUiStatusFromConversation(conversation);
+
+        if (chatUiStatus === 'error' || isProcessing || !conversation.hasTranscript) {
+          if (conversationId in next) {
+            if (next === current) {
+              next = { ...current };
+            }
+            delete next[conversationId];
+            changed = true;
+          }
+          continue;
+        }
+
+        if (wasProcessing) {
+          if (selectedSessionId !== conversationId && next[conversationId] !== conversation.updatedAt) {
+            if (next === current) {
+              next = { ...current };
+            }
+            next[conversationId] = conversation.updatedAt;
+            changed = true;
+          }
+          continue;
+        }
+
+        if (next[conversationId] && next[conversationId] !== conversation.updatedAt) {
+          if (next === current) {
+            next = { ...current };
+          }
+          delete next[conversationId];
+          changed = true;
+        }
+      }
+
+      for (const conversationId of Object.keys(next)) {
+        if (!currentConversations.has(conversationId)) {
+          if (next === current) {
+            next = { ...current };
+          }
+          delete next[conversationId];
+          changed = true;
+        }
+      }
+
+      return changed ? next : current;
+    });
+
+    chatProcessingSnapshotRef.current = nextSnapshot;
+  }, [activeMode, bootstrapConversations, detail, selectedSessionId]);
+
+  useEffect(() => {
+    if (activeMode !== 'chat' || !selectedSessionId) {
+      return;
+    }
+
+    setChatCompletionMarkers((current) => {
+      if (!(selectedSessionId in current)) {
+        return current;
+      }
+
+      const next = { ...current };
+      delete next[selectedSessionId];
+      return next;
+    });
+  }, [activeMode, selectedSessionId]);
 
   useEffect(() => {
     if (!bootstrap) return;
@@ -1553,7 +2252,10 @@ export function App() {
     ]).map((workspace) => workspace.id));
     const allDeveloperSessions = [...optimisticSessions, ...bootstrapSessions]
       .filter((session) => visibleWorkspaceIds.has(session.workspaceId));
-    const allConversations = [...optimisticConversations, ...bootstrapConversations];
+    const allConversations = sortChatConversationsForRail(
+      [...optimisticConversations, ...bootstrapConversations],
+      chatCompletionMarkers,
+    );
 
     if (activeMode === 'developer') {
       if (visibleWorkspaceIds.size === 0) {
@@ -1571,47 +2273,40 @@ export function App() {
     if (!selectedSessionId || !allConversations.some((conversation) => conversation.id === selectedSessionId)) {
       setSelectedSessionId(pickPreferredSessionId(allConversations));
     }
-  }, [bootstrap, activeMode, optimisticSessions, optimisticConversations, selectedWorkspaceId, selectedSessionId]);
+  }, [bootstrap, chatBootstrap, activeMode, optimisticSessions, optimisticConversations, selectedWorkspaceId, selectedSessionId, chatCompletionMarkers]);
 
   useEffect(() => {
     if (activeMode !== 'developer') {
+      workspaceExpansionInitializedRef.current = false;
       if (expandedWorkspaceIds.length > 0) {
         setExpandedWorkspaceIds([]);
       }
+      if (workspaceEditMode) {
+        setWorkspaceEditMode(false);
+      }
       return;
     }
 
-    const visibleIds = new Set(visibleDeveloperWorkspaces([
-      ...optimisticWorkspaces,
-      ...bootstrapWorkspaces,
-    ]).map((workspace) => workspace.id));
+    const nextRailWorkspaces = workspaceEditMode
+      ? sortWorkspaceSummaries(selectableDeveloperWorkspaces([
+          ...optimisticWorkspaces,
+          ...bootstrapWorkspaces,
+        ]))
+      : visibleDeveloperWorkspaces([
+          ...optimisticWorkspaces,
+          ...bootstrapWorkspaces,
+        ]);
+    const visibleIds = new Set(nextRailWorkspaces.map((workspace) => workspace.id));
 
     setExpandedWorkspaceIds((current) => {
-      return current.filter((workspaceId) => visibleIds.has(workspaceId));
+      const filtered = current.filter((workspaceId) => visibleIds.has(workspaceId));
+      if (workspaceEditMode || workspaceExpansionInitializedRef.current || nextRailWorkspaces.length === 0) {
+        return filtered;
+      }
+      workspaceExpansionInitializedRef.current = true;
+      return filtered.length > 0 ? filtered : [nextRailWorkspaces[0]!.id];
     });
-  }, [activeMode, bootstrapWorkspaces, optimisticWorkspaces, expandedWorkspaceIds.length]);
-
-  useEffect(() => {
-    if (newSessionType !== 'code') {
-      if (workspaceName !== '') {
-        setWorkspaceName('');
-      }
-      if (securityProfile !== 'repo-write') {
-        setSecurityProfile('repo-write');
-      }
-      return;
-    }
-
-    const allWorkspaces = selectableDeveloperWorkspaces([...optimisticWorkspaces, ...(bootstrap?.workspaces ?? [])]);
-    if (workspaceName === CREATE_WORKSPACE_OPTION) {
-      return;
-    }
-    if (workspaceName && allWorkspaces.some((entry) => entry.name === workspaceName)) {
-      return;
-    }
-    const selectedWorkspace = allWorkspaces.find((entry) => entry.id === selectedWorkspaceId);
-    setWorkspaceName(selectedWorkspace?.name ?? allWorkspaces[0]?.name ?? CREATE_WORKSPACE_OPTION);
-  }, [bootstrap, newSessionType, workspaceName, selectedWorkspaceId, optimisticWorkspaces, securityProfile]);
+  }, [activeMode, bootstrapWorkspaces, optimisticWorkspaces, expandedWorkspaceIds.length, workspaceEditMode]);
 
   useEffect(() => {
     if (!detail?.session) return;
@@ -1629,7 +2324,17 @@ export function App() {
     setSessionModel(nextModel);
     setSessionEffort(nextEffort);
     setSessionApprovalMode(detail.session.approvalMode);
-  }, [detail?.session, availableModels]);
+    if (detail.session.sessionType === 'chat') {
+      const chatSession = detail.session;
+      const nextRolePresetId = chatSession.rolePresetId
+        && availableChatRolePresets.some((preset) => preset.id === chatSession.rolePresetId)
+        ? chatSession.rolePresetId
+        : '';
+      setSessionRolePresetId(nextRolePresetId);
+      return;
+    }
+    setSessionRolePresetId('');
+  }, [detail?.session, availableModels, availableChatRolePresets]);
 
   useEffect(() => {
     if (!adminOpen || !bootstrap?.currentUser.isAdmin) return;
@@ -1705,6 +2410,13 @@ export function App() {
   const cloudflareManagedBySystem = cloudflare?.activeSource === 'system';
   const cloudflareManagedLocally = cloudflare?.activeSource === 'local-manager';
   const sessionIsChat = detail?.session.sessionType === 'chat';
+  const selectedChatRolePreset = (() => {
+    if (detail?.session.sessionType !== 'chat') {
+      return null;
+    }
+    const chatSession = detail.session;
+    return availableChatRolePresets.find((preset) => preset.id === chatSession.rolePresetId) ?? null;
+  })();
   const selectedSessionIsOptimistic = isOptimisticSessionId(selectedSessionId);
   const inlineRenameActive = Boolean(detail && inlineRenameSessionId === detail.session.id);
   const inlineRenameBusy = Boolean(detail && busy === `rename-${detail.session.id}`);
@@ -1726,41 +2438,46 @@ export function App() {
     ...optimisticConversations,
     ...bootstrapConversations,
   ];
+  const sortedConversations = sortChatConversationsForRail(allConversations, chatCompletionMarkers);
   const allWorkspaces = [
     ...optimisticWorkspaces,
     ...bootstrapWorkspaces,
   ];
   const developerWorkspaceOptions = selectableDeveloperWorkspaces(allWorkspaces);
+  const editableWorkspaces = sortWorkspaceSummaries(developerWorkspaceOptions);
   const visibleWorkspaces = visibleDeveloperWorkspaces(allWorkspaces);
+  const editableVisibleWorkspaces = editableWorkspaces.filter((workspace) => workspace.visible);
+  const editableHiddenWorkspaces = editableWorkspaces.filter((workspace) => !workspace.visible);
+  const railVisibleWorkspaces = workspaceEditMode ? editableVisibleWorkspaces : visibleWorkspaces;
   const visibleWorkspaceIds = new Set(visibleWorkspaces.map((workspace) => workspace.id));
   const visibleWorkspaceSessions = allSessions.filter((session) => visibleWorkspaceIds.has(session.workspaceId));
   const selectedWorkspace = developerWorkspaceOptions.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   const visibleDeveloperSessions = visibleWorkspaceSessions;
-  const railItems = activeMode === 'developer' ? visibleDeveloperSessions : allConversations;
+  const railItems = activeMode === 'developer' ? visibleDeveloperSessions : sortedConversations;
+  const chatActivityItems = activeMode === 'chat'
+    ? deriveChatActivityItems(chatLiveEvents, language)
+    : [];
   const detailSessionState = deriveDetailSessionState(detail?.session ?? null, {
     activeApproval,
+    chatCompletionMarkers,
     transcriptCount: transcriptItems.length,
+    transcriptSyncPending: activeMode === 'developer' && Boolean(detail && detail.transcriptTotal > transcriptItems.length),
     busy,
     hasActiveTurn: sessionHasActiveTurn,
+    hasChatActivity: chatActivityItems.length > 0,
   });
   const detailSessionTitle = detail?.session
     ? detail.session.sessionType === 'code'
       ? `${workspaceNameForSession(detail.session, allWorkspaces, bootstrap?.workspaceRoot)} · ${detail.session.title}`
       : detail.session.title
     : copy.selectOrCreate;
-  const canSubmitNewSession = Boolean(
-    newSessionType === 'chat'
-      ? true
-      : workspaceName && (workspaceName !== CREATE_WORKSPACE_OPTION || title.trim()),
-  );
   const canSaveSession = Boolean(
     detail
     && editTitle.trim(),
   );
   const railEyebrow = activeMode === 'developer'
     ? (language === 'zh' ? '工作区' : 'Workspace')
-    : (language === 'zh' ? '对话' : 'Conversations');
-  const railPrimaryActionLabel = language === 'zh' ? '新聊天' : 'New chat';
+    : `${language === 'zh' ? '对话' : 'Conversations'} (${railItems.length})`;
   const railEmptyLabel = activeMode === 'developer'
     ? (language === 'zh' ? '暂时还没有会话。' : 'No sessions yet.')
     : (language === 'zh' ? '还没有聊天记录。' : 'No conversations yet.');
@@ -1773,6 +2490,13 @@ export function App() {
     value: effort,
     label: effort,
   }));
+  const rolePresetSelectOptions: SelectOption[] = [
+    { value: '', label: copy.noRolePreset },
+    ...availableChatRolePresets.map((preset) => ({
+      value: preset.id,
+      label: preset.label,
+    })),
+  ];
   const approvalModeSelectOptions: SelectOption[] = [
     { value: 'less-approval', label: copy.lessApprovalMode },
     { value: 'full-approval', label: copy.fullApprovalMode },
@@ -1805,6 +2529,9 @@ export function App() {
     setBootstrap(nextBootstrap);
     const nextMode = pickDefaultMode(nextBootstrap, activeMode);
     setActiveMode(nextMode);
+    const shouldLoadChatBootstrap = nextMode === 'chat' && derivedAvailableModes(nextBootstrap).includes('chat');
+    const nextChatBootstrap = shouldLoadChatBootstrap ? await fetchChatBootstrap() : null;
+    setChatBootstrap(nextChatBootstrap);
 
     let nextWorkspaceId = selectedWorkspaceId;
     let nextVisibleSessions: SessionSummary[] = [];
@@ -1825,16 +2552,63 @@ export function App() {
 
     const candidates = nextMode === 'developer'
       ? nextVisibleSessions
-      : normalizedConversations(nextBootstrap);
+      : sortChatConversationsForRail(normalizedChatConversations(nextChatBootstrap), chatCompletionMarkers);
     const nextSelectedSessionId = sessionId && candidates.some((entry) => entry.id === sessionId)
       ? sessionId
       : pickPreferredSessionId(candidates);
     setSelectedSessionId(nextSelectedSessionId);
     if (nextSelectedSessionId) {
-      setDetail(await fetchSessionDetail(nextSelectedSessionId));
+      setDetail(
+        nextMode === 'chat'
+          ? chatDetailToSessionDetail(await fetchChatConversationDetail(nextSelectedSessionId))
+          : await fetchCodingSessionDetail(nextSelectedSessionId),
+      );
     } else {
       setDetail(null);
     }
+  }
+
+  async function materializeOptimisticChatConversation(sessionId: string) {
+    if (!isOptimisticSessionId(sessionId)) {
+      return sessionId;
+    }
+
+    const optimisticConversation = (
+      detail?.session.sessionType === 'chat' && detail.session.id === sessionId
+        ? detail.session
+        : optimisticConversations.find((session) => session.id === sessionId)
+    ) ?? null;
+
+    if (!optimisticConversation) {
+      throw new Error(copy.createSession);
+    }
+
+    const conversation = await createChatConversation({
+      ...(optimisticConversation.autoTitle ? {} : { title: optimisticConversation.title }),
+      ...(optimisticConversation.model ? { model: optimisticConversation.model } : {}),
+      ...(optimisticConversation.reasoningEffort ? { reasoningEffort: optimisticConversation.reasoningEffort } : {}),
+      ...(optimisticConversation.rolePresetId ? { rolePresetId: optimisticConversation.rolePresetId } : {}),
+    });
+
+    setOptimisticConversations((current) => current.filter((session) => session.id !== sessionId));
+    setChatBootstrap((current) => {
+      if (!current) {
+        return current;
+      }
+      return {
+        ...current,
+        conversations: [
+          {
+            ...conversation,
+            lastUpdate: current.conversations.find((entry) => entry.id === conversation.id)?.lastUpdate ?? conversation.updatedAt,
+          },
+          ...current.conversations.filter((entry) => entry.id !== conversation.id),
+        ],
+      };
+    });
+    setSelectedSessionId(conversation.id);
+    setDetail(optimisticDetail(chatConversationToConversationSummary(conversation)));
+    return conversation.id;
   }
 
   function clearPromptCompositionResetTimer() {
@@ -1884,10 +2658,15 @@ export function App() {
 
     setTranscriptLoadingOlder(true);
     try {
-      const next = await fetchSessionTranscript(currentSessionId, {
-        limit: TRANSCRIPT_PAGE_SIZE,
-        before: transcriptNextCursor,
-      });
+      const next = activeMode === 'chat'
+        ? await fetchChatConversationTranscript(currentSessionId, {
+            limit: TRANSCRIPT_PAGE_SIZE,
+            before: transcriptNextCursor,
+          })
+        : await fetchCodingSessionTranscript(currentSessionId, {
+            limit: TRANSCRIPT_PAGE_SIZE,
+            before: transcriptNextCursor,
+          });
       setTranscriptItems((current) => mergeTranscriptEntries(next.items, current));
       setTranscriptNextCursor(next.nextCursor);
       setTranscriptLoadedOlder(true);
@@ -1941,11 +2720,94 @@ export function App() {
     ));
   }
 
-  function openNewSessionModal(targetWorkspace?: WorkspaceSummary | null) {
-    setTitle('');
-    setWorkspaceName(targetWorkspace?.name ?? selectedWorkspace?.name ?? visibleWorkspaces[0]?.name ?? developerWorkspaceOptions[0]?.name ?? CREATE_WORKSPACE_OPTION);
-    setSecurityProfile('repo-write');
-    setNewSessionOpen(true);
+  async function handleCreateWorkspaceSession(targetWorkspace?: WorkspaceSummary | null) {
+    if (!bootstrap) return;
+
+    const workspace = targetWorkspace
+      ?? selectedWorkspace
+      ?? visibleWorkspaces[0]
+      ?? developerWorkspaceOptions[0]
+      ?? null;
+    if (!workspace) {
+      setError(language === 'zh' ? '请先创建一个 Workspace。' : 'Create a workspace first.');
+      return;
+    }
+
+    setBusy('create-session');
+    const previousSelectedSessionId = selectedSessionId;
+    const previousSelectedWorkspaceId = selectedWorkspaceId;
+    let optimisticId: string | null = null;
+    try {
+      optimisticId = `${OPTIMISTIC_SESSION_PREFIX}${Date.now()}`;
+      const now = new Date().toISOString();
+      const defaultModel = bootstrap.availableModels.find((entry) => entry.isDefault)
+        ?? bootstrap.availableModels[0]
+        ?? null;
+      const optimisticTitle = nextCodingSessionTitle(allSessions, workspace.id);
+      setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, workspace.id));
+      const optimisticSession: SessionSummary = {
+        id: optimisticId,
+        ownerUserId: bootstrap.currentUser.id,
+        ownerUsername: bootstrap.currentUser.username,
+        sessionType: 'code',
+        workspaceId: workspace.id,
+        threadId: optimisticId,
+        activeTurnId: null,
+        title: optimisticTitle,
+        autoTitle: true,
+        workspace: workspace.path,
+        archivedAt: null,
+        securityProfile: 'repo-write',
+        approvalMode: 'less-approval',
+        networkEnabled: false,
+        fullHostEnabled: false,
+        status: 'running',
+        lastIssue: null,
+        hasTranscript: false,
+        model: defaultModel?.model ?? null,
+        reasoningEffort: preferredReasoningEffort(defaultModel),
+        createdAt: now,
+        updatedAt: now,
+        lastUpdate: copy.creating,
+        pendingApprovalCount: 0,
+      };
+      setOptimisticSessions((current) => [optimisticSession, ...current]);
+      setSelectedWorkspaceId(workspace.id);
+      setSelectedSessionId(optimisticId);
+      setSessionMenuSessionId(null);
+      setPrompt('');
+
+      const session = await createCodingWorkspaceSession(workspace.id, {
+        securityProfile: 'repo-write',
+      });
+      setOptimisticSessions((current) => current.filter((entry) => entry.id !== optimisticId));
+      setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
+      setBootstrap((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          sessions: [
+            toSessionSummary(session, current.sessions.find((entry) => entry.id === session.id) ?? null),
+            ...current.sessions.filter((entry) => entry.id !== session.id),
+          ],
+        };
+      });
+      setSelectedWorkspaceId(session.workspaceId);
+      setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, session.workspaceId));
+      setSelectedSessionId(session.id);
+      await refreshCurrentSelection(session.id);
+      setError(null);
+    } catch (createError) {
+      if (optimisticId) {
+        setOptimisticSessions((current) => current.filter((entry) => entry.id !== optimisticId));
+        setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
+      }
+      setSelectedSessionId(previousSelectedSessionId);
+      setSelectedWorkspaceId(previousSelectedWorkspaceId);
+      setError(createError instanceof Error ? createError.message : copy.createSession);
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function persistWorkspaceLayout(nextWorkspaces: WorkspaceSummary[], previousBootstrap: BootstrapPayload | null) {
@@ -1957,22 +2819,28 @@ export function App() {
         }
         const previousWorkspace = allWorkspaces.find((entry) => entry.id === workspace.id);
         return !previousWorkspace
-          || previousWorkspace.visible !== workspace.visible
-          || previousWorkspace.sortOrder !== workspace.sortOrder;
+          || previousWorkspace.visible !== workspace.visible;
       });
 
       await Promise.all(changedWorkspaces.map((workspace) => (
-        updateWorkspace(workspace.id, {
+        updateCodingWorkspace(workspace.id, {
           visible: workspace.visible,
-          sortOrder: workspace.sortOrder,
         })
       )));
+      const persistedWorkspaceIds = sortWorkspaceSummaries(nextWorkspaces)
+        .map((workspace) => workspace.id)
+        .filter((workspaceId) => !workspaceId.startsWith(OPTIMISTIC_WORKSPACE_PREFIX));
+      if (persistedWorkspaceIds.length > 0) {
+        await reorderCodingWorkspaces({
+          workspaceIds: persistedWorkspaceIds,
+        });
+      }
 
       setBootstrap(await fetchBootstrap());
       setError(null);
     } catch (workspaceError) {
       setBootstrap(previousBootstrap);
-      setError(workspaceError instanceof Error ? workspaceError.message : copy.manageWorkspaces);
+      setError(workspaceError instanceof Error ? workspaceError.message : copy.editWorkspaces);
     }
   }
 
@@ -1981,15 +2849,23 @@ export function App() {
     if (!bootstrap) return;
 
     const nextName = workspaceDraftName.trim();
-    if (!nextName) {
+    const nextGitUrl = workspaceDraftGitUrl.trim();
+    if (workspaceDraftSource === 'empty' && !nextName) {
       setError(language === 'zh' ? 'Workspace 名称是必填项。' : 'Workspace name is required.');
+      return;
+    }
+    if (workspaceDraftSource === 'git' && !nextGitUrl) {
+      setError(language === 'zh' ? 'Git 仓库地址是必填项。' : 'Git repository URL is required.');
       return;
     }
 
     setBusy('create-workspace');
     try {
-      const { workspaceRoot, workspaces, workspace } = await createWorkspace({
-        name: nextName,
+      const { workspaceRoot, workspaces, workspace } = await createCodingWorkspace({
+        source: workspaceDraftSource,
+        ...(workspaceDraftSource === 'empty'
+          ? { name: nextName }
+          : { gitUrl: nextGitUrl }),
       });
 
       setBootstrap((current) => (
@@ -2004,6 +2880,8 @@ export function App() {
       setSelectedWorkspaceId(workspace.id);
       setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, workspace.id));
       setWorkspaceDraftName('');
+      setWorkspaceDraftGitUrl('');
+      setWorkspaceDraftSource('empty');
       setWorkspaceModalMode(null);
       setError(null);
     } catch (workspaceError) {
@@ -2013,272 +2891,134 @@ export function App() {
     }
   }
 
-  async function handleMoveWorkspace(workspaceId: string, direction: -1 | 1) {
-    const currentIndex = visibleWorkspaces.findIndex((workspace) => workspace.id === workspaceId);
-    const nextIndex = currentIndex + direction;
-    if (currentIndex === -1 || nextIndex < 0 || nextIndex >= visibleWorkspaces.length) {
-      return;
-    }
-
+  async function handleToggleWorkspaceVisibility(workspaceId: string) {
     const previousBootstrap = bootstrap;
-    const reordered = [...visibleWorkspaces];
-    const [targetWorkspace] = reordered.splice(currentIndex, 1);
-    if (!targetWorkspace) {
-      return;
-    }
-    reordered.splice(nextIndex, 0, targetWorkspace);
-    const normalizedVisible = reordered.map((entry, index) => ({
-      ...entry,
-      sortOrder: index,
-    }));
-    const visibleMap = new Map(normalizedVisible.map((entry) => [entry.id, entry]));
-    const nextWorkspaces = allWorkspaces.map((entry) => visibleMap.get(entry.id) ?? entry);
+    const nextWorkspaces = normalizeWorkspaceLayoutOrder(allWorkspaces.map((workspace) => (
+      workspace.id === workspaceId
+        ? {
+            ...workspace,
+            visible: !workspace.visible,
+          }
+        : workspace
+    )));
 
     await persistWorkspaceLayout(nextWorkspaces, previousBootstrap);
   }
 
-  async function handleCreateConversation() {
-    if (!bootstrap) return;
-
-    setBusy('create-session');
-    const previousSelectedSessionId = selectedSessionId;
-    let optimisticId: string | null = null;
-
-    try {
-      optimisticId = `${OPTIMISTIC_SESSION_PREFIX}${Date.now()}`;
-      const now = new Date().toISOString();
-      const ownerRoot = normalizeWorkspaceSegment(
-        bootstrap.currentUser.username,
-        `user-${bootstrap.currentUser.id.slice(0, 8)}`,
-      );
-      const defaultModel = bootstrap.availableModels.find((entry) => entry.isDefault)
-        ?? bootstrap.availableModels[0]
-        ?? null;
-      const optimisticConversation: ConversationSummary = {
-        id: optimisticId,
-        ownerUserId: bootstrap.currentUser.id,
-        ownerUsername: bootstrap.currentUser.username,
-        sessionType: 'chat',
-        threadId: optimisticId,
-        activeTurnId: null,
-        title: 'New chat',
-        autoTitle: true,
-        workspace: `${bootstrap.workspaceRoot}/${ownerRoot}`,
-        archivedAt: null,
-        securityProfile: 'read-only',
-        approvalMode: 'less-approval',
-        networkEnabled: false,
-        fullHostEnabled: false,
-        status: 'running',
-        lastIssue: null,
-        hasTranscript: false,
-        model: defaultModel?.model ?? null,
-        reasoningEffort: preferredReasoningEffort(defaultModel),
-        createdAt: now,
-        updatedAt: now,
-        lastUpdate: copy.creating,
-      };
-
-      setOptimisticConversations((current) => [optimisticConversation, ...current]);
-      setSessionMenuSessionId(null);
-      setSelectedSessionId(optimisticId);
-      setDetail(optimisticDetail(optimisticConversation));
-      setTranscriptItems([]);
-      setTranscriptNextCursor(null);
-      setTranscriptLoadedOlder(false);
-      setPrompt('');
-
-      const session = await createSession({
-        sessionType: 'chat',
-      });
-
-      setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
-      setBootstrap((current) => {
-        if (!current || session.sessionType !== 'chat') {
-          return current;
-        }
-
-        return {
-          ...current,
-          conversations: [
-            {
-              ...session,
-              lastUpdate: current.conversations.find((entry) => entry.id === session.id)?.lastUpdate ?? session.updatedAt,
-            },
-            ...current.conversations.filter((entry) => entry.id !== session.id),
-          ],
-        };
-      });
-      setSelectedSessionId(session.id);
-      await refreshCurrentSelection(session.id);
-      window.setTimeout(() => {
-        promptTextareaRef.current?.focus();
-      }, 0);
-      setError(null);
-    } catch (createError) {
-      if (optimisticId) {
-        setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
-      }
-      setSelectedSessionId(previousSelectedSessionId);
-      setError(createError instanceof Error ? createError.message : copy.createSession);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleCreateSession(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!bootstrap) return;
-    if (newSessionType === 'chat') {
-      await handleCreateConversation();
+  async function handleWorkspaceDrop(targetWorkspaceId: string) {
+    if (!dragWorkspaceId || dragWorkspaceId === targetWorkspaceId) {
+      setDragWorkspaceId(null);
       return;
     }
-    setBusy('create-session');
-    const previousSelectedSessionId = selectedSessionId;
-    const previousSelectedWorkspaceId = selectedWorkspaceId;
-    let optimisticId: string | null = null;
-    let optimisticWorkspaceId: string | null = null;
-    try {
-      const nextWorkspaceName = resolveWorkspaceSelection(newSessionType, workspaceName, title);
-      optimisticId = `${OPTIMISTIC_SESSION_PREFIX}${Date.now()}`;
-      const now = new Date().toISOString();
-      const ownerRoot = normalizeWorkspaceSegment(
-        bootstrap.currentUser.username,
-        `user-${bootstrap.currentUser.id.slice(0, 8)}`,
-      );
-      const existingWorkspace = nextWorkspaceName
-        ? developerWorkspaceOptions.find((workspace) => workspace.name === nextWorkspaceName)
-        : null;
-      if (newSessionType === 'code' && !existingWorkspace) {
-        optimisticWorkspaceId = `${OPTIMISTIC_WORKSPACE_PREFIX}${Date.now()}`;
-      }
-      const optimisticWorkspace = nextWorkspaceName
-        ? `${bootstrap.workspaceRoot}/${ownerRoot}/${nextWorkspaceName}`
-        : `${bootstrap.workspaceRoot}/${ownerRoot}`;
-      const defaultModel = bootstrap.availableModels.find((entry) => entry.isDefault)
-        ?? bootstrap.availableModels[0]
-        ?? null;
-      const nextWorkspaceId = existingWorkspace?.id ?? optimisticWorkspaceId ?? `${OPTIMISTIC_WORKSPACE_PREFIX}${Date.now()}`;
-      if (!existingWorkspace) {
-        setOptimisticWorkspaces((current) => ([
-          {
-            id: nextWorkspaceId,
-            name: nextWorkspaceName ?? title.trim(),
-            path: optimisticWorkspace,
-            visible: true,
-            sortOrder: visibleWorkspaces.length,
-          },
-          ...current.filter((workspace) => workspace.id !== nextWorkspaceId),
-        ]));
-      }
-      setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, nextWorkspaceId));
-      const optimisticSession: SessionSummary = {
-        id: optimisticId,
-        ownerUserId: bootstrap.currentUser.id,
-        ownerUsername: bootstrap.currentUser.username,
-        sessionType: 'code',
-        workspaceId: nextWorkspaceId,
-        threadId: optimisticId,
-        activeTurnId: null,
-        title: title.trim() || (nextWorkspaceName ?? copy.newSession),
-        autoTitle: false,
-        workspace: optimisticWorkspace,
-        archivedAt: null,
-        securityProfile,
-        approvalMode: 'less-approval',
-        networkEnabled: false,
-        fullHostEnabled: securityProfile === 'full-host',
-        status: 'running',
-        lastIssue: null,
-        hasTranscript: false,
-        model: defaultModel?.model ?? null,
-        reasoningEffort: preferredReasoningEffort(defaultModel),
-        createdAt: now,
-        updatedAt: now,
-        lastUpdate: copy.creating,
-        pendingApprovalCount: 0,
-      };
-      setOptimisticSessions((current) => [optimisticSession, ...current]);
-      setSelectedWorkspaceId(nextWorkspaceId);
-      setSelectedSessionId(optimisticId);
-      setSessionMenuSessionId(null);
-      setNewSessionOpen(false);
-      setTitle('');
-      setPrompt('');
-      setWorkspaceName(nextWorkspaceName ?? '');
 
-      const session = await createSession({
-        sessionType: newSessionType,
-        ...(newSessionType === 'code' && title.trim() ? { title: title.trim() } : {}),
-        ...(nextWorkspaceName ? { workspaceName: nextWorkspaceName } : {}),
-        ...(newSessionType === 'code'
-          ? {
-              securityProfile,
-            }
-          : {}),
-      });
-      setOptimisticSessions((current) => current.filter((entry) => entry.id !== optimisticId));
-      setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
-      if (optimisticWorkspaceId) {
-        setOptimisticWorkspaces((current) => current.filter((entry) => entry.id !== optimisticWorkspaceId));
-      }
-      setBootstrap((current) => {
-        if (!current) return current;
-        if (session.sessionType === 'chat') {
-          return {
-            ...current,
-            conversations: [
-              {
-                ...session,
-                lastUpdate: current.conversations.find((entry) => entry.id === session.id)?.lastUpdate ?? session.updatedAt,
-              },
-              ...current.conversations.filter((entry) => entry.id !== session.id),
-            ],
-          };
-        }
-        return {
-          ...current,
-          sessions: [
-            toSessionSummary(session, current.sessions.find((entry) => entry.id === session.id) ?? null),
-            ...current.sessions.filter((entry) => entry.id !== session.id),
-          ],
-        };
-      });
-      if (session.sessionType === 'code') {
-        setSelectedWorkspaceId(session.workspaceId);
-        setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, session.workspaceId));
-      }
-      setSelectedSessionId(session.id);
-      await refreshCurrentSelection(session.id);
-      setError(null);
-    } catch (createError) {
-      if (optimisticId) {
-        setOptimisticSessions((current) => current.filter((entry) => entry.id !== optimisticId));
-        setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
-      }
-      if (optimisticWorkspaceId) {
-        setOptimisticWorkspaces((current) => current.filter((entry) => entry.id !== optimisticWorkspaceId));
-      }
-      setSelectedSessionId(previousSelectedSessionId);
-      setSelectedWorkspaceId(previousSelectedWorkspaceId);
-      setError(createError instanceof Error ? createError.message : copy.createSession);
-    } finally {
-      setBusy(null);
+    const previousBootstrap = bootstrap;
+    const reordered = [...editableVisibleWorkspaces];
+    const currentIndex = reordered.findIndex((workspace) => workspace.id === dragWorkspaceId);
+    const nextIndex = reordered.findIndex((workspace) => workspace.id === targetWorkspaceId);
+    if (currentIndex === -1 || nextIndex === -1) {
+      setDragWorkspaceId(null);
+      return;
     }
+    const [draggedWorkspace] = reordered.splice(currentIndex, 1);
+    if (!draggedWorkspace) {
+      setDragWorkspaceId(null);
+      return;
+    }
+    reordered.splice(nextIndex, 0, draggedWorkspace);
+    const hiddenWorkspaces = sortWorkspaceSummaries(allWorkspaces.filter((workspace) => !workspace.visible));
+    const normalizedVisible = reordered.map((entry, index) => ({
+      ...entry,
+      sortOrder: index,
+    }));
+    const normalizedHidden = hiddenWorkspaces.map((entry, index) => ({
+      ...entry,
+      sortOrder: normalizedVisible.length + index,
+    }));
+    const visibleMap = new Map([...normalizedVisible, ...normalizedHidden].map((entry) => [entry.id, entry]));
+    const nextWorkspaces = allWorkspaces.map((entry) => visibleMap.get(entry.id) ?? entry);
+
+    setDragWorkspaceId(null);
+    await persistWorkspaceLayout(nextWorkspaces, previousBootstrap);
+  }
+
+  function handleCreateConversation() {
+    if (!bootstrap) return;
+
+    const optimisticId = `${OPTIMISTIC_SESSION_PREFIX}${Date.now()}`;
+    const now = new Date().toISOString();
+    const ownerRoot = normalizeWorkspaceSegment(
+      bootstrap.currentUser.username,
+      `user-${bootstrap.currentUser.id.slice(0, 8)}`,
+    );
+    const defaultModel = chatBootstrap?.availableModels.find((entry) => entry.model === chatBootstrap?.defaults.model)
+      ?? chatBootstrap?.availableModels.find((entry) => entry.isDefault)
+      ?? chatBootstrap?.availableModels[0]
+      ?? bootstrap.availableModels.find((entry) => entry.isDefault)
+      ?? bootstrap.availableModels[0]
+      ?? null;
+    const optimisticWorkspace = `${bootstrap.workspaceRoot}/${ownerRoot}/chat`;
+    const optimisticConversation: ConversationSummary = {
+      id: optimisticId,
+      ownerUserId: bootstrap.currentUser.id,
+      ownerUsername: bootstrap.currentUser.username,
+      sessionType: 'chat',
+      threadId: optimisticId,
+      activeTurnId: null,
+      title: 'New chat',
+      autoTitle: true,
+      workspace: optimisticWorkspace,
+      archivedAt: null,
+      securityProfile: 'repo-write',
+      approvalMode: 'less-approval',
+      networkEnabled: false,
+      fullHostEnabled: false,
+      status: 'idle',
+      uiStatus: 'new',
+      lastIssue: null,
+      hasTranscript: false,
+      model: defaultModel?.model ?? chatBootstrap?.defaults.model ?? null,
+      reasoningEffort: chatBootstrap?.defaults.reasoningEffort ?? preferredReasoningEffort(defaultModel),
+      rolePresetId: chatBootstrap?.defaults.rolePresetId ?? null,
+      recoveryState: 'ready',
+      retryable: false,
+      createdAt: now,
+      updatedAt: now,
+      lastUpdate: copy.creating,
+    };
+
+    setOptimisticConversations((current) => [optimisticConversation, ...current]);
+    setSessionMenuSessionId(null);
+    setChatRailDeleteConfirmId(null);
+    setSelectedSessionId(optimisticId);
+    setDetail(optimisticDetail(optimisticConversation));
+    setTranscriptItems([]);
+    setTranscriptNextCursor(null);
+    setTranscriptLoadedOlder(false);
+    setPrompt('');
+    window.setTimeout(() => {
+      promptTextareaRef.current?.focus();
+    }, 0);
   }
 
   async function handleAttachmentSelection(event: ChangeEvent<HTMLInputElement>) {
-    if (!selectedSessionId || selectedSessionIsOptimistic || sessionHasActiveTurn) return;
+    if (!selectedSessionId || sessionHasActiveTurn) return;
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
     if (files.length === 0) return;
 
     setBusy('upload-attachment');
     try {
+      const targetSessionId = activeMode === 'chat'
+        ? await materializeOptimisticChatConversation(selectedSessionId)
+        : selectedSessionId;
       for (const file of files) {
-        await uploadAttachment(selectedSessionId, file);
+        if (activeMode === 'chat') {
+          await uploadChatAttachment(targetSessionId, file);
+        } else {
+          await uploadCodingAttachment(targetSessionId, file);
+        }
       }
-      await refreshCurrentSelection(selectedSessionId);
+      await refreshCurrentSelection(targetSessionId);
       setError(null);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : copy.attachFiles);
@@ -2291,7 +3031,11 @@ export function App() {
     if (!selectedSessionId) return;
     setBusy(`remove-attachment-${attachment.id}`);
     try {
-      await deleteAttachment(selectedSessionId, attachment.id);
+      if (activeMode === 'chat') {
+        await deleteChatAttachment(selectedSessionId, attachment.id);
+      } else {
+        await deleteCodingAttachment(selectedSessionId, attachment.id);
+      }
       await refreshCurrentSelection(selectedSessionId);
       setError(null);
     } catch (removeError) {
@@ -2302,19 +3046,29 @@ export function App() {
   }
 
   async function submitPrompt() {
-    if (!selectedSessionId || selectedSessionIsOptimistic || sessionHasActiveTurn || busy === 'stop-session') return;
+    if (!selectedSessionId || sessionHasActiveTurn || busy === 'stop-session') return;
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt && draftAttachments.length === 0) return;
 
     setBusy('start-turn');
     try {
       shouldStickTranscriptToBottomRef.current = true;
-      await startTurn(selectedSessionId, {
-        ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
-        ...(draftAttachments.length > 0 ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
-      });
+      const targetSessionId = activeMode === 'chat'
+        ? await materializeOptimisticChatConversation(selectedSessionId)
+        : selectedSessionId;
+      if (activeMode === 'chat') {
+        await sendChatMessage(targetSessionId, {
+          ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
+          ...(draftAttachments.length > 0 ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
+        });
+      } else {
+        await startCodingTurn(targetSessionId, {
+          ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
+          ...(draftAttachments.length > 0 ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
+        });
+      }
       setPrompt('');
-      await refreshCurrentSelection(selectedSessionId);
+      await refreshCurrentSelection(targetSessionId);
       setError(null);
     } catch (turnError) {
       setError(turnError instanceof Error ? turnError.message : copy.sendPrompt);
@@ -2341,7 +3095,11 @@ export function App() {
     if (!selectedSessionId || selectedSessionIsOptimistic) return;
     setBusy('stop-session');
     try {
-      await stopSession(selectedSessionId);
+      if (activeMode === 'chat') {
+        await stopChatConversation(selectedSessionId);
+      } else {
+        await stopCodingSession(selectedSessionId);
+      }
       await refreshCurrentSelection(selectedSessionId);
       setError(null);
     } catch (stopError) {
@@ -2355,6 +3113,7 @@ export function App() {
     if (!selectedSessionId || !detail) return;
     setBusy('update-session-preferences');
     const previousBootstrap = bootstrap;
+    const previousChatBootstrap = chatBootstrap;
     const previousDetail = detail;
     const previousModel = detail.session.model ?? currentSessionModelOption?.model ?? '';
     const previousEffort = detail.session.reasoningEffort ?? preferredReasoningEffort(currentSessionModelOption);
@@ -2367,6 +3126,96 @@ export function App() {
       approvalMode: detail.session.sessionType === 'code' ? nextApprovalMode : detail.session.approvalMode,
       updatedAt: now,
     };
+
+    if (detail.session.sessionType === 'chat') {
+      setChatBootstrap((current) => (
+        current
+          ? {
+              ...current,
+              conversations: current.conversations.map((conversation) => (
+                conversation.id === optimisticSession.id
+                  ? {
+                      ...conversation,
+                      model: nextModel,
+                      reasoningEffort: nextEffort,
+                      updatedAt: now,
+                      lastUpdate: conversation.lastUpdate,
+                    }
+                  : conversation
+              )),
+            }
+          : current
+      ));
+      setOptimisticConversations((current) => (
+        current.map((conversation) => (
+          conversation.id === optimisticSession.id
+            ? {
+                ...conversation,
+                model: nextModel,
+                reasoningEffort: nextEffort,
+                updatedAt: now,
+              }
+            : conversation
+        ))
+      ));
+      setDetail((current) => (
+        current && current.session.id === optimisticSession.id
+          ? {
+              ...current,
+              session: optimisticSession,
+            }
+          : current
+      ));
+
+      if (isOptimisticSessionId(selectedSessionId)) {
+        setError(null);
+        setBusy(null);
+        return;
+      }
+
+      try {
+        const nextConversation = await updateChatConversationPreferences(selectedSessionId, {
+          model: nextModel,
+          reasoningEffort: nextEffort,
+        });
+        setChatBootstrap((current) => (
+          current
+            ? {
+                ...current,
+                conversations: current.conversations.map((conversation) => (
+                  conversation.id === nextConversation.id
+                    ? {
+                        ...conversation,
+                        ...nextConversation,
+                        lastUpdate: conversation.lastUpdate,
+                      }
+                    : conversation
+                )),
+              }
+            : current
+        ));
+        setDetail((current) => (
+          current && current.session.id === nextConversation.id
+            ? {
+                ...current,
+                session: chatConversationToConversationSummary(nextConversation),
+              }
+            : current
+        ));
+        setError(null);
+      } catch (preferencesError) {
+        setBootstrap(previousBootstrap);
+        setChatBootstrap(previousChatBootstrap);
+        setDetail(previousDetail);
+        setSessionModel(previousModel);
+        setSessionEffort(previousEffort);
+        setSessionApprovalMode(previousApprovalMode);
+        setError(preferencesError instanceof Error ? preferencesError.message : copy.settings);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
 
     setBootstrap((current) => (
       current
@@ -2402,7 +3251,7 @@ export function App() {
         : current
     ));
     try {
-      const nextSession = await updateSessionPreferences(selectedSessionId, {
+      const nextSession = await updateCodingSessionPreferences(selectedSessionId, {
         model: nextModel,
         reasoningEffort: nextEffort,
         ...(detail?.session.sessionType === 'code'
@@ -2413,27 +3262,14 @@ export function App() {
       });
       setBootstrap((current) => (
         current
-          ? nextSession.sessionType === 'code'
-            ? {
-                ...current,
-                sessions: current.sessions.map((session) => (
-                  session.id === nextSession.id
-                    ? toSessionSummary(nextSession, session)
-                    : session
-                )),
-              }
-            : {
-                ...current,
-                conversations: current.conversations.map((conversation) => (
-                  conversation.id === nextSession.id
-                    ? {
-                        ...conversation,
-                        ...nextSession,
-                        lastUpdate: conversation.lastUpdate,
-                      }
-                    : conversation
-                )),
-              }
+          ? {
+              ...current,
+              sessions: current.sessions.map((session) => (
+                session.id === nextSession.id
+                  ? toSessionSummary(nextSession, session)
+                  : session
+              )),
+            }
           : current
       ));
       setDetail((current) => (
@@ -2447,6 +3283,7 @@ export function App() {
       setError(null);
     } catch (preferencesError) {
       setBootstrap(previousBootstrap);
+      setChatBootstrap(previousChatBootstrap);
       setDetail(previousDetail);
       setSessionModel(previousModel);
       setSessionEffort(previousEffort);
@@ -2478,6 +3315,101 @@ export function App() {
     void handleSessionPreferencesChange(sessionModel, sessionEffort, nextApprovalMode);
   }
 
+  async function handleChatRolePresetChange(nextRolePresetValue: string) {
+    if (!selectedSessionId || !detail || detail.session.sessionType !== 'chat') return;
+    setSessionRolePresetId(nextRolePresetValue);
+    setBusy('update-session-preferences');
+    const previousChatBootstrap = chatBootstrap;
+    const previousDetail = detail;
+    const previousRolePresetId = detail.session.rolePresetId ?? '';
+    const now = new Date().toISOString();
+    const nextRolePresetId = nextRolePresetValue || null;
+
+    setChatBootstrap((current) => (
+      current
+        ? {
+            ...current,
+            conversations: current.conversations.map((conversation) => (
+              conversation.id === detail.session.id
+                ? {
+                    ...conversation,
+                    rolePresetId: nextRolePresetId,
+                    updatedAt: now,
+                  }
+                : conversation
+            )),
+          }
+        : current
+    ));
+    setOptimisticConversations((current) => (
+      current.map((conversation) => (
+        conversation.id === detail.session.id
+          ? {
+              ...conversation,
+              rolePresetId: nextRolePresetId,
+              updatedAt: now,
+            }
+          : conversation
+      ))
+    ));
+    setDetail((current) => (
+      current && current.session.id === detail.session.id
+        ? {
+            ...current,
+            session: {
+              ...current.session,
+              rolePresetId: nextRolePresetId,
+              updatedAt: now,
+            },
+          }
+        : current
+    ));
+
+    if (isOptimisticSessionId(selectedSessionId)) {
+      setError(null);
+      setBusy(null);
+      return;
+    }
+
+    try {
+      const nextConversation = await updateChatConversationPreferences(selectedSessionId, {
+        rolePresetId: nextRolePresetId,
+      });
+      setChatBootstrap((current) => (
+        current
+          ? {
+              ...current,
+              conversations: current.conversations.map((conversation) => (
+                conversation.id === nextConversation.id
+                  ? {
+                      ...conversation,
+                      ...nextConversation,
+                      lastUpdate: conversation.lastUpdate,
+                    }
+                  : conversation
+              )),
+            }
+          : current
+      ));
+      setDetail((current) => (
+        current && current.session.id === nextConversation.id
+          ? {
+              ...current,
+              session: chatConversationToConversationSummary(nextConversation),
+            }
+          : current
+      ));
+      setError(null);
+    } catch (preferencesError) {
+      setChatBootstrap(previousChatBootstrap);
+      setDetail(previousDetail);
+      setSessionRolePresetId(previousRolePresetId);
+      setError(preferencesError instanceof Error ? preferencesError.message : copy.settings);
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function beginInlineRename() {
     if (!detail || selectedSessionIsOptimistic || busy === `rename-${detail.session.id}`) {
       return;
@@ -2504,6 +3436,7 @@ export function App() {
 
     setBusy(`rename-${inlineRenameSessionId}`);
     const previousBootstrap = bootstrap;
+    const previousChatBootstrap = chatBootstrap;
     const previousDetail = detail;
     const now = new Date().toISOString();
     const optimisticSession = {
@@ -2515,6 +3448,75 @@ export function App() {
 
     setInlineRenameSessionId(null);
     setInlineRenameTitle('');
+
+    if (detail.session.sessionType === 'chat') {
+      setChatBootstrap((current) => (
+        current
+          ? {
+              ...current,
+              conversations: current.conversations.map((conversation) => (
+                conversation.id === optimisticSession.id
+                  ? {
+                      ...conversation,
+                      title: nextTitle,
+                      autoTitle: false,
+                      updatedAt: now,
+                      lastUpdate: conversation.lastUpdate,
+                    }
+                  : conversation
+              )),
+            }
+          : current
+      ));
+      setDetail((current) => (
+        current && current.session.id === optimisticSession.id
+          ? {
+              ...current,
+              session: optimisticSession,
+            }
+          : current
+      ));
+
+      try {
+        const nextConversation = await updateChatConversation(inlineRenameSessionId, {
+          title: nextTitle,
+        });
+        setChatBootstrap((current) => (
+          current
+            ? {
+                ...current,
+                conversations: current.conversations.map((conversation) => (
+                  conversation.id === nextConversation.id
+                    ? {
+                        ...conversation,
+                        ...nextConversation,
+                        lastUpdate: conversation.lastUpdate,
+                      }
+                    : conversation
+                )),
+              }
+            : current
+        ));
+        setDetail((current) => (
+          current && current.session.id === nextConversation.id
+            ? {
+                ...current,
+                session: chatConversationToConversationSummary(nextConversation),
+              }
+            : current
+        ));
+        setError(null);
+      } catch (saveError) {
+        setBootstrap(previousBootstrap);
+        setChatBootstrap(previousChatBootstrap);
+        setDetail(previousDetail);
+        setError(saveError instanceof Error ? saveError.message : copy.rename);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
     setBootstrap((current) => (
       current
         ? optimisticSession.sessionType === 'code'
@@ -2550,32 +3552,19 @@ export function App() {
     ));
 
     try {
-      const nextSession = await updateSession(inlineRenameSessionId, {
+      const nextSession = await updateCodingSession(inlineRenameSessionId, {
         title: nextTitle,
       });
       setBootstrap((current) => (
         current
-          ? nextSession.sessionType === 'code'
-            ? {
-                ...current,
-                sessions: current.sessions.map((session) => (
-                  session.id === nextSession.id
-                    ? toSessionSummary(nextSession, session)
-                    : session
-                )),
-              }
-            : {
-                ...current,
-                conversations: current.conversations.map((conversation) => (
-                  conversation.id === nextSession.id
-                    ? {
-                        ...conversation,
-                        ...nextSession,
-                        lastUpdate: conversation.lastUpdate,
-                      }
-                    : conversation
-                )),
-              }
+          ? {
+              ...current,
+              sessions: current.sessions.map((session) => (
+                session.id === nextSession.id
+                  ? toSessionSummary(nextSession, session)
+                  : session
+              )),
+            }
           : current
       ));
       setDetail((current) => (
@@ -2589,6 +3578,7 @@ export function App() {
       setError(null);
     } catch (saveError) {
       setBootstrap(previousBootstrap);
+      setChatBootstrap(previousChatBootstrap);
       setDetail(previousDetail);
       setError(saveError instanceof Error ? saveError.message : copy.rename);
     } finally {
@@ -2613,6 +3603,7 @@ export function App() {
     if (!editSessionId || !detail || !bootstrap) return;
     setBusy(`rename-${editSessionId}`);
     const previousBootstrap = bootstrap;
+    const previousChatBootstrap = chatBootstrap;
     const previousDetail = detail;
     try {
       const sessionUpdate: UpdateSessionRequest = {
@@ -2646,6 +3637,66 @@ export function App() {
       setEditSessionId(null);
       setEditTitle('');
       setEditWorkspaceName('');
+
+      if (detail.session.sessionType === 'chat') {
+        setChatBootstrap((current) => (
+          current
+            ? {
+                ...current,
+                conversations: current.conversations.map((conversation) => (
+                  conversation.id === optimisticSession.id
+                    ? {
+                        ...conversation,
+                        title: editTitle,
+                        autoTitle: false,
+                        updatedAt: now,
+                        lastUpdate: conversation.lastUpdate,
+                      }
+                    : conversation
+                )),
+              }
+            : current
+        ));
+        setDetail((current) => (
+          current && current.session.id === optimisticSession.id
+            ? {
+                ...current,
+                session: optimisticSession,
+              }
+            : current
+        ));
+
+        const nextConversation = await updateChatConversation(editSessionId, {
+          title: editTitle,
+        });
+        setChatBootstrap((current) => (
+          current
+            ? {
+                ...current,
+                conversations: current.conversations.map((conversation) => (
+                  conversation.id === nextConversation.id
+                    ? {
+                        ...conversation,
+                        ...nextConversation,
+                        lastUpdate: conversation.lastUpdate,
+                      }
+                    : conversation
+                )),
+              }
+            : current
+        ));
+        setDetail((current) => (
+          current && current.session.id === nextConversation.id
+            ? {
+                ...current,
+                session: chatConversationToConversationSummary(nextConversation),
+              }
+            : current
+        ));
+        setError(null);
+        return;
+      }
+
       setBootstrap((current) => (
         current
           ? optimisticSession.sessionType === 'code'
@@ -2680,36 +3731,21 @@ export function App() {
           : current
       ));
 
-      const nextSession = await updateSession(editSessionId, sessionUpdate);
+      const nextSession = await updateCodingSession(editSessionId, sessionUpdate);
       setBootstrap((current) => (
         current
-          ? nextSession.sessionType === 'code'
-            ? {
-                ...current,
-                sessions: current.sessions.map((session) => (
-                  session.id === nextSession.id
-                    ? toSessionSummary(nextSession, session)
-                    : session
-                )),
-              }
-            : {
-                ...current,
-                conversations: current.conversations.map((conversation) => (
-                  conversation.id === nextSession.id
-                    ? {
-                        ...conversation,
-                        ...nextSession,
-                        lastUpdate: conversation.lastUpdate,
-                      }
-                    : conversation
-                )),
-              }
+          ? {
+              ...current,
+              sessions: current.sessions.map((session) => (
+                session.id === nextSession.id
+                  ? toSessionSummary(nextSession, session)
+                  : session
+              )),
+            }
           : current
       ));
-      if (nextSession.sessionType === 'code') {
-        setSelectedWorkspaceId(nextSession.workspaceId);
-        setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, nextSession.workspaceId));
-      }
+      setSelectedWorkspaceId(nextSession.workspaceId);
+      setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, nextSession.workspaceId));
       setDetail((current) => (
         current && current.session.id === nextSession.id
           ? {
@@ -2721,6 +3757,7 @@ export function App() {
       setError(null);
     } catch (saveError) {
       setBootstrap(previousBootstrap);
+      setChatBootstrap(previousChatBootstrap);
       setDetail(previousDetail);
       setError(saveError instanceof Error ? saveError.message : copy.rename);
     } finally {
@@ -2768,8 +3805,11 @@ export function App() {
           activeTurnId: null,
           archivedAt: null,
           status: 'running',
+          uiStatus: 'processing',
           lastIssue: null,
           hasTranscript: false,
+          recoveryState: 'ready',
+          retryable: false,
           createdAt: now,
           updatedAt: now,
           lastUpdate: copy.forking,
@@ -2777,39 +3817,50 @@ export function App() {
         setOptimisticConversations((current) => [optimisticConversation, ...current]);
       }
 
-      const nextSession = await forkSession(session.id);
+      if (session.sessionType === 'chat') {
+        const nextConversation = await forkChatConversation(session.id);
+        if (optimisticId) {
+          setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
+        }
+        setChatBootstrap((current) => (
+          current
+            ? {
+                ...current,
+                conversations: [
+                  {
+                    ...nextConversation,
+                    lastUpdate: current.conversations.find((entry) => entry.id === nextConversation.id)?.lastUpdate ?? nextConversation.updatedAt,
+                  },
+                  ...current.conversations.filter((entry) => entry.id !== nextConversation.id),
+                ],
+              }
+            : current
+        ));
+        setSelectedWorkspaceId(null);
+        setSelectedSessionId(nextConversation.id);
+        await refreshCurrentSelection(nextConversation.id);
+        setError(null);
+        return;
+      }
+
+      const nextSession = await forkCodingSession(session.id);
       if (optimisticId) {
         setOptimisticSessions((current) => current.filter((entry) => entry.id !== optimisticId));
         setOptimisticConversations((current) => current.filter((entry) => entry.id !== optimisticId));
       }
       setBootstrap((current) => (
         current
-          ? nextSession.sessionType === 'code'
-            ? {
-                ...current,
-                sessions: [
-                  toSessionSummary(nextSession, current.sessions.find((entry) => entry.id === nextSession.id) ?? null),
-                  ...current.sessions.filter((entry) => entry.id !== nextSession.id),
-                ],
-              }
-            : {
-                ...current,
-                conversations: [
-                  {
-                    ...nextSession,
-                    lastUpdate: current.conversations.find((entry) => entry.id === nextSession.id)?.lastUpdate ?? nextSession.updatedAt,
-                  },
-                  ...current.conversations.filter((entry) => entry.id !== nextSession.id),
-                ],
-              }
+          ? {
+              ...current,
+              sessions: [
+                toSessionSummary(nextSession, current.sessions.find((entry) => entry.id === nextSession.id) ?? null),
+                ...current.sessions.filter((entry) => entry.id !== nextSession.id),
+              ],
+            }
           : current
       ));
-      if (nextSession.sessionType === 'code') {
-        setSelectedWorkspaceId(nextSession.workspaceId);
-        setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, nextSession.workspaceId));
-      } else {
-        setSelectedWorkspaceId(null);
-      }
+      setSelectedWorkspaceId(nextSession.workspaceId);
+      setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, nextSession.workspaceId));
       setSelectedSessionId(nextSession.id);
       await refreshCurrentSelection(nextSession.id);
       setError(null);
@@ -2827,11 +3878,14 @@ export function App() {
 
   async function handleDeleteSession(sessionId: string) {
     setSessionMenuSessionId(null);
+    setChatRailDeleteConfirmId(null);
     const previousSelectedSessionId = selectedSessionId;
     const previousBootstrap = bootstrap;
+    const previousChatBootstrap = chatBootstrap;
     const previousDetail = detail;
     const currentDeveloperSession = allSessions.find((session) => session.id === sessionId) ?? null;
     const deletingConversation = allConversations.some((session) => session.id === sessionId);
+    const deletingOptimisticConversation = deletingConversation && isOptimisticSessionId(sessionId);
     if (currentDeveloperSession) {
       const workspaceSessionCount = allSessions.filter((session) => session.workspaceId === currentDeveloperSession.workspaceId).length;
       if (workspaceSessionCount <= 1) {
@@ -2842,27 +3896,47 @@ export function App() {
     }
     const deletingCurrentSession = previousSelectedSessionId === sessionId;
     const remainingSessions = deletingConversation
-      ? allConversations.filter((session) => session.id !== sessionId)
+      ? sortChatConversationsForRail(
+          allConversations.filter((session) => session.id !== sessionId),
+          chatCompletionMarkers,
+        )
       : visibleDeveloperSessions.filter((session) => session.id !== sessionId);
     const nextSelectedSessionId = deletingCurrentSession
       ? pickPreferredSessionId(remainingSessions)
       : previousSelectedSessionId;
 
     setConfirmAction(null);
-    setBootstrap((current) => (
-      current
-        ? deletingConversation
+    if (deletingOptimisticConversation) {
+      setOptimisticConversations((current) => current.filter((session) => session.id !== sessionId));
+      if (deletingCurrentSession) {
+        setSelectedSessionId(nextSelectedSessionId);
+        setDetail(null);
+      }
+      setError(null);
+      return;
+    }
+
+    setBusy(`delete-${sessionId}`);
+    if (deletingConversation) {
+      setChatBootstrap((current) => (
+        current
           ? {
               ...current,
               conversations: current.conversations.filter((session) => session.id !== sessionId),
             }
-          : {
+          : current
+      ));
+    } else {
+      setBootstrap((current) => (
+        current
+          ? {
               ...current,
               sessions: current.sessions.filter((session) => session.id !== sessionId),
               approvals: current.approvals.filter((approval) => approval.sessionId !== sessionId),
             }
-        : current
-    ));
+          : current
+      ));
+    }
 
     if (deletingCurrentSession) {
       setSelectedSessionId(nextSelectedSessionId);
@@ -2872,23 +3946,110 @@ export function App() {
     setError(null);
 
     try {
-      await deleteSession(sessionId);
+      if (deletingConversation) {
+        await deleteChatConversation(sessionId);
+      } else {
+        await deleteCodingSession(sessionId);
+      }
       void refreshCurrentSelection(nextSelectedSessionId);
       setError(null);
     } catch (deleteError) {
       setBootstrap(previousBootstrap);
+      setChatBootstrap(previousChatBootstrap);
       setSelectedSessionId(previousSelectedSessionId);
       setDetail(previousDetail);
       if (previousSelectedSessionId) {
         void refreshCurrentSelection(previousSelectedSessionId);
       }
       setError(deleteError instanceof Error ? deleteError.message : copy.delete);
+    } finally {
+      setBusy(null);
     }
   }
 
   async function handleConfirmSessionAction() {
     if (!confirmAction) return;
     void handleDeleteSession(confirmAction.session.id);
+  }
+
+  function beginCreateChatRolePreset() {
+    setEditingChatRolePresetId(null);
+    setChatRolePresetForm({
+      ...defaultChatRolePresetForm(),
+      isDefault: !chatRolePresetList?.defaultRolePresetId,
+    });
+  }
+
+  function beginEditChatRolePreset(preset: ChatRolePresetDetail) {
+    setEditingChatRolePresetId(preset.id);
+    setChatRolePresetForm({
+      label: preset.label,
+      description: preset.description ?? '',
+      prompt: preset.prompt,
+      isDefault: preset.isDefault,
+    });
+  }
+
+  function resetChatRolePresetEditor() {
+    setEditingChatRolePresetId(null);
+    setChatRolePresetForm(defaultChatRolePresetForm());
+  }
+
+  async function handleSaveChatRolePreset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const label = chatRolePresetForm.label.trim();
+    const promptText = chatRolePresetForm.prompt.trim();
+    if (!label) {
+      setError(language === 'zh' ? '预设名称是必填项。' : 'Preset name is required.');
+      return;
+    }
+    if (!promptText) {
+      setError(language === 'zh' ? '预设 Prompt 是必填项。' : 'Preset prompt is required.');
+      return;
+    }
+
+    setBusy('save-chat-role-preset');
+    try {
+      const nextList = editingChatRolePresetId
+        ? await updateChatRolePreset(editingChatRolePresetId, {
+            label,
+            description: chatRolePresetForm.description.trim() || null,
+            prompt: promptText,
+            isDefault: chatRolePresetForm.isDefault,
+          })
+        : await createChatRolePreset({
+            label,
+            description: chatRolePresetForm.description.trim() || null,
+            prompt: promptText,
+            isDefault: chatRolePresetForm.isDefault,
+          });
+      applyChatRolePresetList(nextList);
+      resetChatRolePresetEditor();
+      setError(null);
+    } catch (presetError) {
+      setError(presetError instanceof Error ? presetError.message : copy.settings);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleDeleteChatRolePreset(preset: ChatRolePresetDetail) {
+    const confirmed = window.confirm(copy.deleteRolePresetConfirm.replace('{label}', preset.label));
+    if (!confirmed) return;
+
+    setBusy(`delete-chat-role-preset-${preset.id}`);
+    try {
+      const nextList = await deleteChatRolePreset(preset.id);
+      applyChatRolePresetList(nextList);
+      if (editingChatRolePresetId === preset.id) {
+        resetChatRolePresetEditor();
+      }
+      setError(null);
+    } catch (presetError) {
+      setError(presetError instanceof Error ? presetError.message : copy.settings);
+    } finally {
+      setBusy(null);
+    }
   }
 
   function openSessionEditor(session: SessionDetailResponse['session']) {
@@ -2905,7 +4066,7 @@ export function App() {
   async function handleApprovalAction(approval: PendingApproval, decision: 'accept' | 'decline', scope: 'once' | 'session') {
     setBusy(approval.id);
     try {
-      await resolveApproval(approval.sessionId, approval.id, { decision, scope });
+      await resolveCodingApproval(approval.sessionId, approval.id, { decision, scope });
       await refreshCurrentSelection(selectedSessionId);
       setError(null);
     } catch (approvalError) {
@@ -2987,22 +4148,15 @@ export function App() {
     setUserForm({
       username: user.username,
       password: '',
-      isAdmin: userRoles.includes('admin'),
-      allowCode: userRoles.includes('developer'),
-      allowChat: userRoles.includes('user'),
-      canUseFullHost: user.canUseFullHost,
-      regenerateToken: false,
+      roles: userRoles,
+      canUseFullHost: userRoles.includes('developer') ? user.canUseFullHost : false,
     });
     setUserModalOpen(true);
   }
 
   async function handleUserSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const roles = [
-      ...(userForm.allowChat ? (['user'] as UserRole[]) : []),
-      ...(userForm.allowCode ? (['developer'] as UserRole[]) : []),
-      ...(userForm.isAdmin ? (['admin'] as UserRole[]) : []),
-    ];
+    const roles = orderedUserRoles(userForm.roles);
     if (!roles.includes('user') && !roles.includes('developer')) {
       setError(language === 'zh' ? '至少选择 User 或 Developer。' : 'Pick at least one of User or Developer.');
       return;
@@ -3016,7 +4170,7 @@ export function App() {
           password: userForm.password,
           roles,
           preferredMode: roles.includes('developer') ? 'developer' : 'chat',
-          canUseFullHost: userForm.allowCode ? userForm.canUseFullHost : false,
+          canUseFullHost: roles.includes('developer') ? userForm.canUseFullHost : false,
         });
         setAdminUsers(response.users);
       } else if (editingUserId) {
@@ -3025,8 +4179,7 @@ export function App() {
           ...(userForm.password.trim() ? { password: userForm.password } : {}),
           roles,
           preferredMode: roles.includes('developer') ? 'developer' : 'chat',
-          canUseFullHost: userForm.allowCode ? userForm.canUseFullHost : false,
-          regenerateToken: userForm.regenerateToken,
+          canUseFullHost: roles.includes('developer') ? userForm.canUseFullHost : false,
         });
         setAdminUsers(response.users);
         setBootstrap(await fetchBootstrap());
@@ -3035,6 +4188,26 @@ export function App() {
       setError(null);
     } catch (userError) {
       setError(userError instanceof Error ? userError.message : copy.saveUser);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRegenerateUserToken() {
+    if (!editingUserId || !editingAdminUser) return;
+    const confirmed = window.confirm(copy.regenerateTokenConfirm.replace('{username}', editingAdminUser.username));
+    if (!confirmed) return;
+
+    setBusy(`regenerate-token-${editingUserId}`);
+    try {
+      const response = await updateAdminUser(editingUserId, {
+        regenerateToken: true,
+      });
+      setAdminUsers(response.users);
+      setBootstrap(await fetchBootstrap());
+      setError(null);
+    } catch (regenerateError) {
+      setError(regenerateError instanceof Error ? regenerateError.message : copy.regenerateToken);
     } finally {
       setBusy(null);
     }
@@ -3066,9 +4239,15 @@ export function App() {
   }
 
   function selectSessionFromRail(session: SessionSummary | ConversationSummary) {
-    if (isOptimisticSessionId(session.id)) return;
     setDetailMenuOpen(false);
     setSessionMenuSessionId(null);
+    setChatRailDeleteConfirmId((current) => current === session.id ? null : current);
+    if (isOptimisticSessionId(session.id)) {
+      if (session.sessionType === 'chat') {
+        setSelectedSessionId(session.id);
+      }
+      return;
+    }
     if (session.sessionType === 'code') {
       setSelectedWorkspaceId(session.workspaceId);
       setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, session.workspaceId));
@@ -3076,108 +4255,161 @@ export function App() {
     setSelectedSessionId(session.id);
   }
 
-  function invokeSessionRailAction(session: SessionSummary, action: 'edit' | 'info') {
-    setDetailMenuOpen(false);
-    setSessionMenuSessionId(null);
-    if (detail?.session.id === session.id) {
-      if (action === 'edit') {
-        openSessionEditor(detail.session);
-      } else {
-        setSessionInfoOpen(true);
-      }
-      return;
-    }
-
-    setPendingSessionRailAction({ kind: action, sessionId: session.id });
-    selectSessionFromRail(session);
-  }
-
   function renderSessionRailItem(session: SessionSummary | ConversationSummary) {
-    const sessionState = deriveSummarySessionState(session);
-    const menuOpen = sessionMenuSessionId === session.id;
+    const sessionState = deriveSummarySessionState(session, chatCompletionMarkers);
     const sessionPending = isOptimisticSessionId(session.id);
+    const isChatConversation = session.sessionType === 'chat';
+    const showChatDeleteButton = isChatConversation && chatRailEditMode;
+    const chatDeleteConfirming = showChatDeleteButton && chatRailDeleteConfirmId === session.id;
+    const markerShapeClass = isChatConversation
+      ? 'session-node-marker-chat'
+      : 'session-node-marker-code';
+    const chatLabel = chatDeleteConfirming
+      ? `${copy.deleteInlineConfirm} · ${session.title}`
+      : session.title;
 
     return (
       <li
         key={session.id}
-        className={`session-node ${selectedSessionId === session.id ? 'session-node-active' : ''} ${sessionPending ? 'session-node-pending' : ''}`}
+        className={`session-node ${selectedSessionId === session.id ? 'session-node-active' : ''} ${sessionPending ? 'session-node-pending' : ''} ${isChatConversation ? 'session-node-chat' : ''} ${chatDeleteConfirming ? 'session-node-chat-confirming' : ''}`}
       >
         <button
           type="button"
-          className="session-node-trigger"
-          onClick={() => selectSessionFromRail(session)}
-          disabled={sessionPending}
+          className={`session-node-trigger ${isChatConversation ? 'session-node-trigger-chat' : ''}`}
+          onClick={() => {
+            if (chatDeleteConfirming) {
+              setChatRailDeleteConfirmId(null);
+            }
+            selectSessionFromRail(session);
+          }}
+          disabled={sessionPending && !isChatConversation}
         >
           <div className="session-node-copy">
-            <span className={`session-node-marker session-node-marker-${sessionState}`} aria-hidden="true" />
-            <span className="session-node-label" title={session.title}>{session.title}</span>
+            {isChatConversation ? (
+              <span className="session-node-leading">
+                {showChatDeleteButton ? (
+                  <button
+                    type="button"
+                    className={`session-inline-delete-button ${chatDeleteConfirming ? 'session-inline-delete-button-confirm' : ''}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setDetailMenuOpen(false);
+                      setSessionMenuSessionId(null);
+                      if (chatDeleteConfirming) {
+                        void handleDeleteSession(session.id);
+                        return;
+                      }
+                      setChatRailDeleteConfirmId(session.id);
+                    }}
+                    title={chatDeleteConfirming ? copy.confirmAction : copy.delete}
+                    aria-label={chatDeleteConfirming ? copy.confirmAction : copy.delete}
+                    disabled={busy === `delete-${session.id}`}
+                  >
+                    {chatDeleteConfirming ? <CheckIcon /> : <TrashIcon />}
+                  </button>
+                ) : (
+                  <span className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`} aria-hidden="true" />
+                )}
+              </span>
+            ) : (
+              <span className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`} aria-hidden="true" />
+            )}
+            <span className="session-node-label" title={chatLabel}>{chatLabel}</span>
           </div>
-          <span className={`status-pill status-${sessionState}`}>
-            {uiSessionStateLabel(language, sessionState)}
-          </span>
         </button>
+      </li>
+    );
+  }
 
-        {!sessionPending ? (
-          <div className="session-node-menu" onClick={(event) => event.stopPropagation()}>
+  function renderWorkspaceRailItem(workspace: WorkspaceSummary) {
+    const workspaceSessions = allSessions.filter((session) => session.workspaceId === workspace.id);
+    const workspaceOpen = expandedWorkspaceIds.includes(workspace.id);
+    const workspacePending = workspace.id.startsWith(OPTIMISTIC_WORKSPACE_PREFIX);
+    const workspaceHidden = !workspace.visible;
+    const workspaceDraggable = workspaceEditMode && !workspaceHidden && !workspacePending;
+
+    return (
+      <li
+        key={workspace.id}
+        className={`session-card workspace-card ${workspaceOpen ? 'workspace-card-open' : ''} ${workspacePending ? 'session-card-pending' : ''} ${workspaceEditMode && workspaceHidden ? 'workspace-card-hidden' : ''}`}
+        draggable={workspaceDraggable}
+        onDragStart={() => {
+          if (!workspaceDraggable) return;
+          setDragWorkspaceId(workspace.id);
+        }}
+        onDragEnd={() => setDragWorkspaceId(null)}
+        onDragOver={(event: ReactDragEvent<HTMLLIElement>) => {
+          if (!workspaceDraggable) return;
+          event.preventDefault();
+        }}
+        onDrop={(event: ReactDragEvent<HTMLLIElement>) => {
+          if (!workspaceDraggable) return;
+          event.preventDefault();
+          void handleWorkspaceDrop(workspace.id);
+        }}
+      >
+        <div className="workspace-card-header">
+          <div className="workspace-manager-title-row">
             <button
               type="button"
-              className="button-secondary icon-button session-more-button"
-              onClick={(event) => {
-                event.stopPropagation();
-                setSessionMenuSessionId((current) => current === session.id ? null : session.id);
+              className="workspace-card-trigger"
+              onClick={() => {
+                if (workspacePending) return;
+                toggleWorkspaceExpanded(workspace.id);
               }}
-              title={copy.moreActions}
-              aria-label={copy.moreActions}
             >
-              <MoreIcon />
-            </button>
-
-            {menuOpen ? (
-              <div className="session-context-menu" role="menu">
-                {session.sessionType === 'code' ? (
-                  <>
-                    <button
-                      type="button"
-                      className="session-context-item"
-                      role="menuitem"
-                      onClick={() => invokeSessionRailAction(session, 'edit')}
-                      disabled={busy === `rename-${session.id}`}
-                    >
-                      {copy.rename}
-                    </button>
-                    <button
-                      type="button"
-                      className="session-context-item"
-                      role="menuitem"
-                      onClick={() => invokeSessionRailAction(session, 'info')}
-                    >
-                      {copy.info}
-                    </button>
-                  </>
-                ) : null}
-                <button
-                  type="button"
-                  className="session-context-item"
-                  role="menuitem"
-                  onClick={() => void handleForkSession(session)}
-                  disabled={busy === `fork-${session.id}`}
-                >
-                  {copy.fork}
-                </button>
-                <button
-                  type="button"
-                  className="session-context-item session-context-item-danger"
-                  role="menuitem"
-                  onClick={() => {
-                    setSessionMenuSessionId(null);
-                    setConfirmAction({ kind: 'delete', session });
-                  }}
-                  disabled={busy === `delete-${session.id}`}
-                >
-                  {copy.delete}
-                </button>
+              <div className="session-card-title workspace-card-title">
+                <h3 title={workspace.path}>{workspace.name}</h3>
               </div>
+            </button>
+            {workspaceEditMode ? (
+              <button
+                type="button"
+                className="button-secondary workspace-visibility-button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void handleToggleWorkspaceVisibility(workspace.id);
+                }}
+                disabled={workspacePending}
+              >
+                {workspace.visible ? copy.hideWorkspace : copy.showWorkspace}
+              </button>
             ) : null}
+          </div>
+        </div>
+
+        {workspaceOpen ? (
+          <div className="workspace-children">
+            <ul className="session-list workspace-session-list">
+              {workspaceSessions.map((session) => renderSessionRailItem(session))}
+              {workspaceEditMode ? (
+                <li className="session-node session-node-create">
+                  <button
+                    type="button"
+                    className="session-node-trigger session-node-trigger-create"
+                    onClick={() => {
+                      void handleCreateWorkspaceSession(workspace);
+                    }}
+                    disabled={busy === 'create-session' || workspacePending}
+                  >
+                    <div className="session-node-copy">
+                      <span className="session-node-marker session-node-marker-empty" aria-hidden="true" />
+                      <span className="session-node-label session-node-label-empty">{copy.createSession}</span>
+                    </div>
+                  </button>
+                </li>
+              ) : null}
+              {!workspaceEditMode && workspaceSessions.length === 0 ? (
+                <li className="session-node session-node-empty">
+                  <div className="session-node-trigger session-node-trigger-empty">
+                    <div className="session-node-copy">
+                      <span className="session-node-marker session-node-marker-empty" aria-hidden="true" />
+                      <span className="session-node-label session-node-label-empty">{railEmptyLabel}</span>
+                    </div>
+                  </div>
+                </li>
+              ) : null}
+            </ul>
           </div>
         ) : null}
       </li>
@@ -3188,12 +4420,12 @@ export function App() {
     setDetailMenuOpen(false);
     setSessionMenuSessionId(null);
     setWorkspaceModalMode(mode);
-    if (mode === 'create') {
-      setWorkspaceDraftName('');
-      window.setTimeout(() => {
-        workspaceDraftInputRef.current?.focus();
-      }, 0);
-    }
+    setWorkspaceDraftSource('empty');
+    setWorkspaceDraftName('');
+    setWorkspaceDraftGitUrl('');
+    window.setTimeout(() => {
+      workspaceDraftInputRef.current?.focus();
+    }, 0);
   }
 
   function handleRailResizeStart(event: ReactMouseEvent<HTMLDivElement>) {
@@ -3290,85 +4522,39 @@ export function App() {
 
       <section
         className="workspace"
-        style={activeMode === 'developer'
-          ? (railHidden
-            ? { gridTemplateColumns: 'minmax(0, 1fr)' }
-            : { gridTemplateColumns: `${railWidth}px 10px minmax(0, 1fr)` })
-          : undefined}
+        style={railHidden
+          ? { gridTemplateColumns: 'minmax(0, 1fr)' }
+          : { gridTemplateColumns: `${railWidth}px 6px minmax(0, 1fr)` }}
       >
         {!railHidden ? (
           <aside className="panel rail">
           <div className="rail-header">
             <div>
               <p className="eyebrow">{railEyebrow}</p>
-              {activeMode === 'developer' ? null : <h2>{bootstrap.currentUser.username}</h2>}
             </div>
-            {activeMode === 'chat' ? (
-              <div className="rail-actions">
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleCreateConversation();
-                  }}
-                >
-                  {railPrimaryActionLabel}
-                </button>
-              </div>
-            ) : null}
           </div>
 
           <div className="rail-body">
           {activeMode === 'developer' ? (
             <div className="rail-section">
               <ul className="session-list workspace-tree">
-                {visibleWorkspaces.length === 0 ? (
+                {railVisibleWorkspaces.length === 0 && (!workspaceEditMode || editableHiddenWorkspaces.length === 0) ? (
                   <li className="session-empty">{noWorkspaceLabel}</li>
                 ) : (
-                  visibleWorkspaces.map((workspace) => {
-                    const workspaceSessions = allSessions.filter((session) => session.workspaceId === workspace.id);
-                    const workspaceOpen = expandedWorkspaceIds.includes(workspace.id);
-
-                    return (
-                      <li
-                        key={workspace.id}
-                        className={`session-card workspace-card ${workspaceOpen ? 'workspace-card-open' : ''} ${workspace.id.startsWith(OPTIMISTIC_WORKSPACE_PREFIX) ? 'session-card-pending' : ''}`}
-                      >
-                        <button
-                          type="button"
-                          className="workspace-card-trigger"
-                          onClick={() => {
-                            if (workspace.id.startsWith(OPTIMISTIC_WORKSPACE_PREFIX)) return;
-                            toggleWorkspaceExpanded(workspace.id);
-                          }}
-                        >
-                          <div className="session-card-title">
-                            <h3 title={workspace.path}>{workspace.name}</h3>
-                          </div>
-                          <ChevronIcon open={workspaceOpen} />
-                        </button>
-
-                        {workspaceOpen ? (
-                          <div className="workspace-children">
-                            <ul className="session-list workspace-session-list">
-                              {workspaceSessions.length === 0 ? (
-                                <li className="session-empty">{railEmptyLabel}</li>
-                              ) : (
-                                workspaceSessions.map((session) => renderSessionRailItem(session))
-                              )}
-                            </ul>
-                          </div>
-                        ) : null}
-                      </li>
-                    );
-                  })
+                  <>
+                    {railVisibleWorkspaces.map((workspace) => renderWorkspaceRailItem(workspace))}
+                    {workspaceEditMode && editableHiddenWorkspaces.length > 0 ? (
+                      <>
+                        {railVisibleWorkspaces.length > 0 ? <li className="workspace-tree-divider" aria-hidden="true" /> : null}
+                        {editableHiddenWorkspaces.map((workspace) => renderWorkspaceRailItem(workspace))}
+                      </>
+                    ) : null}
+                  </>
                 )}
               </ul>
             </div>
           ) : (
             <div className="rail-section">
-              <div className="rail-section-toggle">
-                <span>{copy.history} ({railItems.length})</span>
-              </div>
               <ul className="session-list">
                 {railItems.length === 0 ? (
                   <li className="session-empty">{railEmptyLabel}</li>
@@ -3380,22 +4566,44 @@ export function App() {
           )}
           </div>
 
-          {activeMode === 'developer' ? (
-            <div className="rail-footer">
+          <div className="rail-footer">
+            {activeMode === 'developer' ? (
               <div className="rail-footer-actions">
                 <button type="button" className="button-secondary" onClick={() => openWorkspaceManager('create')}>
                   {copy.createWorkspaceAction}
                 </button>
-                <button type="button" onClick={() => openWorkspaceManager('manage')}>
-                  {copy.manageWorkspaces}
+                <button
+                  type="button"
+                  className={workspaceEditMode ? 'rail-footer-button-active' : undefined}
+                  onClick={() => setWorkspaceEditMode((current) => !current)}
+                >
+                  {copy.editWorkspaces}
                 </button>
               </div>
-            </div>
-          ) : null}
+            ) : (
+              <div className="rail-footer-actions">
+                <button
+                  type="button"
+                  className={`button-secondary ${chatRailEditMode ? 'rail-footer-button-active' : ''}`}
+                  onClick={() => setChatRailEditMode((current) => !current)}
+                >
+                  {copy.rename}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleCreateConversation();
+                  }}
+                >
+                  {language === 'zh' ? '新建' : 'New'}
+                </button>
+              </div>
+            )}
+          </div>
         </aside>
         ) : null}
 
-        {!railHidden && activeMode === 'developer' ? (
+        {!railHidden ? (
           <div className="rail-resizer" onMouseDown={handleRailResizeStart} role="separator" aria-orientation="vertical" aria-label={copy.hideSidebar} />
         ) : null}
 
@@ -3464,7 +4672,7 @@ export function App() {
                       aria-label={copy.moreActions}
                       disabled={selectedSessionIsOptimistic}
                     >
-                      <MoreIcon />
+                      <OverflowIcon />
                     </button>
                     {detailMenuOpen ? (
                       <div className="session-context-menu header-context-menu" role="menu" onClick={(event) => event.stopPropagation()}>
@@ -3568,6 +4776,23 @@ export function App() {
                       );
                     })
                   )}
+                  {activeMode === 'chat' && detailSessionState === 'processing' && chatActivityItems.length > 0 ? (
+                    <article className="chat-message chat-activity-bubble">
+                      <div className="chat-activity-bubble-head">
+                        <span>{CHAT_ACTIVITY_SECTION_LABELS[language]}</span>
+                      </div>
+                      <div className="chat-activity-bubble-body">
+                        {chatActivityItems.map((item, index) => (
+                          <div
+                            key={item.id}
+                            className={`chat-activity-step ${index === chatActivityItems.length - 1 ? 'chat-activity-step-active' : ''}`}
+                          >
+                            <strong>{item.label}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+                  ) : null}
                 </div>
               </div>
 
@@ -3583,6 +4808,8 @@ export function App() {
                       <span className={`session-status-badge session-status-badge-${detailSessionState}`}>
                         {detailSessionState === 'processing'
                           ? copy.processingStatus
+                          : detailSessionState === 'normal'
+                            ? copy.normalStatus
                           : detailSessionState === 'pending'
                             ? copy.approvalPendingStatus
                             : detailSessionState === 'completed'
@@ -3600,6 +4827,16 @@ export function App() {
 
                     {detailSessionState === 'processing' ? (
                       <p>{copy.processingHint}</p>
+                    ) : null}
+
+                    {detailSessionState === 'normal' ? (
+                      <>
+                        <p>{sessionIsChat
+                          ? (detail.session.hasTranscript ? copy.normalHint : copy.noTurnsHint)
+                          : copy.noTurnsHint}
+                        </p>
+                        {sessionIsChat && detail.session.lastIssue ? <p className="detail-card-meta">{detail.session.lastIssue}</p> : null}
+                      </>
                     ) : null}
 
                     {detailSessionState === 'pending' ? (
@@ -3682,6 +4919,19 @@ export function App() {
                           disabled={busy === 'update-session-preferences'}
                         />
                       </label>
+                      {sessionIsChat ? (
+                        <label className="composer-config-field">
+                          <span>{copy.rolePreset}</span>
+                          <AppSelect
+                            className="app-select-compact"
+                            value={sessionRolePresetId}
+                            options={rolePresetSelectOptions}
+                            onChange={(nextValue) => void handleChatRolePresetChange(nextValue)}
+                            ariaLabel={copy.rolePreset}
+                            disabled={busy === 'update-session-preferences'}
+                          />
+                        </label>
+                      ) : null}
                       {!sessionIsChat ? (
                         <label className="composer-config-field">
                           <span>{copy.approvalModeLabel}</span>
@@ -3729,14 +4979,14 @@ export function App() {
                       onCompositionEnd={handlePromptCompositionEnd}
                       rows={1}
                       placeholder={copy.prompt}
-                      disabled={selectedSessionIsOptimistic || Boolean(activeApproval)}
+                      disabled={(selectedSessionIsOptimistic && !sessionIsChat) || Boolean(activeApproval)}
                     />
                     <div className="composer-actions">
                       <button
                         type="button"
                         className="button-secondary icon-button attach-button"
                         onClick={() => attachmentInputRef.current?.click()}
-                        disabled={selectedSessionIsOptimistic || busy === 'upload-attachment' || busy === 'start-turn' || sessionHasActiveTurn || Boolean(activeApproval)}
+                        disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'upload-attachment' || busy === 'start-turn' || sessionHasActiveTurn || Boolean(activeApproval)}
                         title={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
                         aria-label={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
                       >
@@ -3751,13 +5001,13 @@ export function App() {
                           title={busy === 'stop-session' ? copy.stopping : copy.stop}
                           aria-label={busy === 'stop-session' ? copy.stopping : copy.stop}
                         >
-                          <StopIcon />
+                          <StopSquareIcon />
                         </button>
                       ) : null}
                       <button
                         type="submit"
                         className="send-button"
-                        disabled={selectedSessionIsOptimistic || busy === 'start-turn' || busy === 'stop-session' || busy === 'upload-attachment' || sessionHasActiveTurn || Boolean(activeApproval) || (!prompt.trim() && draftAttachments.length === 0)}
+                        disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'start-turn' || busy === 'stop-session' || busy === 'upload-attachment' || sessionHasActiveTurn || Boolean(activeApproval) || (!prompt.trim() && draftAttachments.length === 0)}
                         title={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
                         aria-label={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
                       >
@@ -3874,6 +5124,118 @@ export function App() {
                 </div>
               ) : null}
             </section>
+
+            {canManageChatRolePresets ? (
+              <section className="settings-section">
+                <div className="settings-section-head">
+                  <strong>{copy.rolePresetManager}</strong>
+                  <span>{copy.rolePresetManagerHint}</span>
+                </div>
+
+                <div className="settings-role-preset-layout">
+                  <div className="settings-role-preset-list">
+                    <div className="settings-role-preset-toolbar">
+                      <button type="button" className="button-secondary" onClick={beginCreateChatRolePreset}>
+                        {copy.newRolePreset}
+                      </button>
+                    </div>
+
+                    {chatRolePresetList?.rolePresets.length ? (
+                      chatRolePresetList.rolePresets.map((preset) => (
+                        <article key={preset.id} className={`detail-card settings-role-preset-card ${editingChatRolePresetId === preset.id ? 'settings-role-preset-card-active' : ''}`}>
+                          <div className="detail-card-head">
+                            <strong>{preset.label}</strong>
+                            {preset.isDefault ? <span>{copy.defaults}</span> : null}
+                          </div>
+                          {preset.description ? <p>{preset.description}</p> : null}
+                          <div className="approval-actions settings-role-preset-actions">
+                            <button
+                              type="button"
+                              className="button-secondary"
+                              onClick={() => beginEditChatRolePreset(preset)}
+                            >
+                              {copy.rename}
+                            </button>
+                            <button
+                              type="button"
+                              className="button-secondary"
+                              onClick={() => void handleDeleteChatRolePreset(preset)}
+                              disabled={busy === `delete-chat-role-preset-${preset.id}`}
+                            >
+                              {copy.delete}
+                            </button>
+                          </div>
+                        </article>
+                      ))
+                    ) : (
+                      <article className="detail-card">
+                        <strong>{copy.noRolePresets}</strong>
+                        <p>{copy.rolePresetManagerHint}</p>
+                      </article>
+                    )}
+                  </div>
+
+                  <form className="detail-card settings-role-preset-editor" onSubmit={handleSaveChatRolePreset}>
+                    <div className="detail-card-head">
+                      <strong>{editingChatRolePreset ? copy.editRolePreset : copy.newRolePreset}</strong>
+                      {editingChatRolePreset ? <span>{editingChatRolePreset.label}</span> : null}
+                    </div>
+
+                    <label className="field">
+                      <span>{copy.rolePresetName}</span>
+                      <input
+                        value={chatRolePresetForm.label}
+                        onChange={(event) => setChatRolePresetForm((current) => ({ ...current, label: event.target.value }))}
+                        placeholder={copy.rolePresetName}
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span>{copy.rolePresetDescription}</span>
+                      <textarea
+                        rows={3}
+                        value={chatRolePresetForm.description}
+                        onChange={(event) => setChatRolePresetForm((current) => ({ ...current, description: event.target.value }))}
+                        placeholder={copy.rolePresetDescription}
+                      />
+                    </label>
+
+                    <label className="field">
+                      <span>{copy.rolePresetPrompt}</span>
+                      <textarea
+                        rows={10}
+                        value={chatRolePresetForm.prompt}
+                        onChange={(event) => setChatRolePresetForm((current) => ({ ...current, prompt: event.target.value }))}
+                        placeholder={copy.rolePresetPrompt}
+                      />
+                    </label>
+
+                    <div className="checkbox-grid">
+                      <label className="checkbox-field">
+                        <input
+                          type="checkbox"
+                          checked={chatRolePresetForm.isDefault}
+                          onChange={(event) => setChatRolePresetForm((current) => ({ ...current, isDefault: event.target.checked }))}
+                        />
+                        <span>{copy.rolePresetDefault}</span>
+                      </label>
+                    </div>
+
+                    <div className="approval-actions settings-role-preset-actions">
+                      <button type="button" className="button-secondary" onClick={resetChatRolePresetEditor}>
+                        {copy.close}
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={busy === 'save-chat-role-preset'}
+                      >
+                        {copy.saveRolePreset}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </section>
+            ) : null}
           </aside>
         </div>
       ) : null}
@@ -3967,11 +5329,18 @@ export function App() {
                   <p className="detail-card-meta">{copy.approvalModeLabel}: {approvalModeLabel(language, detail.session.approvalMode)}</p>
                 ) : null}
                 <p className="detail-card-meta">{copy.modelLabel}: {detail.session.model ?? 'codex'}</p>
-                <p className="detail-card-meta">{copy.thinkingLabel}: {detail.session.reasoningEffort ?? 'medium'}</p>
+                <p className="detail-card-meta">{copy.thinkingLabel}: {detail.session.reasoningEffort ?? 'xhigh'}</p>
+                {detail.session.sessionType === 'chat' ? (
+                  <p className="detail-card-meta">{copy.rolePresetLabel}: {selectedChatRolePreset?.label ?? copy.noRolePreset}</p>
+                ) : null}
                 <p className="detail-card-meta">{copy.threadLabel}: {shortThreadId(detail.session.threadId)}</p>
                 <p className="detail-card-meta">{copy.createdAt} {formatTimestamp(detail.session.createdAt, language)}</p>
                 <p className="detail-card-meta">{copy.updatedAt} {formatTimestamp(detail.session.updatedAt, language)}</p>
-                {detail.session.lastIssue && detail.session.status !== 'stale' ? <p>{detail.session.lastIssue}</p> : null}
+                {detail.session.lastIssue && (
+                  detail.session.sessionType === 'chat'
+                    ? detail.session.uiStatus === 'error'
+                    : detail.session.status !== 'stale'
+                ) ? <p>{detail.session.lastIssue}</p> : null}
               </article>
 
               {sessionIsChat ? (
@@ -3987,19 +5356,36 @@ export function App() {
 
       {workspaceModalMode ? (
         <div className="modal-overlay" onClick={() => setWorkspaceModalMode(null)}>
-          <div className={`modal-card workspace-manager-modal ${workspaceModalMode === 'create' ? 'workspace-create-modal' : ''}`} onClick={(event) => event.stopPropagation()}>
+          <div className="modal-card workspace-manager-modal workspace-create-modal" onClick={(event) => event.stopPropagation()}>
             <div className="panel-header settings-header">
               <div>
-                <p className="eyebrow">{workspaceModalMode === 'create' ? copy.createWorkspaceAction : copy.manageWorkspaces}</p>
-                <h2>{workspaceModalMode === 'create' ? copy.createWorkspaceTitle : copy.manageWorkspacesTitle}</h2>
+                <p className="eyebrow">{copy.createWorkspaceAction}</p>
+                <h2>{copy.createWorkspaceTitle}</h2>
               </div>
               <button type="button" className="button-secondary topbar-button" onClick={() => setWorkspaceModalMode(null)}>
                 {copy.close}
               </button>
             </div>
 
-            {workspaceModalMode === 'create' ? (
-              <form className="create-form workspace-create-form" onSubmit={handleCreateWorkspace}>
+            <form className="create-form workspace-create-form" onSubmit={handleCreateWorkspace}>
+              <div className="rail-footer-actions">
+                <button
+                  type="button"
+                  className={workspaceDraftSource === 'empty' ? 'rail-footer-button-active' : 'button-secondary'}
+                  onClick={() => setWorkspaceDraftSource('empty')}
+                >
+                  {copy.workspaceFromName}
+                </button>
+                <button
+                  type="button"
+                  className={workspaceDraftSource === 'git' ? 'rail-footer-button-active' : 'button-secondary'}
+                  onClick={() => setWorkspaceDraftSource('git')}
+                >
+                  {copy.workspaceFromGit}
+                </button>
+              </div>
+
+              {workspaceDraftSource === 'empty' ? (
                 <label className="field">
                   <span>{copy.workspace}</span>
                   <input
@@ -4009,51 +5395,25 @@ export function App() {
                     placeholder={copy.workspaceFolder}
                   />
                 </label>
-                <button type="submit" disabled={busy === 'create-workspace' || !workspaceDraftName.trim()}>
-                  {busy === 'create-workspace' ? copy.creating : copy.createWorkspaceAction}
-                </button>
-              </form>
-            ) : (
-              <div className="workspace-manager-columns">
-                <section className="rail-section">
-                  <div className="rail-section-toggle">
-                    <span>{copy.visibleWorkspaces} ({visibleWorkspaces.length})</span>
-                  </div>
-                  <ul className="session-list workspace-manager-list">
-                    {visibleWorkspaces.length === 0 ? (
-                      <li className="session-empty">{noWorkspaceLabel}</li>
-                    ) : (
-                      visibleWorkspaces.map((workspace, index) => (
-                        <li key={workspace.id} className={`session-card workspace-manager-card ${selectedWorkspaceId === workspace.id ? 'session-card-active' : ''}`}>
-                          <div className="workspace-manager-row">
-                            <div className="workspace-manager-copy">
-                              <div className="workspace-manager-title-row">
-                                <div className="session-card-title">
-                                  <h3 title={workspace.path}>{workspace.name}</h3>
-                                </div>
-                              </div>
-                              <div className="workspace-manager-actions">
-                                <button type="button" className="button-secondary" onClick={() => void handleMoveWorkspace(workspace.id, -1)} disabled={index === 0}>
-                                  {copy.moveWorkspaceUp}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="button-secondary"
-                                  onClick={() => void handleMoveWorkspace(workspace.id, 1)}
-                                  disabled={index === visibleWorkspaces.length - 1}
-                                >
-                                  {copy.moveWorkspaceDown}
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        </li>
-                      ))
-                    )}
-                  </ul>
-                </section>
-              </div>
-            )}
+              ) : (
+                <label className="field">
+                  <span>{copy.gitRepository}</span>
+                  <input
+                    ref={workspaceDraftInputRef}
+                    value={workspaceDraftGitUrl}
+                    onChange={(event) => setWorkspaceDraftGitUrl(event.target.value)}
+                    placeholder="https://github.com/org/repo.git"
+                  />
+                </label>
+              )}
+
+              <button
+                type="submit"
+                disabled={busy === 'create-workspace' || (workspaceDraftSource === 'empty' ? !workspaceDraftName.trim() : !workspaceDraftGitUrl.trim())}
+              >
+                {busy === 'create-workspace' ? copy.creating : copy.createWorkspaceAction}
+              </button>
+            </form>
           </div>
         </div>
       ) : null}
@@ -4108,7 +5468,7 @@ export function App() {
                 </label>
               ) : (
                 <article className="detail-card">
-                  <strong>{copy.readOnlyProfile}</strong>
+                  <strong>{copy.repoWriteProfile}</strong>
                   <p>{copy.chatSessionHint}</p>
                 </article>
               )}
@@ -4186,55 +5546,77 @@ export function App() {
                 />
               </label>
 
+              {userModalMode === 'edit' && editingAdminUser ? (
+                <label className="token-block">
+                  <span>{copy.currentToken}</span>
+                  <input readOnly value={editingAdminUser.token} />
+                </label>
+              ) : null}
+
+              <div className="field">
+                <span>{copy.roleLabel}</span>
+                <div className="checkbox-grid">
+                  <label className="checkbox-field">
+                    <input
+                      type="checkbox"
+                      checked={userForm.roles.includes('user')}
+                      onChange={(event) => setUserForm((current) => ({
+                        ...current,
+                        roles: toggleUserRole(current.roles, 'user', event.target.checked),
+                      }))}
+                    />
+                    <span>{roleLabel(language, 'user')}</span>
+                  </label>
+                  <label className="checkbox-field">
+                    <input
+                      type="checkbox"
+                      checked={userForm.roles.includes('developer')}
+                      onChange={(event) => setUserForm((current) => ({
+                        ...current,
+                        roles: toggleUserRole(current.roles, 'developer', event.target.checked),
+                        canUseFullHost: event.target.checked ? current.canUseFullHost : false,
+                      }))}
+                    />
+                    <span>{roleLabel(language, 'developer')}</span>
+                  </label>
+                  <label className="checkbox-field">
+                    <input
+                      type="checkbox"
+                      checked={userForm.roles.includes('admin')}
+                      onChange={(event) => setUserForm((current) => ({
+                        ...current,
+                        roles: toggleUserRole(current.roles, 'admin', event.target.checked),
+                      }))}
+                    />
+                    <span>{copy.adminRole}</span>
+                  </label>
+                </div>
+              </div>
+
               <div className="checkbox-grid">
                 <label className="checkbox-field">
                   <input
                     type="checkbox"
-                    checked={userForm.allowChat}
-                    onChange={(event) => setUserForm((current) => ({ ...current, allowChat: event.target.checked }))}
-                  />
-                  <span>{roleLabel(language, 'user')}</span>
-                </label>
-                <label className="checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={userForm.allowCode}
-                    onChange={(event) => setUserForm((current) => ({
-                      ...current,
-                      allowCode: event.target.checked,
-                      canUseFullHost: event.target.checked ? current.canUseFullHost : false,
-                    }))}
-                  />
-                  <span>{roleLabel(language, 'developer')}</span>
-                </label>
-                <label className="checkbox-field">
-                  <input
-                    type="checkbox"
-                    checked={userForm.isAdmin}
-                    onChange={(event) => setUserForm((current) => ({ ...current, isAdmin: event.target.checked }))}
-                  />
-                  <span>{copy.adminRole}</span>
-                </label>
-                <label className="checkbox-field">
-                  <input
-                    type="checkbox"
                     checked={userForm.canUseFullHost}
-                    disabled={!userForm.allowCode}
+                    disabled={!userForm.roles.includes('developer')}
                     onChange={(event) => setUserForm((current) => ({ ...current, canUseFullHost: event.target.checked }))}
                   />
                   <span>{copy.canUseFullHost}</span>
                 </label>
-                {userModalMode === 'edit' ? (
-                  <label className="checkbox-field">
-                    <input
-                      type="checkbox"
-                      checked={userForm.regenerateToken}
-                      onChange={(event) => setUserForm((current) => ({ ...current, regenerateToken: event.target.checked }))}
-                    />
-                    <span>{copy.regenerateToken}</span>
-                  </label>
-                ) : null}
               </div>
+
+              {userModalMode === 'edit' && editingUserId ? (
+                <div className="approval-actions">
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => void handleRegenerateUserToken()}
+                    disabled={busy === `regenerate-token-${editingUserId}`}
+                  >
+                    {busy === `regenerate-token-${editingUserId}` ? copy.regeneratingToken : copy.regenerateToken}
+                  </button>
+                </div>
+              ) : null}
 
               <button type="submit" disabled={busy === 'create-user' || busy === `save-user-${editingUserId}`}>
                 {userModalMode === 'create'

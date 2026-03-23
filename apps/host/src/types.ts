@@ -2,6 +2,8 @@ export type SecurityProfile = 'read-only' | 'repo-write' | 'full-host';
 export type ApprovalMode = 'less-approval' | 'full-approval';
 export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'idle' | 'running' | 'needs-approval' | 'error' | 'stale';
+export type ChatUiStatus = 'new' | 'processing' | 'completed' | 'error';
+export type ChatRecoveryState = 'ready' | 'stale';
 export type SessionType = 'code' | 'chat';
 export type UserRole = 'user' | 'developer' | 'admin';
 export type AppMode = 'chat' | 'developer';
@@ -94,6 +96,9 @@ export interface BaseTurnRecord {
 
 export interface ConversationRecord extends BaseTurnRecord {
   sessionType: 'chat';
+  rolePresetId: string | null;
+  recoveryState: ChatRecoveryState;
+  retryable: boolean;
 }
 
 export interface SessionRecord extends BaseTurnRecord {

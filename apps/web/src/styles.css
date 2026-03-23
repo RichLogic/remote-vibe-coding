@@ -379,6 +379,44 @@ button:disabled {
   gap: 10px;
 }
 
+.settings-role-preset-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 16px;
+}
+
+.settings-role-preset-list {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.settings-role-preset-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.settings-role-preset-card {
+  gap: 12px;
+}
+
+.settings-role-preset-card-active {
+  border-color: rgba(15, 118, 110, 0.22);
+  background: rgba(255, 250, 240, 0.9);
+}
+
+.settings-role-preset-editor {
+  align-content: start;
+}
+
+.settings-role-preset-editor textarea:last-of-type {
+  min-height: 220px;
+}
+
+.settings-role-preset-actions {
+  margin-top: 4px;
+}
+
 .settings-account-item {
   display: grid;
   gap: 4px;
@@ -527,7 +565,7 @@ button:disabled {
 .workspace {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
-  gap: 14px;
+  gap: 7px;
   flex: 1;
   min-height: 0;
   height: auto;
@@ -684,13 +722,14 @@ button:disabled {
 }
 
 .session-node-trigger {
+  flex: 1 1 auto;
   width: 100%;
   min-width: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
-  padding: 8px 10px;
+  padding: 10px 10px;
   border: 0;
   border-radius: 12px;
   background: transparent;
@@ -698,6 +737,21 @@ button:disabled {
   text-align: left;
   box-shadow: none;
   cursor: pointer;
+}
+
+.session-node-trigger-chat {
+  justify-content: flex-start;
+}
+
+.session-node-trigger-empty {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.session-node-trigger-empty:hover {
+  transform: none;
+  box-shadow: none;
+  background: transparent;
 }
 
 .session-node-trigger:hover {
@@ -718,7 +772,15 @@ button:disabled {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
+}
+
+.session-node-leading {
+  width: 18px;
+  min-width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .session-node-label {
@@ -738,7 +800,23 @@ button:disabled {
   background: rgba(255, 255, 255, 0.96);
 }
 
+.session-node-marker-chat {
+  width: 6px;
+  height: 20px;
+  border-radius: 999px;
+}
+
+.session-node-marker-code {
+  width: 6px;
+  height: 16px;
+  border-radius: 999px;
+}
+
 .session-node-marker-new {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+.session-node-marker-normal {
   background: rgba(255, 255, 255, 0.96);
 }
 
@@ -748,8 +826,8 @@ button:disabled {
 }
 
 .session-node-marker-processing {
-  background: #f97316;
-  border-color: rgba(194, 65, 12, 0.22);
+  background: #3b82f6;
+  border-color: rgba(37, 99, 235, 0.22);
 }
 
 .session-node-marker-completed {
@@ -767,9 +845,77 @@ button:disabled {
   border-color: rgba(107, 114, 128, 0.22);
 }
 
+.session-node-marker-empty {
+  width: 6px;
+  height: 6px;
+  background: rgba(91, 85, 77, 0.26);
+  border-color: rgba(91, 85, 77, 0.08);
+}
+
+.session-node-label-empty {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.session-node-create {
+  margin-top: 2px;
+}
+
+.session-node-trigger-create {
+  border: 1px dashed rgba(43, 36, 30, 0.18);
+  background: rgba(255, 250, 240, 0.36);
+}
+
+.session-node-trigger-create:hover {
+  transform: none;
+  box-shadow: none;
+  background: rgba(255, 250, 240, 0.62);
+}
+
 .session-node-menu {
   position: relative;
   flex-shrink: 0;
+  margin-left: auto;
+}
+
+.session-inline-delete-button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(136, 32, 32, 0.72);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: none;
+}
+
+.session-inline-delete-button:hover,
+.session-inline-delete-button:focus-visible {
+  background: rgba(185, 28, 28, 0.12);
+  color: #991b1b;
+  transform: none;
+  box-shadow: none;
+}
+
+.session-inline-delete-button svg {
+  width: 12px;
+  height: 12px;
+}
+
+.session-inline-delete-button-confirm {
+  background: rgba(185, 28, 28, 0.16);
+  color: #991b1b;
+}
+
+.session-node-chat-confirming .session-node-trigger {
+  background: rgba(185, 28, 28, 0.08);
+}
+
+.session-node-chat-confirming .session-node-label {
+  color: #991b1b;
 }
 
 .session-more-button {
@@ -886,36 +1032,66 @@ button:disabled {
   background: rgba(255, 250, 240, 0.82);
 }
 
+.workspace-card-hidden {
+  border-style: dashed;
+  border-color: rgba(140, 132, 120, 0.34);
+  background: rgba(244, 240, 233, 0.58);
+}
+
+.workspace-card-hidden.workspace-card-open {
+  border-color: rgba(140, 132, 120, 0.42);
+  background: rgba(244, 240, 233, 0.72);
+}
+
+.workspace-card-header {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.workspace-card[draggable="true"] {
+  cursor: grab;
+}
+
+.workspace-card[draggable="true"]:active {
+  cursor: grabbing;
+}
+
 .workspace-card-trigger {
-  width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
+  justify-content: flex-start;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 0;
   border: 0;
   background: transparent;
   color: inherit;
   text-align: left;
   cursor: pointer;
   box-shadow: none;
+  transition: color 150ms ease;
 }
 
 .workspace-card-trigger:hover {
   transform: none;
   box-shadow: none;
+  color: var(--accent);
 }
 
-.workspace-card-trigger svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
+.workspace-card-hidden .workspace-card-trigger,
+.workspace-card-hidden .session-card-title h3 {
+  color: rgba(116, 109, 99, 0.92);
+}
+
+.workspace-card-hidden .workspace-card-trigger:hover {
+  color: rgba(116, 109, 99, 0.92);
 }
 
 .workspace-children {
   display: grid;
   gap: 10px;
-  padding: 0 12px 12px;
+  padding: 8px 12px 12px;
   border-top: 1px solid rgba(43, 36, 30, 0.08);
 }
 
@@ -948,12 +1124,34 @@ button:disabled {
   align-items: center;
   justify-content: flex-start;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+}
+
+.workspace-manager-title-row .workspace-card-trigger {
+  width: auto;
+  flex: 1 1 auto;
 }
 
 .workspace-manager-title-row .session-card-title {
   min-width: 0;
   flex: 0 1 auto;
+}
+
+.workspace-card-title {
+  max-width: 180px;
+}
+
+.workspace-visibility-button {
+  flex: 0 0 auto;
+  padding: 4px 10px !important;
+  border-radius: 999px !important;
+}
+
+.workspace-tree-divider {
+  list-style: none;
+  height: 0;
+  margin: 8px 4px 10px;
+  border-top: 1px solid rgba(43, 36, 30, 0.12);
 }
 
 .workspace-manager-actions {
@@ -1021,8 +1219,14 @@ button:disabled {
 }
 
 .status-processing {
-  background: rgba(194, 65, 12, 0.14);
-  color: #c2410c;
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d4ed8;
+}
+
+.status-normal {
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink);
+  border: 1px solid rgba(43, 36, 30, 0.08);
 }
 
 .status-pending {
@@ -1642,8 +1846,13 @@ button:disabled {
 }
 
 .session-status-processing {
-  border-color: rgba(194, 65, 12, 0.18);
-  background: rgba(255, 247, 237, 0.96);
+  border-color: rgba(37, 99, 235, 0.18);
+  background: rgba(239, 246, 255, 0.96);
+}
+
+.session-status-normal {
+  border-color: rgba(43, 36, 30, 0.08);
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .session-status-pending {
@@ -1678,9 +1887,16 @@ button:disabled {
 }
 
 .session-status-processing:focus {
-  border-color: rgba(194, 65, 12, 0.28);
+  border-color: rgba(37, 99, 235, 0.28);
   box-shadow:
-    0 0 0 1px rgba(194, 65, 12, 0.14),
+    0 0 0 1px rgba(37, 99, 235, 0.14),
+    0 10px 28px rgba(48, 39, 30, 0.08);
+}
+
+.session-status-normal:focus {
+  border-color: rgba(43, 36, 30, 0.14);
+  box-shadow:
+    0 0 0 1px rgba(43, 36, 30, 0.08),
     0 10px 28px rgba(48, 39, 30, 0.08);
 }
 
@@ -1746,8 +1962,13 @@ button:disabled {
 }
 
 .session-status-badge-processing {
-  background: rgba(194, 65, 12, 0.12);
-  color: #c2410c;
+  background: rgba(37, 99, 235, 0.12);
+  color: #1d4ed8;
+}
+
+.session-status-badge-normal {
+  background: rgba(30, 27, 23, 0.08);
+  color: var(--ink);
 }
 
 .session-status-badge-pending {
@@ -1776,7 +1997,7 @@ button:disabled {
 }
 
 .session-status-processing .session-status-copy > p:first-of-type {
-  color: #c2410c;
+  color: #1d4ed8;
 }
 
 .session-status-pending .session-status-copy > p:first-of-type {
@@ -1912,6 +2133,9 @@ button:disabled {
   padding-top: 12px;
   border-top: 1px solid var(--line);
   background: linear-gradient(180deg, rgba(248, 244, 237, 0) 0%, rgba(248, 244, 237, 0.96) 18%);
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
 }
 
 .rail-footer-actions {
@@ -1920,8 +2144,14 @@ button:disabled {
   gap: 8px;
 }
 
+.rail-footer-button-active {
+  border-color: rgba(15, 118, 110, 0.22) !important;
+  background: rgba(15, 118, 110, 0.16) !important;
+  color: var(--accent) !important;
+}
+
 .rail-resizer {
-  width: 10px;
+  width: 6px;
   cursor: col-resize;
   align-self: stretch;
   border-radius: 999px;
@@ -1932,16 +2162,17 @@ button:disabled {
 .rail-resizer::before {
   content: "";
   position: absolute;
-  top: 30px;
-  bottom: 30px;
-  left: 4px;
-  width: 2px;
+  top: 50%;
+  left: 2px;
+  width: 1px;
+  height: 44px;
+  transform: translateY(-50%);
   border-radius: 999px;
-  background: rgba(43, 36, 30, 0.08);
+  background: rgba(43, 36, 30, 0.07);
 }
 
 .rail-resizer:hover::before {
-  background: rgba(15, 118, 110, 0.22);
+  background: rgba(43, 36, 30, 0.14);
 }
 
 .transcript-layout {
@@ -2206,6 +2437,51 @@ button:disabled {
   border-radius: 16px;
 }
 
+.chat-activity-bubble {
+  justify-self: start;
+  width: min(560px, 100%);
+  background: rgba(37, 99, 235, 0.06);
+  border-color: rgba(37, 99, 235, 0.16);
+}
+
+.chat-activity-bubble-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.chat-activity-bubble-head span {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.chat-activity-bubble-body {
+  display: grid;
+  gap: 8px;
+}
+
+.chat-activity-step {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(37, 99, 235, 0.12);
+  background: rgba(255, 255, 255, 0.56);
+  color: #1e3a8a;
+}
+
+.chat-activity-step-active {
+  background: rgba(37, 99, 235, 0.12);
+  border-color: rgba(37, 99, 235, 0.22);
+}
+
 .empty-state {
   display: grid;
   place-items: center;
@@ -2294,6 +2570,10 @@ code {
   }
 
   .settings-account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-role-preset-layout {
     grid-template-columns: 1fr;
   }
 

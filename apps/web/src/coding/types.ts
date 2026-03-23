@@ -1,0 +1,77 @@
+import type {
+  ApprovalMode,
+  CreateSessionRequest,
+  CreateTurnRequest,
+  ModelOption,
+  PendingApproval,
+  ReasoningEffort,
+  ResolveApprovalRequest,
+  SecurityProfile,
+  SessionDetailResponse,
+  SessionRecord,
+  SessionSummary,
+  SessionTranscriptPageResponse,
+  UpdateSessionPreferencesRequest,
+  UpdateSessionRequest,
+  UserRecord,
+  WorkspaceSummary,
+} from '../types';
+
+export type CodingSessionRecord = SessionRecord;
+export type CodingSessionSummary = SessionSummary;
+export type CodingWorkspaceSummary = WorkspaceSummary;
+
+export interface CodingSessionDetailResponse extends Omit<SessionDetailResponse, 'session'> {
+  session: SessionRecord;
+}
+
+export type CodingSessionTranscriptPageResponse = SessionTranscriptPageResponse;
+export type UpdateCodingSessionRequest = UpdateSessionRequest;
+export type UpdateCodingSessionPreferencesRequest = UpdateSessionPreferencesRequest;
+export type CreateCodingTurnRequest = CreateTurnRequest;
+export type ResolveCodingApprovalRequest = ResolveApprovalRequest;
+
+export interface CreateCodingSessionRequest extends Omit<CreateSessionRequest, 'sessionType'> {
+  sessionType?: 'code';
+}
+
+export interface CreateCodingWorkspaceRequest {
+  source?: 'empty' | 'git';
+  name?: string;
+  gitUrl?: string;
+}
+
+export interface UpdateCodingWorkspaceRequest {
+  visible?: boolean;
+  sortOrder?: number;
+}
+
+export interface ReorderCodingWorkspacesRequest {
+  workspaceIds: string[];
+}
+
+export interface CreateCodingWorkspaceSessionRequest {
+  title?: string;
+  model?: string | null;
+  reasoningEffort?: ReasoningEffort | null;
+  securityProfile?: SecurityProfile;
+  approvalMode?: ApprovalMode;
+}
+
+export interface CodingBootstrapResponse {
+  productName: string;
+  subtitle: string;
+  currentUser: UserRecord;
+  workspaceRoot: string;
+  workspaces: CodingWorkspaceSummary[];
+  sessions: CodingSessionSummary[];
+  approvals: PendingApproval[];
+  availableModels: ModelOption[];
+  defaults: {
+    model: string;
+    reasoningEffort: ReasoningEffort;
+  };
+  updatedAt: string;
+}
+
+export type CodingBootstrapPayload = CodingBootstrapResponse;

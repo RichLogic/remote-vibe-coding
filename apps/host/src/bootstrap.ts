@@ -1,4 +1,10 @@
 import type {
+  CodingBootstrapPayload,
+  CodingSessionRecord as SessionRecord,
+  CodingSessionSummary as SessionSummary,
+  CodingWorkspaceSummary,
+} from './coding/types.js';
+import type {
   AppMode,
   BaseTurnRecord,
   BootstrapPayload,
@@ -7,8 +13,6 @@ import type {
   ConversationSummary,
   ModelOption,
   PendingApproval,
-  SessionRecord,
-  SessionSummary,
   UserRecord,
   WorkspaceSummary,
 } from './types.js';
@@ -111,6 +115,45 @@ export function buildBootstrapPayload(
     sessions: summaries,
     conversations: conversationSummaries,
     approvals,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+export function buildCodingBootstrapPayload(
+  currentUser: UserRecord,
+  sessions: SessionRecord[],
+  approvals: PendingApproval[],
+  workspaceRoot: string,
+  workspaces: WorkspaceSummary[],
+  availableModels: ModelOption[],
+): CodingBootstrapPayload {
+  const approvalCounts = new Map<string, number>();
+  for (const approval of approvals) {
+    approvalCounts.set(
+      approval.sessionId,
+      (approvalCounts.get(approval.sessionId) ?? 0) + 1,
+    );
+  }
+
+  return {
+    productName: 'remote-vibe-coding',
+    subtitle: 'Codex-first browser shell backed by the real Codex app-server protocol.',
+    currentUser,
+    workspaceRoot,
+    workspaces: workspaces.map((workspace): CodingWorkspaceSummary => ({
+      ...workspace,
+    })),
+    sessions: sessions.map((session) => (
+      toSessionSummary(session, approvalCounts.get(session.id) ?? 0)
+    )),
+    approvals,
+    availableModels,
+    defaults: {
+      model: availableModels.find((entry) => entry.isDefault)?.model ?? availableModels[0]?.model ?? 'gpt-5-codex',
+      reasoningEffort: availableModels.find((entry) => entry.isDefault)?.defaultReasoningEffort
+        ?? availableModels[0]?.defaultReasoningEffort
+        ?? 'xhigh',
+    },
     updatedAt: new Date().toISOString(),
   };
 }

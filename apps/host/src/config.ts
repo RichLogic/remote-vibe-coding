@@ -16,6 +16,8 @@ export const HOST = process.env.HOST ?? '127.0.0.1';
 
 const HOST_APP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const WEB_DIST_DIR = resolve(HOST_APP_DIR, '../web/dist');
+export const CHAT_SYSTEM_PROMPT_FILE = resolve(HOST_APP_DIR, 'chat-system-prompt.json');
+export const CHAT_ROLE_PRESETS_FILE = resolve(HOST_APP_DIR, 'chat-role-presets.json');
 
 function normalizeOptionalString(value: string | undefined) {
   const next = value?.trim();
