@@ -1,13 +1,11 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import { Children, Fragment, isValidElement, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type DragEvent as ReactDragEvent, type FormEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { TranscriptToolCard } from './transcript-tool-card';
 import {
-  connectCloudflareTunnel,
   createAdminUser,
   deleteAdminUser,
-  disconnectCloudflareTunnel,
   fetchAdminUsers,
   fetchBootstrap,
   logout,
@@ -78,6 +76,7 @@ import type {
   SessionTranscriptEntry,
   SessionType,
   SecurityProfile,
+  TranscriptEventKind,
   UserRole,
   WorkspaceSummary,
 } from './types';
@@ -88,9 +87,11 @@ type WorkspaceModalMode = 'create';
 type WorkspaceDropPosition = 'before' | 'after';
 type SessionConfirmAction = { kind: 'delete'; session: SessionDetailResponse['session'] } | null;
 type UiSessionState = 'normal' | 'new' | 'pending' | 'completed' | 'error' | 'processing' | 'stale';
+type NotificationSessionState = Exclude<UiSessionState, 'normal'>;
 type ChatCompletionMarkerMap = Record<string, string>;
 type ChatStatusRecord = Pick<ConversationSummary, 'id' | 'activeTurnId' | 'status' | 'uiStatus' | 'hasTranscript' | 'updatedAt'>;
 type ModeOption = 'detailed' | 'less-interruptive' | 'all-permissions';
+type SystemNotificationPermission = NotificationPermission | 'unsupported';
 
 interface UserFormState {
   username: string;
@@ -116,6 +117,15 @@ interface WorkspaceDropIndicator {
   position: WorkspaceDropPosition;
 }
 
+interface NotificationSessionSnapshot {
+  id: string;
+  sessionType: SessionType;
+  workspaceId: string | null;
+  title: string;
+  updatedAt: string;
+  state: NotificationSessionState;
+}
+
 const FALLBACK_REASONING: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 const TRANSCRIPT_PAGE_SIZE = 40;
 const CREATE_WORKSPACE_OPTION = '__new_workspace__';
@@ -123,6 +133,8 @@ const COMPOSER_MAX_LINES = 6;
 const OPTIMISTIC_SESSION_PREFIX = '__optimistic_session__:';
 const OPTIMISTIC_WORKSPACE_PREFIX = '__optimistic_workspace__:';
 const CHAT_COMPLETION_MARKERS_STORAGE_KEY = 'rvc-chat-completion-markers';
+const DEVELOPER_RAIL_HIDDEN_STORAGE_KEY = 'rvc-developer-rail-hidden';
+const CHAT_RAIL_HIDDEN_STORAGE_KEY = 'rvc-chat-rail-hidden';
 
 const UI_SESSION_STATE_LABELS: Record<Language, Record<UiSessionState, string>> = {
   en: {
@@ -201,7 +213,7 @@ const COPY = {
     languageChinese: '中文',
     languageButtonComment: 'Switch the interface language.',
     adminComment: 'Manage users and access permissions.',
-    settingsComment: 'Open system settings and remote access controls.',
+    settingsComment: 'Open system settings.',
     archiveComment: 'Archive this session. You can restore it later.',
     restoreComment: 'Restore this archived session.',
     forkComment: 'Create a copy of this session with the same setup.',
@@ -215,6 +227,8 @@ const COPY = {
     stopComment: 'Stop the active turn.',
     sendComment: 'Send the current prompt.',
     moreActions: 'More actions',
+    copyCode: 'Copy',
+    copiedCode: 'Copied',
     removeAttachmentComment: 'Remove this attachment from the draft.',
     newSession: 'New session',
     editWorkspaces: 'Edit',
@@ -294,6 +308,14 @@ const COPY = {
     signOut: 'Sign out',
     signingOut: 'Signing out...',
     settingsTitle: 'System controls',
+    systemNotifications: 'System notifications',
+    systemNotificationsHint: 'Used for coding approval requests and completed chat/coding turns.',
+    notificationsEnabled: 'Enabled',
+    notificationsDisabled: 'Not enabled',
+    notificationsBlocked: 'Blocked by browser',
+    notificationsUnsupported: 'Not supported',
+    enableNotifications: 'Enable notifications',
+    notificationsBlockedHint: 'Allow notifications for this site in the browser, then return here.',
     remoteAccess: 'Remote access',
     tunnelUnavailable: 'Tunnel status unavailable',
     noPublicUrl: 'No public URL available yet',
@@ -443,7 +465,7 @@ const COPY = {
     languageChinese: '中文',
     languageButtonComment: '切换界面语言。',
     adminComment: '管理用户和访问权限。',
-    settingsComment: '打开系统设置和远程访问控制。',
+    settingsComment: '打开系统设置。',
     archiveComment: '归档当前会话，之后仍然可以恢复。',
     restoreComment: '恢复这个已归档会话。',
     forkComment: '复制一个使用相同配置的新会话。',
@@ -457,6 +479,8 @@ const COPY = {
     stopComment: '停止当前正在运行的 turn。',
     sendComment: '发送当前 prompt。',
     moreActions: '更多操作',
+    copyCode: '复制',
+    copiedCode: '已复制',
     removeAttachmentComment: '把这个附件从草稿里移除。',
     newSession: '新建会话',
     editWorkspaces: '编辑',
@@ -536,6 +560,14 @@ const COPY = {
     signOut: '退出登录',
     signingOut: '退出中...',
     settingsTitle: '系统控制',
+    systemNotifications: '系统通知',
+    systemNotificationsHint: '用于代码审批待处理，以及 Chat / Coding 完成时的系统通知。',
+    notificationsEnabled: '已开启',
+    notificationsDisabled: '未开启',
+    notificationsBlocked: '已被浏览器拦截',
+    notificationsUnsupported: '当前浏览器不支持',
+    enableNotifications: '开启通知',
+    notificationsBlockedHint: '请先在浏览器里允许这个站点发送通知，再回到这里。',
     remoteAccess: '远程访问',
     tunnelUnavailable: 'Tunnel 状态暂不可用',
     noPublicUrl: '还没有公网地址',
@@ -778,6 +810,56 @@ function deriveSummarySessionState(
     return 'stale';
   }
   return session.hasTranscript ? 'completed' : 'new';
+}
+
+function deriveNotificationSessionState(session: SessionSummary | ConversationSummary): NotificationSessionState {
+  if (session.sessionType === 'chat') {
+    const chatUiStatus = chatUiStatusFromConversation(session);
+    if (chatUiStatus === 'processing') {
+      return 'processing';
+    }
+    if (chatUiStatus === 'error') {
+      return 'error';
+    }
+    if (chatUiStatus === 'new') {
+      return 'new';
+    }
+    return 'completed';
+  }
+
+  if (session.pendingApprovalCount > 0 || session.status === 'needs-approval') {
+    return 'pending';
+  }
+  if (session.status === 'running') {
+    return 'processing';
+  }
+  if (session.status === 'error') {
+    return 'error';
+  }
+  if (session.status === 'stale') {
+    return 'stale';
+  }
+  return session.hasTranscript ? 'completed' : 'new';
+}
+
+function currentNotificationPermission(): SystemNotificationPermission {
+  if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
+    return 'unsupported';
+  }
+  return window.Notification.permission;
+}
+
+function shouldNotifySessionCompletion(
+  previous: NotificationSessionSnapshot | undefined,
+  next: NotificationSessionSnapshot,
+) {
+  if (!previous || next.state !== 'completed') {
+    return false;
+  }
+  if (previous.updatedAt === next.updatedAt) {
+    return false;
+  }
+  return previous.state !== 'completed';
 }
 
 function chatRailStateRank(state: UiSessionState) {
@@ -1124,6 +1206,20 @@ function isTranscriptNearBottom(scrollContainer: HTMLDivElement) {
   return (scrollContainer.scrollHeight - (scrollContainer.scrollTop + scrollContainer.clientHeight)) < 96;
 }
 
+function transcriptSpeakerName(language: Language, kind: TranscriptEventKind) {
+  if (kind === 'assistant') {
+    return 'Codex';
+  }
+  if (kind === 'user') {
+    return language === 'zh' ? '你' : 'You';
+  }
+  return kind;
+}
+
+function transcriptSpeakerAvatar(kind: TranscriptEventKind) {
+  return kind === 'assistant' ? 'C' : 'Y';
+}
+
 function firstAllowedSessionType(bootstrap: BootstrapPayload | null): SessionType {
   return bootstrap?.currentUser.allowedSessionTypes[0] ?? 'code';
 }
@@ -1331,6 +1427,14 @@ function mergeWorkspaceIds(currentIds: string[], ...workspaceIds: Array<string |
   return next;
 }
 
+function sameOrderedStrings(left: string[], right: string[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((value, index) => value === right[index]);
+}
+
 function defaultUserForm(): UserFormState {
   return {
     username: '',
@@ -1347,6 +1451,105 @@ function defaultChatRolePresetForm(): ChatRolePresetFormState {
     prompt: '',
     isDefault: false,
   };
+}
+
+function readStoredBoolean(key: string, fallback = false) {
+  if (typeof window === 'undefined') return fallback;
+  const stored = window.localStorage.getItem(key);
+  if (stored === 'true') return true;
+  if (stored === 'false') return false;
+  return fallback;
+}
+
+function extractTextContent(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node);
+  }
+
+  if (Array.isArray(node)) {
+    return node.map((entry) => extractTextContent(entry)).join('');
+  }
+
+  if (isValidElement(node)) {
+    return extractTextContent((node.props as { children?: ReactNode }).children);
+  }
+
+  return '';
+}
+
+function clipboardFileName(file: File, index: number) {
+  if (file.name) {
+    return file.name;
+  }
+
+  const suffix = file.type.split('/')[1]?.split('+')[0]?.toLowerCase() || 'bin';
+  return `clipboard-${Date.now()}-${index + 1}.${suffix}`;
+}
+
+function normalizeClipboardFile(file: File, index: number) {
+  if (file.name) {
+    return file;
+  }
+
+  return new File([file], clipboardFileName(file, index), {
+    type: file.type,
+    lastModified: Date.now(),
+  });
+}
+
+interface MarkdownCodeBlockProps {
+  language: Language;
+  children?: ReactNode;
+}
+
+function MarkdownCodeBlock({ language, children }: MarkdownCodeBlockProps) {
+  const [copied, setCopied] = useState(false);
+  const childNodes = Children.toArray(children);
+  const firstChild = childNodes[0] ?? null;
+  const className = isValidElement(firstChild) && typeof firstChild.props === 'object'
+    ? (typeof (firstChild.props as { className?: unknown }).className === 'string'
+        ? (firstChild.props as { className?: string }).className
+        : undefined)
+    : undefined;
+  const languageLabel = className?.match(/language-([\w-]+)/)?.[1] ?? null;
+  const code = extractTextContent(children).replace(/\n$/, '');
+
+  useEffect(() => {
+    if (!copied) return;
+    const timeout = window.setTimeout(() => {
+      setCopied(false);
+    }, 1500);
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [copied]);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="markdown-code-block">
+      <div className="markdown-code-toolbar">
+        <span className="markdown-code-language">{languageLabel ?? ''}</span>
+        <button
+          type="button"
+          className={`button-secondary markdown-code-copy ${copied ? 'markdown-code-copy-active' : ''}`}
+          onClick={() => {
+            void handleCopy();
+          }}
+        >
+          {copied ? COPY[language].copiedCode : COPY[language].copyCode}
+        </button>
+      </div>
+      <pre>{children}</pre>
+    </div>
+  );
 }
 
 function InfoIcon() {
@@ -1636,6 +1839,84 @@ function CheckIcon() {
   );
 }
 
+function CodingIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="m7.6 6.3-3.4 3.7 3.4 3.7M12.4 6.3l3.4 3.7-3.4 3.7M11.1 4.8l-2.2 10.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ChatIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M5.2 14.7 4.1 17l3-1.2h6a4.1 4.1 0 0 0 4.1-4.1V7.9a4.1 4.1 0 0 0-4.1-4.1H6.9A4.1 4.1 0 0 0 2.8 7.9v3.8a4 4 0 0 0 2.4 3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M7.1 9.8h5.8" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function RolesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M6.4 11.4a2.3 2.3 0 1 0 0-4.6 2.3 2.3 0 0 0 0 4.6ZM12.9 10.6l.7 1.3 1.5.4-1 1.2.2 1.6-1.4-.7-1.4.7.2-1.6-1.1-1.2 1.6-.4.7-1.3ZM3.8 15.3c.8-1.7 2.3-2.6 4.3-2.6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SettingsIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="m10 3.8.9 1.5 1.8.4.3 1.8 1.5.9-.5 1.7.5 1.7-1.5.9-.3 1.8-1.8.4-.9 1.5-1.7-.5-1.7.5-.9-1.5-1.8-.4-.3-1.8-1.5-.9.5-1.7-.5-1.7 1.5-.9.3-1.8 1.8-.4.9-1.5 1.7.5 1.7-.5Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.45"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="10" cy="10" r="2.3" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  );
+}
+
+function AdminIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M10 3.4 15.5 5v4c0 3.6-2 5.9-5.5 7.6C6.5 14.9 4.5 12.6 4.5 9V5L10 3.4Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="m8.2 10.1 1.2 1.2 2.5-2.8" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function SidebarIcon({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -1657,6 +1938,7 @@ export function App() {
     return window.navigator.onLine;
   });
   const [hostReachable, setHostReachable] = useState(true);
+  const [notificationPermission, setNotificationPermission] = useState<SystemNotificationPermission>(() => currentNotificationPermission());
   const [activeMode, setActiveMode] = useState<AppMode>(() => {
     if (typeof window === 'undefined') return 'developer';
     const stored = window.localStorage.getItem('rvc-mode');
@@ -1671,7 +1953,8 @@ export function App() {
   const [sessionMenuSessionId, setSessionMenuSessionId] = useState<string | null>(null);
   const [pendingSessionRailAction, setPendingSessionRailAction] = useState<{ kind: 'edit' | 'info'; sessionId: string } | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
-  const [railHidden, setRailHidden] = useState(false);
+  const [developerRailHidden, setDeveloperRailHidden] = useState(() => readStoredBoolean(DEVELOPER_RAIL_HIDDEN_STORAGE_KEY));
+  const [chatRailHidden, setChatRailHidden] = useState(() => readStoredBoolean(CHAT_RAIL_HIDDEN_STORAGE_KEY));
   const [railWidth, setRailWidth] = useState(() => {
     if (typeof window === 'undefined') return 320;
     const stored = Number(window.localStorage.getItem('rvc-rail-width') ?? '320');
@@ -1680,6 +1963,7 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const [rolesOpen, setRolesOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const [sessionInfoOpen, setSessionInfoOpen] = useState(false);
@@ -1738,6 +2022,9 @@ export function App() {
   const workspaceExpansionInitializedRef = useRef(false);
   const dragWorkspaceIdRef = useRef<string | null>(null);
   const bootstrapRequestVersionRef = useRef(0);
+  const notificationSnapshotsReadyRef = useRef(false);
+  const notificationSessionSnapshotsRef = useRef<Record<string, NotificationSessionSnapshot>>({});
+  const seenApprovalIdsRef = useRef<Set<string>>(new Set());
   const copy = COPY[language];
 
   const currentUserRoles = deriveRolesFromLegacy(bootstrap?.currentUser);
@@ -1816,6 +2103,47 @@ export function App() {
     bootstrapRequestVersionRef.current += 1;
   }
 
+  function showSystemNotification(options: {
+    title: string;
+    body: string;
+    tag: string;
+    mode: AppMode;
+    sessionId: string;
+    workspaceId?: string | null;
+  }) {
+    if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
+      return;
+    }
+    if (window.Notification.permission !== 'granted') {
+      return;
+    }
+
+    const notification = new window.Notification(options.title, {
+      body: options.body,
+      tag: options.tag,
+    });
+
+    notification.onclick = () => {
+      window.focus();
+      setActiveMode(options.mode);
+      if (options.workspaceId) {
+        setSelectedWorkspaceId(options.workspaceId);
+      }
+      setSelectedSessionId(options.sessionId);
+      notification.close();
+    };
+  }
+
+  async function handleEnableNotifications() {
+    if (typeof window === 'undefined' || typeof window.Notification === 'undefined') {
+      setNotificationPermission('unsupported');
+      return;
+    }
+
+    const nextPermission = await window.Notification.requestPermission();
+    setNotificationPermission(nextPermission);
+  }
+
   function applyBootstrapSnapshot(next: BootstrapPayload) {
     setHostReachable(true);
     setBootstrap(next);
@@ -1853,6 +2181,14 @@ export function App() {
   useEffect(() => {
     window.localStorage.setItem('rvc-mode', activeMode);
   }, [activeMode]);
+
+  useEffect(() => {
+    window.localStorage.setItem(DEVELOPER_RAIL_HIDDEN_STORAGE_KEY, String(developerRailHidden));
+  }, [developerRailHidden]);
+
+  useEffect(() => {
+    window.localStorage.setItem(CHAT_RAIL_HIDDEN_STORAGE_KEY, String(chatRailHidden));
+  }, [chatRailHidden]);
 
   useEffect(() => {
     window.localStorage.setItem('rvc-rail-width', String(railWidth));
@@ -1898,6 +2234,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    function syncNotificationPermission() {
+      setNotificationPermission(currentNotificationPermission());
+    }
+
+    window.addEventListener('focus', syncNotificationPermission);
+    document.addEventListener('visibilitychange', syncNotificationPermission);
+    return () => {
+      window.removeEventListener('focus', syncNotificationPermission);
+      document.removeEventListener('visibilitychange', syncNotificationPermission);
+    };
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadBootstrapData() {
@@ -1913,11 +2262,6 @@ export function App() {
     }
 
     void loadBootstrapData();
-    if (activeMode === 'chat') {
-      return () => {
-        cancelled = true;
-      };
-    }
     const timer = window.setInterval(() => {
       void loadBootstrapData();
     }, 2000);
@@ -1962,6 +2306,91 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [bootstrap, activeMode, copy.unknownError]);
+
+  useEffect(() => {
+    if (!bootstrap) {
+      return;
+    }
+
+    const nextApprovalIds = new Set(bootstrap.approvals.map((approval) => approval.id));
+    const nextSessionSnapshots: Record<string, NotificationSessionSnapshot> = {};
+    const codingSessionsById = new Map(bootstrap.sessions.map((session) => [session.id, session]));
+
+    for (const session of bootstrap.sessions) {
+      nextSessionSnapshots[session.id] = {
+        id: session.id,
+        sessionType: 'code',
+        workspaceId: session.workspaceId,
+        title: session.title,
+        updatedAt: session.updatedAt,
+        state: deriveNotificationSessionState(session),
+      };
+    }
+
+    for (const conversation of bootstrap.conversations) {
+      nextSessionSnapshots[conversation.id] = {
+        id: conversation.id,
+        sessionType: 'chat',
+        workspaceId: null,
+        title: conversation.title,
+        updatedAt: conversation.updatedAt,
+        state: deriveNotificationSessionState(conversation),
+      };
+    }
+
+    if (!notificationSnapshotsReadyRef.current) {
+      seenApprovalIdsRef.current = nextApprovalIds;
+      notificationSessionSnapshotsRef.current = nextSessionSnapshots;
+      notificationSnapshotsReadyRef.current = true;
+      return;
+    }
+
+    if (notificationPermission === 'granted') {
+      for (const approval of bootstrap.approvals) {
+        if (seenApprovalIdsRef.current.has(approval.id)) {
+          continue;
+        }
+
+        const session = codingSessionsById.get(approval.sessionId);
+        if (!session) {
+          continue;
+        }
+
+        showSystemNotification({
+          title: language === 'zh'
+            ? `需要审批 · ${session.title}`
+            : `Approval required · ${session.title}`,
+          body: approval.risk,
+          tag: `approval:${approval.id}`,
+          mode: 'developer',
+          sessionId: session.id,
+          workspaceId: session.workspaceId,
+        });
+      }
+
+      for (const snapshot of Object.values(nextSessionSnapshots)) {
+        if (!shouldNotifySessionCompletion(notificationSessionSnapshotsRef.current[snapshot.id], snapshot)) {
+          continue;
+        }
+
+        showSystemNotification({
+          title: language === 'zh'
+            ? `${snapshot.sessionType === 'chat' ? '聊天已完成' : '代码会话已完成'} · ${snapshot.title}`
+            : `${snapshot.sessionType === 'chat' ? 'Chat completed' : 'Coding completed'} · ${snapshot.title}`,
+          body: language === 'zh'
+            ? '本轮已经完成，可以继续发送下一条消息。'
+            : 'The latest turn is complete and ready for your next message.',
+          tag: `completed:${snapshot.id}:${snapshot.updatedAt}`,
+          mode: snapshot.sessionType === 'chat' ? 'chat' : 'developer',
+          sessionId: snapshot.id,
+          workspaceId: snapshot.workspaceId,
+        });
+      }
+    }
+
+    seenApprovalIdsRef.current = nextApprovalIds;
+    notificationSessionSnapshotsRef.current = nextSessionSnapshots;
+  }, [bootstrap, language, notificationPermission]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -2033,7 +2462,7 @@ export function App() {
   }, [activeMode, chatRailEditMode, railDeleteConfirmId, workspaceEditMode]);
 
   useEffect(() => {
-    if (!settingsOpen || !canManageChatRolePresets) {
+    if (!rolesOpen || !canManageChatRolePresets) {
       return;
     }
 
@@ -2056,7 +2485,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [settingsOpen, canManageChatRolePresets, copy.unknownError]);
+  }, [rolesOpen, canManageChatRolePresets, copy.unknownError]);
 
   useEffect(() => {
     if (!inlineRenameSessionId) return;
@@ -2075,7 +2504,7 @@ export function App() {
   }, [inlineRenameSessionId]);
 
   useEffect(() => {
-    if (!settingsOpen) {
+    if (!rolesOpen) {
       setEditingChatRolePresetId(null);
       setChatRolePresetForm(defaultChatRolePresetForm());
       return;
@@ -2084,7 +2513,13 @@ export function App() {
       setEditingChatRolePresetId(null);
       setChatRolePresetForm(defaultChatRolePresetForm());
     }
-  }, [settingsOpen, editingChatRolePresetId, chatRolePresetList]);
+  }, [rolesOpen, editingChatRolePresetId, chatRolePresetList]);
+
+  useEffect(() => {
+    if (rolesOpen && !canManageChatRolePresets) {
+      setRolesOpen(false);
+    }
+  }, [rolesOpen, canManageChatRolePresets]);
 
   useEffect(() => {
     if (!pendingSessionRailAction || !detail || detail.session.id !== pendingSessionRailAction.sessionId) {
@@ -2376,11 +2811,14 @@ export function App() {
 
     setExpandedWorkspaceIds((current) => {
       const filtered = current.filter((workspaceId) => visibleIds.has(workspaceId));
-      if (workspaceEditMode || workspaceExpansionInitializedRef.current || nextRailWorkspaces.length === 0) {
-        return filtered;
+      let nextExpandedIds = filtered;
+
+      if (!workspaceEditMode && !workspaceExpansionInitializedRef.current && nextRailWorkspaces.length > 0) {
+        workspaceExpansionInitializedRef.current = true;
+        nextExpandedIds = filtered.length > 0 ? filtered : [nextRailWorkspaces[0]!.id];
       }
-      workspaceExpansionInitializedRef.current = true;
-      return filtered.length > 0 ? filtered : [nextRailWorkspaces[0]!.id];
+
+      return sameOrderedStrings(current, nextExpandedIds) ? current : nextExpandedIds;
     });
   }, [activeMode, bootstrapWorkspaces, dragWorkspaceId, expandedWorkspaceIds.length, optimisticWorkspaces, workspaceDropIndicator, workspaceEditMode]);
 
@@ -2477,14 +2915,11 @@ export function App() {
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? 'auto' : 'hidden';
   }, [prompt, selectedSessionId]);
 
-  const cloudflare = bootstrap?.cloudflare;
   const networkState = !browserOnline
     ? 'down'
     : hostReachable
       ? 'ok'
       : 'recovering';
-  const cloudflareManagedBySystem = cloudflare?.activeSource === 'system';
-  const cloudflareManagedLocally = cloudflare?.activeSource === 'local-manager';
   const sessionIsChat = detail?.session.sessionType === 'chat';
   const selectedChatRolePreset = (() => {
     if (detail?.session.sessionType !== 'chat') {
@@ -2500,7 +2935,15 @@ export function App() {
   const draftAttachments = detail?.draftAttachments ?? [];
   const pendingApprovals = detail?.approvals ?? [];
   const activeApproval = pendingApprovals[0] ?? null;
-  const modeAllowsSwitch = availableModes.length > 1;
+  const developerModeEnabled = availableModes.includes('developer');
+  const chatModeEnabled = availableModes.includes('chat');
+  const currentRailHidden = activeMode === 'developer' ? developerRailHidden : chatRailHidden;
+  const primaryNavWidth = 72;
+  const networkLabel = networkState === 'ok'
+    ? copy.networkStatusOk
+    : networkState === 'recovering'
+      ? copy.networkStatusRecovering
+      : copy.networkStatusDown;
   const approvalOptions: Array<{ decision: 'accept' | 'decline'; scope: 'once' | 'session'; label: string; tone?: 'secondary' }> = [
     { decision: 'accept', scope: 'once', label: copy.approveOnce },
     { decision: 'accept', scope: 'session', label: copy.approveSession },
@@ -3095,21 +3538,36 @@ export function App() {
   }
 
   async function handleAttachmentSelection(event: ChangeEvent<HTMLInputElement>) {
-    if (!selectedSessionId || sessionHasActiveTurn) return;
     const files = Array.from(event.target.files ?? []);
     event.target.value = '';
     if (files.length === 0) return;
+    await uploadDraftFiles(files);
+  }
+
+  async function uploadDraftFiles(files: File[]) {
+    if (
+      !selectedSessionId
+      || files.length === 0
+      || sessionHasActiveTurn
+      || busy === 'upload-attachment'
+      || busy === 'start-turn'
+      || Boolean(activeApproval)
+      || (selectedSessionIsOptimistic && !sessionIsChat)
+    ) {
+      return;
+    }
 
     setBusy('upload-attachment');
     try {
       const targetSessionId = activeMode === 'chat'
         ? await materializeOptimisticChatConversation(selectedSessionId)
         : selectedSessionId;
-      for (const file of files) {
+      for (const [index, file] of files.entries()) {
+        const nextFile = normalizeClipboardFile(file, index);
         if (activeMode === 'chat') {
-          await uploadChatAttachment(targetSessionId, file);
+          await uploadChatAttachment(targetSessionId, nextFile);
         } else {
-          await uploadCodingAttachment(targetSessionId, file);
+          await uploadCodingAttachment(targetSessionId, nextFile);
         }
       }
       await refreshCurrentSelection(targetSessionId);
@@ -3119,6 +3577,19 @@ export function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.items)
+      .map((item) => item.kind === 'file' ? item.getAsFile() : null)
+      .filter((file): file is File => file !== null && file.size > 0);
+
+    if (files.length === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    void uploadDraftFiles(files);
   }
 
   async function handleRemoveDraftAttachment(attachment: SessionAttachmentSummary) {
@@ -4202,30 +4673,6 @@ export function App() {
     }
   }
 
-  async function handleConnectCloudflare() {
-    setBusy('connect-cloudflare');
-    try {
-      await connectCloudflareTunnel();
-      await refreshBootstrapState();
-    } catch (connectError) {
-      setError(connectError instanceof Error ? connectError.message : copy.connectTunnel);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleDisconnectCloudflare() {
-    setBusy('disconnect-cloudflare');
-    try {
-      await disconnectCloudflareTunnel();
-      await refreshBootstrapState();
-    } catch (disconnectError) {
-      setError(disconnectError instanceof Error ? disconnectError.message : copy.disconnect);
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function handleLogout() {
     setBusy('logout');
     try {
@@ -4358,6 +4805,7 @@ export function App() {
     const sessionState = deriveSummarySessionState(session, chatCompletionMarkers);
     const sessionPending = isOptimisticSessionId(session.id);
     const isChatConversation = session.sessionType === 'chat';
+    const sessionSelected = selectedSessionId === session.id;
     const showInlineDeleteButton = isChatConversation
       ? chatRailEditMode
       : workspaceEditMode && !sessionPending;
@@ -4405,13 +4853,14 @@ export function App() {
     return (
       <li
         key={session.id}
-        className={`session-node ${selectedSessionId === session.id ? 'session-node-active' : ''} ${sessionPending ? 'session-node-pending' : ''} ${isChatConversation ? 'session-node-chat' : ''} ${railDeleteConfirming ? 'session-node-delete-confirming' : ''}`}
+        className={`session-node ${sessionSelected ? 'session-node-active' : ''} ${sessionPending ? 'session-node-pending' : ''} ${isChatConversation ? 'session-node-chat' : ''} ${railDeleteConfirming ? 'session-node-delete-confirming' : ''}`}
       >
         {isChatConversation || showInlineDeleteButton ? (
           <div
             role="button"
             tabIndex={0}
             className="session-node-trigger session-node-trigger-chat"
+            aria-current={sessionSelected ? 'page' : undefined}
             onClick={handleSessionTrigger}
             onKeyDown={(event) => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -4431,6 +4880,7 @@ export function App() {
             className="session-node-trigger"
             onClick={handleSessionTrigger}
             disabled={sessionPending}
+            aria-current={sessionSelected ? 'page' : undefined}
           >
             <div className="session-node-copy">
               {renderLeading()}
@@ -4446,6 +4896,7 @@ export function App() {
     const workspaceSessions = allSessions.filter((session) => session.workspaceId === workspace.id);
     const workspaceExpanded = expandedWorkspaceIds.includes(workspace.id);
     const workspaceOpen = workspaceExpanded || workspaceEditMode;
+    const workspaceSelected = activeMode === 'developer' && selectedWorkspaceId === workspace.id;
     const workspacePending = workspace.id.startsWith(OPTIMISTIC_WORKSPACE_PREFIX);
     const workspaceHidden = !workspace.visible;
     const workspaceDraggable = workspaceEditMode && !workspaceHidden && !workspacePending && !workspaceLayoutSaving;
@@ -4490,7 +4941,7 @@ export function App() {
       <Fragment key={workspace.id}>
         {renderWorkspaceDropSlot('before')}
         <li
-          className={`session-card workspace-card ${workspaceOpen ? 'workspace-card-open' : ''} ${workspacePending ? 'session-card-pending' : ''} ${workspaceEditMode && workspaceHidden ? 'workspace-card-hidden' : ''} ${workspaceDragging ? 'workspace-card-dragging' : ''} ${workspaceDropTarget ? 'workspace-card-drop-target' : ''}`}
+          className={`session-card workspace-card ${workspaceOpen ? 'workspace-card-open' : ''} ${workspaceSelected ? 'workspace-card-selected' : ''} ${workspacePending ? 'session-card-pending' : ''} ${workspaceEditMode && workspaceHidden ? 'workspace-card-hidden' : ''} ${workspaceDragging ? 'workspace-card-dragging' : ''} ${workspaceDropTarget ? 'workspace-card-drop-target' : ''}`}
           onDragOver={(event: ReactDragEvent<HTMLLIElement>) => {
             const activeDragWorkspaceId = dragWorkspaceIdRef.current;
             if (!workspaceDraggable || !activeDragWorkspaceId || activeDragWorkspaceId === workspace.id) return;
@@ -4631,6 +5082,168 @@ export function App() {
     }, 0);
   }
 
+  function closePrimaryDialogs() {
+    setRolesOpen(false);
+    setSettingsOpen(false);
+    setAdminOpen(false);
+  }
+
+  function openPrimaryDialog(dialog: 'roles' | 'settings' | 'admin') {
+    closePrimaryDialogs();
+    if (dialog === 'roles') {
+      if (!canManageChatRolePresets) return;
+      setRolesOpen(true);
+      return;
+    }
+    if (dialog === 'admin') {
+      if (!bootstrap?.currentUser.isAdmin) return;
+      setAdminOpen(true);
+      return;
+    }
+    setSettingsOpen(true);
+  }
+
+  function handlePrimaryModeClick(nextMode: AppMode) {
+    if (nextMode === 'developer' && !developerModeEnabled) return;
+    if (nextMode === 'chat' && !chatModeEnabled) return;
+
+    closePrimaryDialogs();
+
+    if (activeMode === nextMode) {
+      if (nextMode === 'developer') {
+        setDeveloperRailHidden((current) => !current);
+      } else {
+        setChatRailHidden((current) => !current);
+      }
+      return;
+    }
+
+    if (nextMode === 'developer') {
+      setDeveloperRailHidden(false);
+    } else {
+      setChatRailHidden(false);
+    }
+    setActiveMode(nextMode);
+  }
+
+  function renderRolePresetManagerSection() {
+    if (!canManageChatRolePresets) {
+      return null;
+    }
+
+    return (
+      <section className="settings-section">
+        <div className="settings-section-head">
+          <strong>{copy.rolePresetManager}</strong>
+          <span>{copy.rolePresetManagerHint}</span>
+        </div>
+
+        <div className="settings-role-preset-layout">
+          <div className="settings-role-preset-list">
+            <div className="settings-role-preset-toolbar">
+              <button type="button" className="button-secondary" onClick={beginCreateChatRolePreset}>
+                {copy.newRolePreset}
+              </button>
+            </div>
+
+            {chatRolePresetList?.rolePresets.length ? (
+              chatRolePresetList.rolePresets.map((preset) => (
+                <article key={preset.id} className={`detail-card settings-role-preset-card ${editingChatRolePresetId === preset.id ? 'settings-role-preset-card-active' : ''}`}>
+                  <div className="detail-card-head">
+                    <strong>{preset.label}</strong>
+                    {preset.isDefault ? <span>{copy.defaults}</span> : null}
+                  </div>
+                  {preset.description ? <p>{preset.description}</p> : null}
+                  <div className="approval-actions settings-role-preset-actions">
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => beginEditChatRolePreset(preset)}
+                    >
+                      {copy.rename}
+                    </button>
+                    <button
+                      type="button"
+                      className="button-secondary"
+                      onClick={() => void handleDeleteChatRolePreset(preset)}
+                      disabled={busy === `delete-chat-role-preset-${preset.id}`}
+                    >
+                      {copy.delete}
+                    </button>
+                  </div>
+                </article>
+              ))
+            ) : (
+              <article className="detail-card">
+                <strong>{copy.noRolePresets}</strong>
+                <p>{copy.rolePresetManagerHint}</p>
+              </article>
+            )}
+          </div>
+
+          <form className="detail-card settings-role-preset-editor" onSubmit={handleSaveChatRolePreset}>
+            <div className="detail-card-head">
+              <strong>{editingChatRolePreset ? copy.editRolePreset : copy.newRolePreset}</strong>
+              {editingChatRolePreset ? <span>{editingChatRolePreset.label}</span> : null}
+            </div>
+
+            <label className="field">
+              <span>{copy.rolePresetName}</span>
+              <input
+                value={chatRolePresetForm.label}
+                onChange={(event) => setChatRolePresetForm((current) => ({ ...current, label: event.target.value }))}
+                placeholder={copy.rolePresetName}
+              />
+            </label>
+
+            <label className="field">
+              <span>{copy.rolePresetDescription}</span>
+              <textarea
+                rows={3}
+                value={chatRolePresetForm.description}
+                onChange={(event) => setChatRolePresetForm((current) => ({ ...current, description: event.target.value }))}
+                placeholder={copy.rolePresetDescription}
+              />
+            </label>
+
+            <label className="field">
+              <span>{copy.rolePresetPrompt}</span>
+              <textarea
+                rows={10}
+                value={chatRolePresetForm.prompt}
+                onChange={(event) => setChatRolePresetForm((current) => ({ ...current, prompt: event.target.value }))}
+                placeholder={copy.rolePresetPrompt}
+              />
+            </label>
+
+            <div className="checkbox-grid">
+              <label className="checkbox-field">
+                <input
+                  type="checkbox"
+                  checked={chatRolePresetForm.isDefault}
+                  onChange={(event) => setChatRolePresetForm((current) => ({ ...current, isDefault: event.target.checked }))}
+                />
+                <span>{copy.rolePresetDefault}</span>
+              </label>
+            </div>
+
+            <div className="approval-actions settings-role-preset-actions">
+              <button type="button" className="button-secondary" onClick={resetChatRolePresetEditor}>
+                {copy.close}
+              </button>
+              <button
+                type="submit"
+                disabled={busy === 'save-chat-role-preset'}
+              >
+                {copy.saveRolePreset}
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+    );
+  }
+
   function handleRailResizeStart(event: ReactMouseEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
@@ -4667,7 +5280,6 @@ export function App() {
     return (
       <main className="shell shell-loading">
         <section className="loading-card">
-          <p className="eyebrow">remote-vibe-coding</p>
           <h1>Loading…</h1>
         </section>
       </main>
@@ -4676,42 +5288,6 @@ export function App() {
 
   return (
     <main className="shell">
-      <header className="topbar">
-        <div>
-          <h1>{bootstrap.productName}</h1>
-        </div>
-        <div className="topbar-meta">
-          <div className={`topbar-network topbar-network-${networkState}`} role="status" aria-live="polite" title={copy.networkStatusComment}>
-            <span className="topbar-network-dot" aria-hidden="true" />
-            <span>
-              {networkState === 'ok'
-                ? copy.networkStatusOk
-                : networkState === 'recovering'
-                  ? copy.networkStatusRecovering
-                  : copy.networkStatusDown}
-            </span>
-          </div>
-          {modeAllowsSwitch ? (
-            <button
-              type="button"
-              className="button-secondary topbar-button"
-              onClick={() => setActiveMode((current) => current === 'developer' ? 'chat' : 'developer')}
-              title={language === 'zh' ? '切换模式' : 'Switch mode'}
-            >
-              {modeLabel(language, activeMode === 'developer' ? 'chat' : 'developer')}
-            </button>
-          ) : null}
-          {bootstrap.currentUser.isAdmin ? (
-            <button type="button" className="button-secondary topbar-button" onClick={() => setAdminOpen(true)} title={copy.adminComment}>
-              {copy.admin}
-            </button>
-          ) : null}
-          <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(true)} title={copy.settingsComment}>
-            {copy.settings}
-          </button>
-        </div>
-      </header>
-
       {error ? (
         <div className="toast-stack" role="status" aria-live="polite">
           <div className="toast toast-error">
@@ -4723,495 +5299,610 @@ export function App() {
         </div>
       ) : null}
 
-      <section
-        className="workspace"
-        style={railHidden
-          ? { gridTemplateColumns: 'minmax(0, 1fr)' }
-          : { gridTemplateColumns: `${railWidth}px 6px minmax(0, 1fr)` }}
-      >
-        {!railHidden ? (
-          <aside className="panel rail">
-          <div className="rail-header">
-            <div>
-              <p className="eyebrow">{railEyebrow}</p>
-            </div>
-          </div>
-
-          <div className="rail-body">
-          {activeMode === 'developer' ? (
-            <div className="rail-section">
-              <ul className="session-list workspace-tree">
-                {railVisibleWorkspaces.length === 0 && (!workspaceEditMode || editableHiddenWorkspaces.length === 0) ? (
-                  <li className="session-empty">{noWorkspaceLabel}</li>
-                ) : (
-                  <>
-                    {railVisibleWorkspaces.map((workspace) => renderWorkspaceRailItem(workspace))}
-                    {workspaceEditMode && editableHiddenWorkspaces.length > 0 ? (
-                      <>
-                        {railVisibleWorkspaces.length > 0 ? <li className="workspace-tree-divider" aria-hidden="true" /> : null}
-                        {editableHiddenWorkspaces.map((workspace) => renderWorkspaceRailItem(workspace))}
-                      </>
-                    ) : null}
-                  </>
-                )}
-              </ul>
-            </div>
-          ) : (
-            <div className="rail-section">
-              <ul className="session-list">
-                {railItems.length === 0 ? (
-                  <li className="session-empty">{railEmptyLabel}</li>
-                ) : (
-                  railItems.map((session) => renderSessionRailItem(session))
-                )}
-              </ul>
-            </div>
-          )}
-          </div>
-
-          <div className="rail-footer">
-            {activeMode === 'developer' ? (
-              <div className="rail-footer-actions">
+      <div className="shell-main">
+        <section
+          className={`workspace ${currentRailHidden ? 'workspace-rail-hidden' : ''}`}
+          style={{ '--sidebar-shell-width': `${currentRailHidden ? primaryNavWidth : primaryNavWidth + railWidth}px` } as CSSProperties}
+        >
+          <div className={`sidebar-shell ${currentRailHidden ? 'sidebar-shell-collapsed' : ''}`}>
+            <aside className="primary-nav">
+              <div className="primary-nav-menu">
                 <button
                   type="button"
-                  className={`button-secondary ${workspaceEditMode ? 'rail-footer-button-active' : ''}`}
-                  onClick={() => setWorkspaceEditMode((current) => !current)}
+                  className={`primary-nav-button ${activeMode === 'developer' ? 'primary-nav-button-active' : ''}`}
+                  onClick={() => handlePrimaryModeClick('developer')}
+                  disabled={!developerModeEnabled}
+                  data-label="coding"
+                  aria-label="coding"
                 >
-                  {workspaceEditMode ? copy.finish : copy.editWorkspaces}
+                  <CodingIcon />
+                  <span className="sr-only">coding</span>
                 </button>
-                <button type="button" onClick={() => openWorkspaceManager('create')}>
-                  {copy.createWorkspaceAction}
+                <button
+                  type="button"
+                  className={`primary-nav-button ${activeMode === 'chat' ? 'primary-nav-button-active' : ''}`}
+                  onClick={() => handlePrimaryModeClick('chat')}
+                  disabled={!chatModeEnabled}
+                  data-label="chat"
+                  aria-label="chat"
+                >
+                  <ChatIcon />
+                  <span className="sr-only">chat</span>
+                </button>
+                <button
+                  type="button"
+                  className={`primary-nav-button ${rolesOpen ? 'primary-nav-button-active' : ''}`}
+                  onClick={() => openPrimaryDialog('roles')}
+                  disabled={!canManageChatRolePresets}
+                  data-label="roles"
+                  aria-label="roles"
+                >
+                  <RolesIcon />
+                  <span className="sr-only">roles</span>
+                </button>
+                <button
+                  type="button"
+                  className={`primary-nav-button ${settingsOpen ? 'primary-nav-button-active' : ''}`}
+                  onClick={() => openPrimaryDialog('settings')}
+                  data-label="setting"
+                  aria-label="setting"
+                >
+                  <SettingsIcon />
+                  <span className="sr-only">setting</span>
+                </button>
+                <button
+                  type="button"
+                  className={`primary-nav-button ${adminOpen ? 'primary-nav-button-active' : ''}`}
+                  onClick={() => openPrimaryDialog('admin')}
+                  disabled={!bootstrap.currentUser.isAdmin}
+                  data-label="admin"
+                  aria-label="admin"
+                >
+                  <AdminIcon />
+                  <span className="sr-only">admin</span>
                 </button>
               </div>
-            ) : (
-              <div className="rail-footer-actions">
-                <button
-                  type="button"
-                  className={`button-secondary ${chatRailEditMode ? 'rail-footer-button-active' : ''}`}
-                  onClick={() => setChatRailEditMode((current) => !current)}
+
+              <div className="primary-nav-footer">
+                <div
+                  className={`primary-nav-network primary-nav-network-${networkState}`}
+                  role="status"
+                  aria-live="polite"
+                  title={networkLabel}
+                  aria-label={networkLabel}
                 >
-                  {chatRailEditMode ? copy.finish : copy.rename}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleCreateConversation();
-                  }}
-                >
-                  {language === 'zh' ? '新建' : 'New'}
-                </button>
-              </div>
-            )}
-          </div>
-        </aside>
-        ) : null}
-
-        {!railHidden ? (
-          <div className="rail-resizer" onMouseDown={handleRailResizeStart} role="separator" aria-orientation="vertical" aria-label={copy.hideSidebar} />
-        ) : null}
-
-        <section className="panel transcript">
-          <div className="panel-header">
-            <div className="session-title-row">
-              {detail ? (
-                inlineRenameActive ? (
-                  <div className="session-title-inline">
-                    <input
-                      ref={inlineRenameInputRef}
-                      className="session-title-input"
-                      value={inlineRenameTitle}
-                      onChange={(event) => setInlineRenameTitle(event.target.value)}
-                      onKeyDown={handleInlineRenameKeyDown}
-                      aria-label={copy.rename}
-                    />
-                    <div className="session-title-inline-actions">
-                      <button
-                        type="button"
-                        className="button-secondary icon-button"
-                        onClick={() => void saveInlineRename()}
-                        title={copy.confirmAction}
-                        aria-label={copy.confirmAction}
-                        disabled={!inlineRenameTitle.trim()}
-                      >
-                        <CheckIcon />
-                      </button>
-                      <button
-                        type="button"
-                        className="button-secondary icon-button"
-                        onClick={cancelInlineRename}
-                        title={copy.close}
-                        aria-label={copy.close}
-                      >
-                        <RemoveIcon />
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                  className="session-title-trigger"
-                  onClick={beginInlineRename}
-                  title={activeMode === 'developer' ? (detail.session.workspace ?? undefined) : undefined}
-                  disabled={selectedSessionIsOptimistic || inlineRenameBusy}
-                >
-                    <h2>{detailSessionTitle}</h2>
-                  </button>
-                )
-              ) : (
-                <h2>{copy.selectOrCreate}</h2>
-              )}
-              {detail ? (
-                inlineRenameActive || sessionIsChat ? null : (
-                  <div className="session-title-actions">
-                    <button
-                      type="button"
-                      className="button-secondary icon-button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSessionMenuSessionId(null);
-                        setDetailMenuOpen(false);
-                        setSessionInfoOpen(true);
-                      }}
-                      title={copy.info}
-                      aria-label={copy.info}
-                      disabled={selectedSessionIsOptimistic}
-                    >
-                      <InfoIcon />
-                    </button>
-                  </div>
-                )
-              ) : null}
-            </div>
-          </div>
-
-          {detail ? (
-            <div className="transcript-layout">
-              <div className="transcript-scroll" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
-                <div className="chat-list">
-                  {transcriptLoadingOlder ? (
-                    <div className="chat-loading-older">{copy.loadingOlderMessages}</div>
-                  ) : null}
-                  {transcriptItems.length === 0 ? null : (
-                    transcriptItems.map((event) => {
-                      if (event.kind === 'tool') {
-                        return (
-                          <TranscriptToolCard
-                            key={event.id}
-                            entry={event}
-                            badgeLabel={toolLabel(event, language)}
-                            language={language}
-                            noInlineDiffLabel={copy.noInlineDiff}
-                          />
-                        );
-                      }
-
-                      if (event.kind === 'status') {
-                        return (
-                          <article key={event.id} className="event-card event-status">
-                            <div className="event-meta">
-                              <span>{copy.sessionState}</span>
-                              <strong>{event.title ?? copy.activity}</strong>
-                            </div>
-                            <p>{event.body}</p>
-                          </article>
-                        );
-                      }
-
-                      return (
-                        <article key={event.id} className={`chat-message chat-${event.kind}`}>
-                          {event.attachments.length > 0 ? (
-                            <div className="chat-attachments">
-                              {event.attachments.map((attachment) => (
-                                <a
-                                  key={attachment.id}
-                                  className={`chat-attachment-card chat-attachment-card-${attachment.kind}`}
-                                  href={attachment.url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                >
-                                  {attachment.kind === 'image' ? (
-                                    <div className="chat-attachment-media">
-                                      <img src={attachment.url} alt={attachment.filename} className="chat-attachment-image" />
-                                    </div>
-                                  ) : null}
-                                  <div className="chat-attachment-copy">
-                                    <strong>{attachment.filename}</strong>
-                                    <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
-                                  </div>
-                                </a>
-                              ))}
-                            </div>
-                          ) : null}
-                          {event.body && event.markdown ? (
-                            <div className="markdown-body chat-body">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                                {event.body}
-                              </ReactMarkdown>
-                            </div>
-                          ) : event.body ? (
-                            <pre className="event-body">{event.body}</pre>
-                          ) : null}
-                        </article>
-                      );
-                    })
-                  )}
-                  {activeMode === 'chat' && detailSessionState === 'processing' && chatActivityItems.length > 0 ? (
-                    <article className="chat-message chat-activity-bubble">
-                      <div className="chat-activity-bubble-head">
-                        <span>{CHAT_ACTIVITY_SECTION_LABELS[language]}</span>
-                      </div>
-                      <div className="chat-activity-bubble-body">
-                        {chatActivityItems.map((item, index) => (
-                          <div
-                            key={item.id}
-                            className={`chat-activity-step ${index === chatActivityItems.length - 1 ? 'chat-activity-step-active' : ''}`}
-                          >
-                            <strong>{item.label}</strong>
-                          </div>
-                        ))}
-                      </div>
-                    </article>
-                  ) : null}
+                  <span className="primary-nav-network-dot" aria-hidden="true" />
+                  <span className="sr-only">{networkLabel}</span>
                 </div>
               </div>
+            </aside>
 
-              {detailSessionState ? (
-                <section
-                  ref={detailSessionState === 'pending' ? approvalPromptRef : null}
-                  className={`session-status-bar session-status-${detailSessionState}`}
-                  tabIndex={detailSessionState === 'pending' ? 0 : undefined}
-                  onKeyDown={detailSessionState === 'pending' ? handleApprovalPromptKeyDown : undefined}
-                >
-                  <div className="session-status-copy">
-                    <div className="session-status-title-row">
-                      <span className={`session-status-badge session-status-badge-${detailSessionState}`}>
-                        {detailSessionState === 'processing'
-                          ? copy.processingStatus
-                          : detailSessionState === 'normal'
-                            ? copy.normalStatus
-                          : detailSessionState === 'pending'
-                            ? copy.approvalPendingStatus
-                            : detailSessionState === 'completed'
-                              ? copy.turnCompleteStatus
-                              : detailSessionState === 'error'
-                                ? copy.errorStatus
-                                : detailSessionState === 'stale'
-                                  ? copy.staleStatus
-                                  : copy.noTurnsYet}
-                      </span>
-                      {detailSessionState === 'pending' && activeApproval ? (
-                        <strong>{activeApproval.title}</strong>
+            {!currentRailHidden ? (
+              <aside className="rail">
+                <div className="rail-header">
+                  <div>
+                    <p className="eyebrow">{railEyebrow}</p>
+                  </div>
+                </div>
+
+                <div className="rail-body">
+                  {activeMode === 'developer' ? (
+                    <div className="rail-section">
+                      <ul className="session-list workspace-tree">
+                        {railVisibleWorkspaces.length === 0 && (!workspaceEditMode || editableHiddenWorkspaces.length === 0) ? (
+                          <li className="session-empty">{noWorkspaceLabel}</li>
+                        ) : (
+                          <>
+                            {railVisibleWorkspaces.map((workspace) => renderWorkspaceRailItem(workspace))}
+                            {workspaceEditMode && editableHiddenWorkspaces.length > 0 ? (
+                              <>
+                                {railVisibleWorkspaces.length > 0 ? <li className="workspace-tree-divider" aria-hidden="true" /> : null}
+                                {editableHiddenWorkspaces.map((workspace) => renderWorkspaceRailItem(workspace))}
+                              </>
+                            ) : null}
+                          </>
+                        )}
+                      </ul>
+                    </div>
+                  ) : (
+                    <div className="rail-section">
+                      <ul className="session-list">
+                        {railItems.length === 0 ? (
+                          <li className="session-empty">{railEmptyLabel}</li>
+                        ) : (
+                          railItems.map((session) => renderSessionRailItem(session))
+                        )}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
+                <div className="rail-footer">
+                  {activeMode === 'developer' ? (
+                    <div className="rail-footer-actions">
+                      <button
+                        type="button"
+                        className={`button-secondary ${workspaceEditMode ? 'rail-footer-button-active' : ''}`}
+                        onClick={() => setWorkspaceEditMode((current) => !current)}
+                      >
+                        {workspaceEditMode ? copy.finish : copy.editWorkspaces}
+                      </button>
+                      <button type="button" onClick={() => openWorkspaceManager('create')}>
+                        {copy.createWorkspaceAction}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="rail-footer-actions">
+                      <button
+                        type="button"
+                        className={`button-secondary ${chatRailEditMode ? 'rail-footer-button-active' : ''}`}
+                        onClick={() => setChatRailEditMode((current) => !current)}
+                      >
+                        {chatRailEditMode ? copy.finish : copy.rename}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleCreateConversation();
+                        }}
+                      >
+                        {language === 'zh' ? '新建' : 'New'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </aside>
+            ) : null}
+          </div>
+
+          {!currentRailHidden ? (
+            <div className="rail-resizer" onMouseDown={handleRailResizeStart} role="separator" aria-orientation="vertical" aria-label={copy.hideSidebar} />
+          ) : null}
+
+          <section className="panel transcript">
+            <div className="panel-header">
+              <div className="session-title-row">
+                {detail ? (
+                  inlineRenameActive ? (
+                    <div className="session-title-inline">
+                      <input
+                        ref={inlineRenameInputRef}
+                        className="session-title-input"
+                        value={inlineRenameTitle}
+                        onChange={(event) => setInlineRenameTitle(event.target.value)}
+                        onKeyDown={handleInlineRenameKeyDown}
+                        aria-label={copy.rename}
+                      />
+                      <div className="session-title-inline-actions">
+                        <button
+                          type="button"
+                          className="button-secondary icon-button"
+                          onClick={() => void saveInlineRename()}
+                          title={copy.confirmAction}
+                          aria-label={copy.confirmAction}
+                          disabled={!inlineRenameTitle.trim()}
+                        >
+                          <CheckIcon />
+                        </button>
+                        <button
+                          type="button"
+                          className="button-secondary icon-button"
+                          onClick={cancelInlineRename}
+                          title={copy.close}
+                          aria-label={copy.close}
+                        >
+                          <RemoveIcon />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="session-title-trigger"
+                      onClick={beginInlineRename}
+                      title={activeMode === 'developer' ? (detail.session.workspace ?? undefined) : undefined}
+                      disabled={selectedSessionIsOptimistic || inlineRenameBusy}
+                    >
+                      <h2>{detailSessionTitle}</h2>
+                    </button>
+                  )
+                ) : (
+                  <h2>{copy.selectOrCreate}</h2>
+                )}
+                {detail ? (
+                  inlineRenameActive || sessionIsChat ? null : (
+                    <div className="session-title-actions">
+                      <button
+                        type="button"
+                        className="button-secondary icon-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSessionMenuSessionId(null);
+                          setDetailMenuOpen(false);
+                          setSessionInfoOpen(true);
+                        }}
+                        title={copy.info}
+                        aria-label={copy.info}
+                        disabled={selectedSessionIsOptimistic}
+                      >
+                        <InfoIcon />
+                      </button>
+                    </div>
+                  )
+                ) : null}
+              </div>
+            </div>
+
+            {detail ? (
+              <div className="transcript-layout">
+                <div className="transcript-scroll" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
+                  <div className="chat-list">
+                    {transcriptLoadingOlder ? (
+                      <div className="chat-loading-older">{copy.loadingOlderMessages}</div>
+                    ) : null}
+                    {transcriptItems.length === 0 ? null : (
+                      transcriptItems.map((event) => {
+                        if (event.kind === 'tool') {
+                          return (
+                            <TranscriptToolCard
+                              key={event.id}
+                              entry={event}
+                              badgeLabel={toolLabel(event, language)}
+                              language={language}
+                              noInlineDiffLabel={copy.noInlineDiff}
+                            />
+                          );
+                        }
+
+                        if (event.kind === 'status') {
+                          return (
+                            <article key={event.id} className="event-card event-status">
+                              <div className="event-meta">
+                                <span>{copy.sessionState}</span>
+                                <strong>{event.title ?? copy.activity}</strong>
+                              </div>
+                              <p>{event.body}</p>
+                            </article>
+                          );
+                        }
+
+                        return (
+                          <article key={event.id} className={`chat-message chat-${event.kind}`}>
+                            {event.kind === 'assistant' ? (
+                              <div className={`chat-avatar chat-avatar-${event.kind}`} aria-hidden="true">
+                                {transcriptSpeakerAvatar(event.kind)}
+                              </div>
+                            ) : null}
+                            <div className="chat-message-main">
+                              {event.kind === 'assistant' ? (
+                                <div className="chat-message-head">
+                                  <strong>{transcriptSpeakerName(language, event.kind)}</strong>
+                                  {event.meta ? <span>{event.meta}</span> : null}
+                                </div>
+                              ) : null}
+                              {event.attachments.length > 0 ? (
+                                <div className="chat-attachments">
+                                  {event.attachments.map((attachment) => (
+                                    <a
+                                      key={attachment.id}
+                                      className={`chat-attachment-card chat-attachment-card-${attachment.kind}`}
+                                      href={attachment.url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      {attachment.kind === 'image' ? (
+                                        <div className="chat-attachment-media">
+                                          <img src={attachment.url} alt={attachment.filename} className="chat-attachment-image" />
+                                        </div>
+                                      ) : null}
+                                      <div className="chat-attachment-copy">
+                                        <strong>{attachment.filename}</strong>
+                                        <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
+                                      </div>
+                                    </a>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {event.body && event.markdown ? (
+                                <div className="markdown-body chat-body">
+                                  <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
+                                    components={{
+                                      pre: ({ children }) => (
+                                        <MarkdownCodeBlock language={language}>
+                                          {children}
+                                        </MarkdownCodeBlock>
+                                      ),
+                                    }}
+                                  >
+                                    {event.body}
+                                  </ReactMarkdown>
+                                </div>
+                              ) : event.body ? (
+                                <pre className="event-body">{event.body}</pre>
+                              ) : null}
+                            </div>
+                          </article>
+                        );
+                      })
+                    )}
+                    {activeMode === 'chat' && detailSessionState === 'processing' && chatActivityItems.length > 0 ? (
+                      <article className="chat-message chat-activity-bubble">
+                        <div className="chat-activity-bubble-head">
+                          <span>{CHAT_ACTIVITY_SECTION_LABELS[language]}</span>
+                        </div>
+                        <div className="chat-activity-bubble-body">
+                          {chatActivityItems.map((item, index) => (
+                            <div
+                              key={item.id}
+                              className={`chat-activity-step ${index === chatActivityItems.length - 1 ? 'chat-activity-step-active' : ''}`}
+                            >
+                              <strong>{item.label}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </article>
+                    ) : null}
+                  </div>
+                </div>
+
+                {detailSessionState ? (
+                  <section
+                    ref={detailSessionState === 'pending' ? approvalPromptRef : null}
+                    className={`session-status-bar session-status-${detailSessionState}`}
+                    tabIndex={detailSessionState === 'pending' ? 0 : undefined}
+                    onKeyDown={detailSessionState === 'pending' ? handleApprovalPromptKeyDown : undefined}
+                  >
+                    <div className="session-status-copy">
+                      <div className="session-status-title-row">
+                        <span className={`session-status-badge session-status-badge-${detailSessionState}`}>
+                          {detailSessionState === 'processing'
+                            ? copy.processingStatus
+                            : detailSessionState === 'normal'
+                              ? copy.normalStatus
+                              : detailSessionState === 'pending'
+                                ? copy.approvalPendingStatus
+                                : detailSessionState === 'completed'
+                                  ? copy.turnCompleteStatus
+                                  : detailSessionState === 'error'
+                                    ? copy.errorStatus
+                                    : detailSessionState === 'stale'
+                                      ? copy.staleStatus
+                                      : copy.noTurnsYet}
+                        </span>
+                        {detailSessionState === 'pending' && activeApproval ? (
+                          <strong>{activeApproval.title}</strong>
+                        ) : null}
+                      </div>
+
+                      {detailSessionState === 'processing' ? (
+                        <p>{copy.processingHint}</p>
+                      ) : null}
+
+                      {detailSessionState === 'normal' ? (
+                        <>
+                          <p>{sessionIsChat
+                            ? (detail.session.hasTranscript ? copy.normalHint : copy.noTurnsHint)
+                            : copy.noTurnsHint}
+                          </p>
+                          {sessionIsChat && detail.session.lastIssue ? <p className="detail-card-meta">{detail.session.lastIssue}</p> : null}
+                        </>
+                      ) : null}
+
+                      {detailSessionState === 'pending' ? (
+                        <>
+                          {activeApproval ? <p>{activeApproval.risk}</p> : null}
+                          <p className="detail-card-meta">{copy.approvalPendingHint}</p>
+                          {activeApproval ? <p className="detail-card-meta">{copy.approvalKeyboardHint}</p> : null}
+                          {pendingApprovals.length > 1 ? (
+                            <p className="detail-card-meta">{formatRemainingApprovals(pendingApprovals.length - 1, language)}</p>
+                          ) : null}
+                        </>
+                      ) : null}
+
+                      {detailSessionState === 'completed' ? (
+                        <p>{copy.turnCompleteHint}</p>
+                      ) : null}
+
+                      {detailSessionState === 'new' ? (
+                        <p>{copy.noTurnsHint}</p>
+                      ) : null}
+
+                      {detailSessionState === 'error' ? (
+                        <p>{detail.session.lastIssue ?? copy.errorHint}</p>
+                      ) : null}
+
+                      {detailSessionState === 'stale' ? (
+                        <p>{copy.staleHint}</p>
                       ) : null}
                     </div>
 
-                    {detailSessionState === 'processing' ? (
-                      <p>{copy.processingHint}</p>
+                    {detailSessionState === 'pending' && activeApproval ? (
+                      <div className="approval-inline-options session-status-actions">
+                        {approvalOptions.map((option, index) => (
+                          <button
+                            key={`${option.decision}-${option.scope}`}
+                            type="button"
+                            className={`approval-inline-option ${index === approvalSelectionIndex ? 'approval-inline-option-active' : ''} ${option.tone === 'secondary' ? 'approval-inline-option-secondary' : ''}`}
+                            onClick={() => void handleApprovalAction(activeApproval, option.decision, option.scope)}
+                            disabled={busy === activeApproval.id}
+                          >
+                            <span className="approval-inline-marker">{index === approvalSelectionIndex ? '›' : ''}</span>
+                            <span>{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
                     ) : null}
+                  </section>
+                ) : null}
 
-                    {detailSessionState === 'normal' ? (
-                      <>
-                        <p>{sessionIsChat
-                          ? (detail.session.hasTranscript ? copy.normalHint : copy.noTurnsHint)
-                          : copy.noTurnsHint}
-                        </p>
-                        {sessionIsChat && detail.session.lastIssue ? <p className="detail-card-meta">{detail.session.lastIssue}</p> : null}
-                      </>
-                    ) : null}
-
-                    {detailSessionState === 'pending' ? (
-                      <>
-                        {activeApproval ? <p>{activeApproval.risk}</p> : null}
-                        <p className="detail-card-meta">{copy.approvalPendingHint}</p>
-                        {activeApproval ? <p className="detail-card-meta">{copy.approvalKeyboardHint}</p> : null}
-                        {pendingApprovals.length > 1 ? (
-                          <p className="detail-card-meta">{formatRemainingApprovals(pendingApprovals.length - 1, language)}</p>
-                        ) : null}
-                      </>
-                    ) : null}
-
-                    {detailSessionState === 'completed' ? (
-                      <p>{copy.turnCompleteHint}</p>
-                    ) : null}
-
-                    {detailSessionState === 'new' ? (
-                      <p>{copy.noTurnsHint}</p>
-                    ) : null}
-
-                    {detailSessionState === 'error' ? (
-                      <p>{detail.session.lastIssue ?? copy.errorHint}</p>
-                    ) : null}
-
-                    {detailSessionState === 'stale' ? (
-                      <p>{copy.staleHint}</p>
-                    ) : null}
-                  </div>
-
-                  {detailSessionState === 'pending' && activeApproval ? (
-                    <div className="approval-inline-options session-status-actions">
-                      {approvalOptions.map((option, index) => (
-                        <button
-                          key={`${option.decision}-${option.scope}`}
-                          type="button"
-                          className={`approval-inline-option ${index === approvalSelectionIndex ? 'approval-inline-option-active' : ''} ${option.tone === 'secondary' ? 'approval-inline-option-secondary' : ''}`}
-                          onClick={() => void handleApprovalAction(activeApproval, option.decision, option.scope)}
-                          disabled={busy === activeApproval.id}
-                        >
-                          <span className="approval-inline-marker">{index === approvalSelectionIndex ? '›' : ''}</span>
-                          <span>{option.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </section>
-              ) : null}
-
-              <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
-                <div className="composer-shell">
-                  <input
-                    ref={attachmentInputRef}
-                    type="file"
-                    multiple
-                    hidden
-                    onChange={handleAttachmentSelection}
-                  />
-                  {detail ? (
-                    <div className="composer-config-row">
-                      <label className="composer-config-field">
-                        <span>{copy.model}</span>
-                        <AppSelect
-                          className="app-select-compact"
-                          value={sessionModel}
-                          options={modelSelectOptions}
-                          onChange={handleSessionModelChange}
-                          ariaLabel={copy.model}
-                          disabled={busy === 'update-session-preferences' || availableModels.length === 0}
-                        />
-                      </label>
-                      <label className="composer-config-field">
-                        <span>{copy.thinking}</span>
-                        <AppSelect
-                          className="app-select-compact"
-                          value={sessionEffort}
-                          options={effortSelectOptions}
-                          onChange={(nextValue) => handleSessionEffortChange(nextValue as ReasoningEffort)}
-                          ariaLabel={copy.thinking}
-                          disabled={busy === 'update-session-preferences'}
-                        />
-                      </label>
-                      {sessionIsChat ? (
+                <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
+                  <div className="composer-shell">
+                    <input
+                      ref={attachmentInputRef}
+                      type="file"
+                      multiple
+                      hidden
+                      onChange={handleAttachmentSelection}
+                    />
+                    {detail ? (
+                      <div className="composer-config-row">
                         <label className="composer-config-field">
-                          <span>{copy.rolePreset}</span>
+                          <span>{copy.model}</span>
                           <AppSelect
                             className="app-select-compact"
-                            value={sessionRolePresetId}
-                            options={rolePresetSelectOptions}
-                            onChange={(nextValue) => void handleChatRolePresetChange(nextValue)}
-                            ariaLabel={copy.rolePreset}
+                            value={sessionModel}
+                            options={modelSelectOptions}
+                            onChange={handleSessionModelChange}
+                            ariaLabel={copy.model}
+                            disabled={busy === 'update-session-preferences' || availableModels.length === 0}
+                          />
+                        </label>
+                        <label className="composer-config-field">
+                          <span>{copy.thinking}</span>
+                          <AppSelect
+                            className="app-select-compact"
+                            value={sessionEffort}
+                            options={effortSelectOptions}
+                            onChange={(nextValue) => handleSessionEffortChange(nextValue as ReasoningEffort)}
+                            ariaLabel={copy.thinking}
                             disabled={busy === 'update-session-preferences'}
                           />
                         </label>
-                      ) : null}
-                      {!sessionIsChat ? (
-                        <label className="composer-config-field">
-                          <span>{copy.approvalModeLabel}</span>
-                          <AppSelect
-                            className="app-select-compact"
-                            value={currentSessionMode}
-                            options={modeSelectOptions}
-                            onChange={handleSessionModeChange}
-                            ariaLabel={copy.approvalModeLabel}
-                            disabled={!detail || detail.session.sessionType !== 'code'}
-                          />
-                        </label>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  {draftAttachments.length > 0 ? (
-                    <div className="draft-attachments">
-                      {draftAttachments.map((attachment) => (
-                        <div key={attachment.id} className={`draft-attachment-chip draft-attachment-${attachment.kind}`}>
-                          <div className="draft-attachment-copy">
-                            <strong>{attachment.filename}</strong>
-                            <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
+                        {sessionIsChat ? (
+                          <label className="composer-config-field">
+                            <span>{copy.rolePreset}</span>
+                            <AppSelect
+                              className="app-select-compact"
+                              value={sessionRolePresetId}
+                              options={rolePresetSelectOptions}
+                              onChange={(nextValue) => void handleChatRolePresetChange(nextValue)}
+                              ariaLabel={copy.rolePreset}
+                              disabled={busy === 'update-session-preferences'}
+                            />
+                          </label>
+                        ) : null}
+                        {!sessionIsChat ? (
+                          <label className="composer-config-field">
+                            <span>{copy.approvalModeLabel}</span>
+                            <AppSelect
+                              className="app-select-compact"
+                              value={currentSessionMode}
+                              options={modeSelectOptions}
+                              onChange={handleSessionModeChange}
+                              ariaLabel={copy.approvalModeLabel}
+                              disabled={!detail || detail.session.sessionType !== 'code'}
+                            />
+                          </label>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {draftAttachments.length > 0 ? (
+                      <div className="draft-attachments">
+                        {draftAttachments.map((attachment) => (
+                          <div key={attachment.id} className={`draft-attachment-chip draft-attachment-${attachment.kind}`}>
+                            <div className="draft-attachment-copy">
+                              <strong>{attachment.filename}</strong>
+                              <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
+                            </div>
+                            <button
+                              type="button"
+                              className="button-secondary icon-button draft-attachment-remove"
+                              onClick={() => void handleRemoveDraftAttachment(attachment)}
+                              disabled={busy === `remove-attachment-${attachment.id}` || busy === 'start-turn'}
+                              title={copy.removeAttachment}
+                              aria-label={copy.removeAttachment}
+                            >
+                              <RemoveIcon />
+                            </button>
                           </div>
-                          <button
-                            type="button"
-                            className="button-secondary icon-button draft-attachment-remove"
-                            onClick={() => void handleRemoveDraftAttachment(attachment)}
-                            disabled={busy === `remove-attachment-${attachment.id}` || busy === 'start-turn'}
-                            title={copy.removeAttachment}
-                            aria-label={copy.removeAttachment}
-                          >
-                            <RemoveIcon />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                  <div className="composer-row">
-                    <textarea
-                      ref={promptTextareaRef}
-                      value={prompt}
-                      onChange={(event) => setPrompt(event.target.value)}
-                      onKeyDown={handlePromptKeyDown}
-                      onCompositionStart={handlePromptCompositionStart}
-                      onCompositionEnd={handlePromptCompositionEnd}
-                      rows={1}
-                      placeholder={copy.prompt}
-                      disabled={(selectedSessionIsOptimistic && !sessionIsChat) || Boolean(activeApproval)}
-                    />
-                    <div className="composer-actions">
-                      <button
-                        type="button"
-                        className="button-secondary icon-button attach-button"
-                        onClick={() => attachmentInputRef.current?.click()}
-                        disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'upload-attachment' || busy === 'start-turn' || sessionHasActiveTurn || Boolean(activeApproval)}
-                        title={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
-                        aria-label={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
-                      >
-                        <AttachmentIcon />
-                      </button>
-                      {sessionHasActiveTurn ? (
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="composer-row">
+                      <textarea
+                        ref={promptTextareaRef}
+                        value={prompt}
+                        onChange={(event) => setPrompt(event.target.value)}
+                        onPaste={handleComposerPaste}
+                        onKeyDown={handlePromptKeyDown}
+                        onCompositionStart={handlePromptCompositionStart}
+                        onCompositionEnd={handlePromptCompositionEnd}
+                        rows={1}
+                        placeholder={copy.prompt}
+                        disabled={(selectedSessionIsOptimistic && !sessionIsChat) || Boolean(activeApproval)}
+                      />
+                      <div className="composer-actions">
                         <button
                           type="button"
-                          className="stop-button"
-                          onClick={() => void handleStopActiveTurn()}
-                          disabled={busy === 'stop-session' || Boolean(activeApproval)}
-                          title={busy === 'stop-session' ? copy.stopping : copy.stop}
-                          aria-label={busy === 'stop-session' ? copy.stopping : copy.stop}
+                          className="button-secondary icon-button attach-button"
+                          onClick={() => attachmentInputRef.current?.click()}
+                          disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'upload-attachment' || busy === 'start-turn' || sessionHasActiveTurn || Boolean(activeApproval)}
+                          title={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
+                          aria-label={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
                         >
-                          <StopSquareIcon />
+                          <AttachmentIcon />
                         </button>
-                      ) : null}
-                      <button
-                        type="submit"
-                        className="send-button"
-                        disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'start-turn' || busy === 'stop-session' || busy === 'upload-attachment' || sessionHasActiveTurn || Boolean(activeApproval) || (!prompt.trim() && draftAttachments.length === 0)}
-                        title={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
-                        aria-label={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
-                      >
-                        <SendIcon />
-                      </button>
+                        {sessionHasActiveTurn ? (
+                          <button
+                            type="button"
+                            className="stop-button"
+                            onClick={() => void handleStopActiveTurn()}
+                            disabled={busy === 'stop-session' || Boolean(activeApproval)}
+                            title={busy === 'stop-session' ? copy.stopping : copy.stop}
+                            aria-label={busy === 'stop-session' ? copy.stopping : copy.stop}
+                          >
+                            <StopSquareIcon />
+                          </button>
+                        ) : null}
+                        <button
+                          type="submit"
+                          className="send-button"
+                          disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'start-turn' || busy === 'stop-session' || busy === 'upload-attachment' || sessionHasActiveTurn || Boolean(activeApproval) || (!prompt.trim() && draftAttachments.length === 0)}
+                          title={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                          aria-label={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                        >
+                          <SendIcon />
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </form>
-            </div>
-          ) : (
-            <section className="empty-state">
-              <p className="eyebrow">{copy.noActiveSelection}</p>
-              <h2>{copy.pickSessionHint}</h2>
-            </section>
-          )}
+                </form>
+              </div>
+            ) : (
+              <section className="empty-state">
+                <p className="eyebrow">{copy.noActiveSelection}</p>
+                <h2>{copy.pickSessionHint}</h2>
+              </section>
+            )}
+          </section>
         </section>
-      </section>
+      </div>
 
-      {settingsOpen ? (
-        <div className="settings-overlay" onClick={() => setSettingsOpen(false)}>
-          <aside className="settings-sheet" onClick={(event) => event.stopPropagation()}>
+      {rolesOpen ? (
+        <div className="modal-overlay" onClick={() => setRolesOpen(false)}>
+          <aside className="modal-card management-modal-card" onClick={(event) => event.stopPropagation()}>
             <div className="panel-header settings-header">
               <div>
-                <p className="eyebrow">{copy.settings}</p>
+                <p className="eyebrow">roles</p>
+                <h2>{copy.rolePresetManager}</h2>
+              </div>
+              <button type="button" className="button-secondary topbar-button" onClick={() => setRolesOpen(false)}>
+                {copy.close}
+              </button>
+            </div>
+
+            {renderRolePresetManagerSection()}
+          </aside>
+        </div>
+      ) : null}
+
+      {settingsOpen ? (
+        <div className="modal-overlay" onClick={() => setSettingsOpen(false)}>
+          <aside className="modal-card management-modal-card settings-modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-header settings-header">
+              <div>
+                <p className="eyebrow">setting</p>
                 <h2>{copy.settingsTitle}</h2>
               </div>
               <button type="button" className="button-secondary topbar-button" onClick={() => setSettingsOpen(false)}>
@@ -5263,168 +5954,42 @@ export function App() {
 
             <section className="settings-section">
               <div className="settings-section-head">
-                <strong>{copy.remoteAccess}</strong>
+                <strong>{copy.systemNotifications}</strong>
+                <span>{copy.systemNotificationsHint}</span>
               </div>
               <div className="remote-status-row">
-                <span className="remote-status-pill">{cloudflare?.mode ?? copy.tunnelUnavailable}</span>
-                {cloudflare?.state === 'connected' ? <span className="remote-status-pill remote-status-pill-live">{copy.tunnelLive}</span> : null}
-                {cloudflareManagedBySystem ? <span className="remote-status-pill">{copy.managedBySystem}</span> : null}
+                <span className={`remote-status-pill ${notificationPermission === 'granted' ? 'remote-status-pill-live' : ''}`}>
+                  {notificationPermission === 'granted'
+                    ? copy.notificationsEnabled
+                    : notificationPermission === 'default'
+                      ? copy.notificationsDisabled
+                      : notificationPermission === 'denied'
+                        ? copy.notificationsBlocked
+                        : copy.notificationsUnsupported}
+                </span>
               </div>
-              {cloudflare?.publicUrl ? (
-                <p className="remote-access-url">
-                  <a href={cloudflare.publicUrl} target="_blank" rel="noreferrer">
-                    {cloudflare.publicUrl}
-                  </a>
-                </p>
-              ) : null}
-              {cloudflare?.lastError ? <p className="remote-access-error">{cloudflare.lastError}</p> : null}
-              {!cloudflareManagedBySystem ? (
+              {notificationPermission === 'default' ? (
                 <div className="remote-button-row">
-                  {cloudflareManagedLocally ? (
-                    <button
-                      type="button"
-                      className="button-secondary"
-                      onClick={() => void handleDisconnectCloudflare()}
-                      disabled={!cloudflare?.installed || busy === 'disconnect-cloudflare'}
-                    >
-                      {busy === 'disconnect-cloudflare' ? copy.disconnecting : copy.disconnect}
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => void handleConnectCloudflare()}
-                      disabled={!cloudflare?.installed || busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'}
-                    >
-                      {busy === 'connect-cloudflare' || cloudflare?.state === 'connecting'
-                        ? copy.connecting
-                        : copy.connectTunnel}
-                    </button>
-                  )}
+                  <button type="button" onClick={() => void handleEnableNotifications()}>
+                    {copy.enableNotifications}
+                  </button>
                 </div>
+              ) : null}
+              {notificationPermission === 'denied' ? (
+                <p className="remote-access-error">{copy.notificationsBlockedHint}</p>
               ) : null}
             </section>
 
-            {canManageChatRolePresets ? (
-              <section className="settings-section">
-                <div className="settings-section-head">
-                  <strong>{copy.rolePresetManager}</strong>
-                  <span>{copy.rolePresetManagerHint}</span>
-                </div>
-
-                <div className="settings-role-preset-layout">
-                  <div className="settings-role-preset-list">
-                    <div className="settings-role-preset-toolbar">
-                      <button type="button" className="button-secondary" onClick={beginCreateChatRolePreset}>
-                        {copy.newRolePreset}
-                      </button>
-                    </div>
-
-                    {chatRolePresetList?.rolePresets.length ? (
-                      chatRolePresetList.rolePresets.map((preset) => (
-                        <article key={preset.id} className={`detail-card settings-role-preset-card ${editingChatRolePresetId === preset.id ? 'settings-role-preset-card-active' : ''}`}>
-                          <div className="detail-card-head">
-                            <strong>{preset.label}</strong>
-                            {preset.isDefault ? <span>{copy.defaults}</span> : null}
-                          </div>
-                          {preset.description ? <p>{preset.description}</p> : null}
-                          <div className="approval-actions settings-role-preset-actions">
-                            <button
-                              type="button"
-                              className="button-secondary"
-                              onClick={() => beginEditChatRolePreset(preset)}
-                            >
-                              {copy.rename}
-                            </button>
-                            <button
-                              type="button"
-                              className="button-secondary"
-                              onClick={() => void handleDeleteChatRolePreset(preset)}
-                              disabled={busy === `delete-chat-role-preset-${preset.id}`}
-                            >
-                              {copy.delete}
-                            </button>
-                          </div>
-                        </article>
-                      ))
-                    ) : (
-                      <article className="detail-card">
-                        <strong>{copy.noRolePresets}</strong>
-                        <p>{copy.rolePresetManagerHint}</p>
-                      </article>
-                    )}
-                  </div>
-
-                  <form className="detail-card settings-role-preset-editor" onSubmit={handleSaveChatRolePreset}>
-                    <div className="detail-card-head">
-                      <strong>{editingChatRolePreset ? copy.editRolePreset : copy.newRolePreset}</strong>
-                      {editingChatRolePreset ? <span>{editingChatRolePreset.label}</span> : null}
-                    </div>
-
-                    <label className="field">
-                      <span>{copy.rolePresetName}</span>
-                      <input
-                        value={chatRolePresetForm.label}
-                        onChange={(event) => setChatRolePresetForm((current) => ({ ...current, label: event.target.value }))}
-                        placeholder={copy.rolePresetName}
-                      />
-                    </label>
-
-                    <label className="field">
-                      <span>{copy.rolePresetDescription}</span>
-                      <textarea
-                        rows={3}
-                        value={chatRolePresetForm.description}
-                        onChange={(event) => setChatRolePresetForm((current) => ({ ...current, description: event.target.value }))}
-                        placeholder={copy.rolePresetDescription}
-                      />
-                    </label>
-
-                    <label className="field">
-                      <span>{copy.rolePresetPrompt}</span>
-                      <textarea
-                        rows={10}
-                        value={chatRolePresetForm.prompt}
-                        onChange={(event) => setChatRolePresetForm((current) => ({ ...current, prompt: event.target.value }))}
-                        placeholder={copy.rolePresetPrompt}
-                      />
-                    </label>
-
-                    <div className="checkbox-grid">
-                      <label className="checkbox-field">
-                        <input
-                          type="checkbox"
-                          checked={chatRolePresetForm.isDefault}
-                          onChange={(event) => setChatRolePresetForm((current) => ({ ...current, isDefault: event.target.checked }))}
-                        />
-                        <span>{copy.rolePresetDefault}</span>
-                      </label>
-                    </div>
-
-                    <div className="approval-actions settings-role-preset-actions">
-                      <button type="button" className="button-secondary" onClick={resetChatRolePresetEditor}>
-                        {copy.close}
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={busy === 'save-chat-role-preset'}
-                      >
-                        {copy.saveRolePreset}
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              </section>
-            ) : null}
           </aside>
         </div>
       ) : null}
 
       {adminOpen ? (
-        <div className="settings-overlay" onClick={() => setAdminOpen(false)}>
-          <aside className="settings-sheet admin-sheet" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-overlay" onClick={() => setAdminOpen(false)}>
+          <aside className="modal-card management-modal-card management-modal-card-wide admin-sheet" onClick={(event) => event.stopPropagation()}>
             <div className="panel-header settings-header">
               <div>
-                <p className="eyebrow">{copy.admin}</p>
+                <p className="eyebrow">admin</p>
                 <h2>{copy.users}</h2>
               </div>
               <div className="admin-toolbar">

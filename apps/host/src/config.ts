@@ -13,6 +13,7 @@ export const MONGODB_URL = process.env.MONGODB_URL?.trim() || 'mongodb://127.0.0
 export const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME?.trim() || 'remote_vibe_coding';
 export const PORT = Number.parseInt(process.env.PORT ?? '8787', 10);
 export const HOST = process.env.HOST ?? '127.0.0.1';
+export const DEV_DISABLE_AUTH = /^(1|true|yes|on)$/i.test(process.env.RVC_DEV_DISABLE_AUTH?.trim() ?? '');
 
 const HOST_APP_DIR = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const WEB_DIST_DIR = resolve(HOST_APP_DIR, '../web/dist');

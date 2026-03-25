@@ -97,6 +97,12 @@ npm run dev:host
 npm run dev:web
 ```
 
+如果 host 不是默认端口，启动前端时把后端端口带上：
+
+```bash
+npm run dev:web -- --api-port 8788
+```
+
 打开 `http://127.0.0.1:5173`。
 
 开发环境默认值：
@@ -104,6 +110,7 @@ npm run dev:web
 - host：`http://127.0.0.1:8787`
 - web：`http://127.0.0.1:5173`
 - Vite 会把 `/api` 代理到 host
+- `--api-port` 可以覆盖开发代理默认使用的 host 端口
 
 ## 单域名构建运行
 
@@ -143,6 +150,12 @@ http://127.0.0.1:8787/?token=YOUR_TOKEN
 ```
 
 登录后再到管理界面里创建或更新用户即可。
+
+仅开发环境可用的快捷方式：
+
+- 在执行 `npm run dev:host` 前设置 `RVC_DEV_DISABLE_AUTH=1`
+- host 会跳过浏览器登录，把请求视为种子 admin 用户
+- 这个开关只适合本地/预览调试，不要在正常部署里开启
 
 ## 数据与存储
 
@@ -184,6 +197,7 @@ http://127.0.0.1:8787/?token=YOUR_TOKEN
 | `RVC_AUTH_USERNAME` | 首个管理员用户的用户名 |
 | `RVC_AUTH_PASSWORD` | 首个管理员用户的密码 |
 | `RVC_AUTH_TOKEN` | 可选，自定义首个用户的固定 token |
+| `RVC_DEV_DISABLE_AUTH` | 设为 `1` 时仅在开发中跳过浏览器认证 |
 
 ### Cloudflare
 

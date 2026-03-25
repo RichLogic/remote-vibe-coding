@@ -1,0 +1,177 @@
+<svg width="1600" height="1120" viewBox="0 0 1600 1120" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="60" x2="1460" y2="1060" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F5EFE4"/>
+      <stop offset="1" stop-color="#EFE5D6"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="120" y1="170" x2="760" y2="540" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF8"/>
+      <stop offset="1" stop-color="#F6F1E8"/>
+    </linearGradient>
+    <filter id="shadow" x="0" y="0" width="2000" height="1400" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="20" stdDeviation="20" flood-color="#43372A" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1120" fill="url(#bg)"/>
+  <circle cx="1460" cy="120" r="180" fill="#0F766E" fill-opacity="0.08"/>
+  <circle cx="120" cy="1020" r="220" fill="#B45309" fill-opacity="0.08"/>
+
+  <text x="120" y="78" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="34" font-weight="700">
+    UI Redesign Wireframe
+  </text>
+  <text x="120" y="112" fill="#5B554D" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="18">
+    Remove the first row, move the top-right actions to the far-left primary menu, and keep only coding/chat views for now.
+  </text>
+
+  <g transform="translate(120 160)" filter="url(#shadow)">
+    <rect width="640" height="390" rx="28" fill="url(#panel)" stroke="#CABDA9"/>
+    <text x="30" y="42" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="22" font-weight="700">
+      A. coding expanded
+    </text>
+    <text x="30" y="68" fill="#7A6F63" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="14">
+      click coding once: show workspace rail
+    </text>
+
+    <rect x="22" y="92" width="86" height="276" rx="22" fill="#F0E7D9" stroke="#D4C5B2"/>
+    <rect x="34" y="110" width="62" height="34" rx="14" fill="#1E1B17"/>
+    <text x="65" y="132" text-anchor="middle" fill="#FFF8EF" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">coding</text>
+    <rect x="34" y="152" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="174" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">chat</text>
+    <rect x="34" y="194" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="216" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">roles</text>
+    <rect x="34" y="236" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="258" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="10.5" font-weight="700">setting</text>
+    <rect x="34" y="278" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="300" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">admin</text>
+
+    <rect x="126" y="92" width="182" height="276" rx="22" fill="#FCF8F0" stroke="#D9C9B4"/>
+    <text x="148" y="124" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="16" font-weight="700">Workspace rail</text>
+    <rect x="148" y="144" width="138" height="18" rx="9" fill="#E8DED0"/>
+    <rect x="148" y="178" width="138" height="56" rx="16" fill="#FFFDF8" stroke="#D6C8B7"/>
+    <rect x="148" y="244" width="138" height="56" rx="16" fill="#FFFDF8" stroke="#D6C8B7"/>
+    <rect x="148" y="310" width="138" height="32" rx="14" fill="#0F766E" fill-opacity="0.12" stroke="#0F766E"/>
+    <text x="217" y="330" text-anchor="middle" fill="#0F766E" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="13" font-weight="700">workspace list</text>
+
+    <rect x="326" y="92" width="292" height="276" rx="24" fill="#FFFDF8" stroke="#D9C9B4"/>
+    <text x="350" y="124" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="16" font-weight="700">Coding main area</text>
+    <rect x="350" y="144" width="244" height="18" rx="9" fill="#E8DED0"/>
+    <rect x="350" y="178" width="244" height="116" rx="18" fill="#F6F0E6" stroke="#D6C8B7"/>
+    <rect x="350" y="306" width="196" height="18" rx="9" fill="#E8DED0"/>
+    <rect x="350" y="334" width="220" height="14" rx="7" fill="#ECE3D8"/>
+  </g>
+
+  <g transform="translate(840 160)" filter="url(#shadow)">
+    <rect width="640" height="390" rx="28" fill="url(#panel)" stroke="#CABDA9"/>
+    <text x="30" y="42" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="22" font-weight="700">
+      B. coding collapsed
+    </text>
+    <text x="30" y="68" fill="#7A6F63" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="14">
+      click coding again: hide workspace rail
+    </text>
+
+    <rect x="22" y="92" width="86" height="276" rx="22" fill="#F0E7D9" stroke="#D4C5B2"/>
+    <rect x="34" y="110" width="62" height="34" rx="14" fill="#1E1B17"/>
+    <text x="65" y="132" text-anchor="middle" fill="#FFF8EF" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">coding</text>
+    <rect x="34" y="152" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="174" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">chat</text>
+    <rect x="34" y="194" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="216" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">roles</text>
+    <rect x="34" y="236" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="258" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="10.5" font-weight="700">setting</text>
+    <rect x="34" y="278" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="300" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">admin</text>
+
+    <rect x="126" y="92" width="492" height="276" rx="24" fill="#FFFDF8" stroke="#D9C9B4"/>
+    <text x="150" y="124" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="16" font-weight="700">Coding main area</text>
+    <rect x="150" y="144" width="440" height="18" rx="9" fill="#E8DED0"/>
+    <rect x="150" y="178" width="440" height="54" rx="16" fill="#F6F0E6" stroke="#D6C8B7"/>
+    <rect x="150" y="246" width="440" height="72" rx="16" fill="#F9F4EC" stroke="#D6C8B7"/>
+    <rect x="150" y="332" width="278" height="16" rx="8" fill="#ECE3D8"/>
+  </g>
+
+  <g transform="translate(120 610)" filter="url(#shadow)">
+    <rect width="640" height="390" rx="28" fill="url(#panel)" stroke="#CABDA9"/>
+    <text x="30" y="42" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="22" font-weight="700">
+      C. chat expanded
+    </text>
+    <text x="30" y="68" fill="#7A6F63" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="14">
+      switch to chat: show chat sidebar
+    </text>
+
+    <rect x="22" y="92" width="86" height="276" rx="22" fill="#F0E7D9" stroke="#D4C5B2"/>
+    <rect x="34" y="110" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="132" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">coding</text>
+    <rect x="34" y="152" width="62" height="34" rx="14" fill="#1E1B17"/>
+    <text x="65" y="174" text-anchor="middle" fill="#FFF8EF" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">chat</text>
+    <rect x="34" y="194" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="216" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">roles</text>
+    <rect x="34" y="236" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="258" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="10.5" font-weight="700">setting</text>
+    <rect x="34" y="278" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="300" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">admin</text>
+
+    <rect x="126" y="92" width="182" height="276" rx="22" fill="#FCF8F0" stroke="#D9C9B4"/>
+    <text x="148" y="124" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="16" font-weight="700">Chat sidebar</text>
+    <rect x="148" y="144" width="138" height="18" rx="9" fill="#E8DED0"/>
+    <rect x="148" y="178" width="138" height="56" rx="16" fill="#FFFDF8" stroke="#D6C8B7"/>
+    <rect x="148" y="244" width="138" height="56" rx="16" fill="#FFFDF8" stroke="#D6C8B7"/>
+    <rect x="148" y="312" width="138" height="30" rx="14" fill="#B45309" fill-opacity="0.12" stroke="#B45309"/>
+    <text x="217" y="331" text-anchor="middle" fill="#B45309" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="13" font-weight="700">conversation list</text>
+
+    <rect x="326" y="92" width="292" height="276" rx="24" fill="#FFFDF8" stroke="#D9C9B4"/>
+    <text x="350" y="124" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="16" font-weight="700">Chat main area</text>
+    <rect x="350" y="148" width="126" height="14" rx="7" fill="#E8DED0"/>
+    <rect x="350" y="178" width="206" height="48" rx="18" fill="#F6F0E6" stroke="#D6C8B7"/>
+    <rect x="390" y="238" width="204" height="48" rx="18" fill="#0F766E" fill-opacity="0.10" stroke="#0F766E"/>
+    <rect x="350" y="300" width="244" height="20" rx="10" fill="#ECE3D8"/>
+    <rect x="350" y="330" width="220" height="18" rx="9" fill="#F0E7D9" stroke="#D6C8B7"/>
+  </g>
+
+  <g transform="translate(840 610)" filter="url(#shadow)">
+    <rect width="640" height="390" rx="28" fill="url(#panel)" stroke="#CABDA9"/>
+    <text x="30" y="42" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="22" font-weight="700">
+      D. chat collapsed + popup action
+    </text>
+    <text x="30" y="68" fill="#7A6F63" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="14">
+      click chat again: hide chat sidebar; roles / setting / admin open modal
+    </text>
+
+    <rect x="22" y="92" width="86" height="276" rx="22" fill="#F0E7D9" stroke="#D4C5B2"/>
+    <rect x="34" y="110" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="132" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">coding</text>
+    <rect x="34" y="152" width="62" height="34" rx="14" fill="#1E1B17"/>
+    <text x="65" y="174" text-anchor="middle" fill="#FFF8EF" font-family="'IBM Plex Mono', monospace" font-size="12" font-weight="700">chat</text>
+    <rect x="34" y="194" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="216" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">roles</text>
+    <rect x="34" y="236" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="258" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="10.5" font-weight="700">setting</text>
+    <rect x="34" y="278" width="62" height="34" rx="14" fill="#FFF9EF" stroke="#CFC3B2"/>
+    <text x="65" y="300" text-anchor="middle" fill="#6E6459" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">admin</text>
+
+    <rect x="126" y="92" width="492" height="276" rx="24" fill="#FFFDF8" stroke="#D9C9B4"/>
+    <text x="150" y="124" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="16" font-weight="700">Chat main area</text>
+    <rect x="150" y="148" width="300" height="14" rx="7" fill="#E8DED0"/>
+    <rect x="150" y="178" width="254" height="48" rx="18" fill="#F6F0E6" stroke="#D6C8B7"/>
+    <rect x="290" y="238" width="300" height="48" rx="18" fill="#0F766E" fill-opacity="0.10" stroke="#0F766E"/>
+    <rect x="150" y="300" width="440" height="20" rx="10" fill="#ECE3D8"/>
+    <rect x="150" y="330" width="374" height="18" rx="9" fill="#F0E7D9" stroke="#D6C8B7"/>
+
+    <rect x="294" y="128" width="238" height="180" rx="22" fill="#FFF8EF" stroke="#1E1B17" stroke-opacity="0.12"/>
+    <rect x="314" y="148" width="78" height="14" rx="7" fill="#1E1B17"/>
+    <rect x="314" y="182" width="198" height="42" rx="16" fill="#F6F0E6" stroke="#D6C8B7"/>
+    <rect x="314" y="236" width="198" height="18" rx="9" fill="#ECE3D8"/>
+    <rect x="314" y="266" width="92" height="24" rx="12" fill="#1E1B17"/>
+    <text x="360" y="282" text-anchor="middle" fill="#FFF8EF" font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="700">modal</text>
+  </g>
+
+  <g transform="translate(1115 72)">
+    <rect width="365" height="58" rx="18" fill="#FFF9EF" stroke="#D4C5B2"/>
+    <text x="20" y="25" fill="#1E1B17" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="14" font-weight="700">
+      Interaction rule
+    </text>
+    <text x="20" y="44" fill="#6A6158" font-family="'IBM Plex Sans', 'Segoe UI', sans-serif" font-size="13">
+      coding/chat are toggleable views; roles/setting/admin open popups.
+    </text>
+  </g>
+</svg>

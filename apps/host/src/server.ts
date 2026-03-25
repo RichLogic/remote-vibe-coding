@@ -13,23 +13,31 @@ import { PDFParse } from 'pdf-parse';
 
 import {
   AUTH_COOKIE_NAME,
-  createUser,
-  deleteUser,
-  findUserByToken,
-  getPublicUsers,
-  loadOrCreateAuthState,
   loginPageHtml,
-  toUserRecord,
-  updateUser,
-  verifyPassword,
 } from './auth.js';
+import { AdminUserService, AdminUserServiceError } from './app/admin-user-service.js';
+import {
+  ChatConversationServiceError,
+  createChatConversationService,
+} from './app/chat-conversation-service.js';
+import { ChatTurnServiceError, createChatTurnService } from './app/chat-turn-service.js';
+import {
+  CodingWorkspaceServiceError,
+  createCodingWorkspaceService,
+} from './app/coding-workspace-service.js';
+import { createCodexNotificationHandler } from './app/codex-notification-handler.js';
+import { createCodexServerRequestHandler } from './app/codex-server-request-handler.js';
+import { createDeveloperSessionService } from './app/developer-session-create-service.js';
+import { initializeHostRuntime } from './app/host-runtime.js';
+import { resolveRequestAuth } from './app/request-auth.js';
+import { createSessionForkService } from './app/session-fork-service.js';
+import { createSessionRestartService } from './app/session-restart-service.js';
+import { createTurnStartService } from './app/turn-start-service.js';
 import { buildBootstrapPayload, buildCodingBootstrapPayload } from './bootstrap.js';
 import {
-  ChatHistoryRepository,
   type ChatMessageRecord,
   type PersistedChatAttachmentRef,
 } from './chat-history.js';
-import { CodingRepository } from './coding/repository.js';
 import type { CodingSessionRecord as SessionRecord } from './coding/types.js';
 import type {
   CodingBootstrapPayload,
@@ -55,11 +63,8 @@ import type {
   UpdateChatConversationPreferencesRequest,
   UpdateChatConversationRequest,
 } from './chat/types.js';
-import { CloudflareTunnelManager } from './cloudflare.js';
-import { CodexAppServerClient, type JsonRpcNotification, type JsonRpcServerRequest } from './codex-app-server.js';
-import { CHAT_ROLE_PRESETS_FILE, CHAT_SYSTEM_PROMPT_FILE, HOST, PORT, WEB_DIST_DIR, WORKSPACE_ROOT } from './config.js';
-import { getMongoDb } from './mongo.js';
-import { SessionStore } from './store.js';
+import type { JsonRpcNotification, JsonRpcServerRequest } from './codex-app-server.js';
+import { CHAT_ROLE_PRESETS_FILE, CHAT_SYSTEM_PROMPT_FILE, DEV_DISABLE_AUTH, HOST, PORT, WEB_DIST_DIR, WORKSPACE_ROOT } from './config.js';
 import type {
   ApprovalMode,
   ChatRecoveryState,
@@ -74,7 +79,6 @@ import type {
   CreateTurnRequest,
   CreateUserRequest,
   ModelOption,
-  PendingApproval,
   ReasoningEffort,
   ResolveApprovalRequest,
   SessionAttachmentKind,
@@ -101,19 +105,6 @@ type AuthenticatedRequest = FastifyRequest & {
 };
 
 type TurnRecord = ConversationRecord | SessionRecord;
-
-const FALLBACK_MODELS: ModelOption[] = [
-  {
-    id: 'gpt-5-codex',
-    displayName: 'GPT-5 Codex',
-    model: 'gpt-5-codex',
-    description: 'Fallback default when the model catalog is unavailable.',
-    isDefault: true,
-    hidden: false,
-    defaultReasoningEffort: 'xhigh',
-    supportedReasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
-  },
-];
 
 const CHAT_PERMISSION_BLOCK_RULES: Array<{
   pattern: RegExp;
@@ -171,7 +162,6 @@ const CHAT_TRANSITION_ONLY_REPLY_PATTERNS = [
 const CHAT_EMPTY_REPLY_MESSAGE = 'Chat turn ended before returning a real answer.';
 const CHAT_INTERRUPTED_MESSAGE = 'This turn was interrupted before it finished. Send the next prompt to retry.';
 const execFileAsync = promisify(execFile);
-const CLOUDFLARE_STATUS_CACHE_TTL_MS = 5000;
 
 interface ChatRolePresetConfigEntry {
   id: string;
@@ -239,12 +229,15 @@ function collectApprovalStrings(value: unknown, result: string[] = []): string[]
   return result;
 }
 
-function requestedPermissionsFromParams(params: unknown) {
+function requestedPermissionsFromParams(params: unknown): Record<string, unknown> {
   if (!params || typeof params !== 'object') {
     return {};
   }
 
-  return (params as { permissions?: unknown }).permissions ?? {};
+  const permissions = (params as { permissions?: unknown }).permissions;
+  return permissions && typeof permissions === 'object'
+    ? permissions as Record<string, unknown>
+    : {};
 }
 
 function blockedChatPermissionReason(params: unknown) {
@@ -320,6 +313,51 @@ function latestMeaningfulChatReplyFromTurn(thread: CodexThread, turnId: string) 
   return replies.at(-1) ?? null;
 }
 
+function notificationErrorText(value: unknown, depth = 0): string | null {
+  if (depth > 4 || value == null) {
+    return null;
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized || null;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const nested = notificationErrorText(entry, depth + 1);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ['message', 'error', 'details', 'detail', 'reason', 'cause', 'summary']) {
+    const nested = notificationErrorText(record[key], depth + 1);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  for (const [key, entry] of Object.entries(record)) {
+    if (key === 'threadId' || key === 'turnId' || key === 'id' || key === 'type') {
+      continue;
+    }
+    const nested = notificationErrorText(entry, depth + 1);
+    if (nested) {
+      return nested;
+    }
+  }
+
+  return null;
+}
+
 function summarizeNotification(method: string, params: Record<string, unknown>): string {
   switch (method) {
     case 'thread/status/changed':
@@ -336,6 +374,8 @@ function summarizeNotification(method: string, params: Record<string, unknown>):
       const item = params.item as { type?: string } | undefined;
       return `Started ${item?.type ?? 'item'}`;
     }
+    case 'error':
+      return notificationErrorText(params) ?? 'Codex reported an error.';
     case 'item/agentMessage/delta':
       return 'Streaming assistant text';
     case 'turn/diff/updated':
@@ -352,6 +392,10 @@ function shouldExposeChatLiveEvent(event: SessionEvent) {
     return true;
   }
 
+  if (event.method === 'error') {
+    return true;
+  }
+
   if (event.method === 'item/started' || event.method === 'item/completed') {
     return /\b(?:reasoning|webSearch|agentMessage)\b/i.test(event.summary);
   }
@@ -361,7 +405,7 @@ function shouldExposeChatLiveEvent(event: SessionEvent) {
   }
 
   if (event.method === 'thread/status/changed') {
-    return /\b(?:active|idle)\b/i.test(event.summary);
+    return /\b(?:active|idle|systemError)\b/i.test(event.summary);
   }
 
   return event.method.startsWith('session/chat-');
@@ -407,17 +451,6 @@ async function ensureWorkspaceExists(cwd: string) {
   if (!info.isDirectory()) {
     throw new Error(`Workspace is not a directory: ${cwd}`);
   }
-}
-
-function requestPath(url: string) {
-  return url.split('?')[0] ?? url;
-}
-
-function clearTokenFromUrl(url: string) {
-  const parsed = new URL(url, 'http://127.0.0.1');
-  parsed.searchParams.delete('token');
-  const query = parsed.searchParams.toString();
-  return `${parsed.pathname}${query ? `?${query}` : ''}`;
 }
 
 function cookieIsSecure(request: FastifyRequest) {
@@ -936,11 +969,54 @@ async function ensureUserWorkspaceRoot(
 async function syncUserWorkspaceRecords(
   username: string,
   userId: string,
+  dependencies?: {
+    store: {
+      listWorkspacesForUser: (ownerUserId: string) => Array<WorkspaceSummary & {
+        createdAt: string;
+        updatedAt: string;
+      }>;
+    };
+    coding: {
+      listWorkspacesForUser: (ownerUserId: string) => Promise<Array<{
+        id: string;
+        ownerUsername: string;
+        name: string;
+        path: string;
+        visible: boolean;
+        sortOrder: number;
+        createdAt: string;
+        updatedAt: string;
+      }>>;
+      updateWorkspace: (
+        workspaceId: string,
+        patch: {
+          ownerUsername: string;
+          name: string;
+          visible: boolean;
+          sortOrder: number;
+          updatedAt: string;
+        },
+      ) => Promise<unknown>;
+      createWorkspace: (workspace: {
+        id: string;
+        ownerUserId: string;
+        ownerUsername: string;
+        name: string;
+        path: string;
+        visible: boolean;
+        sortOrder: number;
+        createdAt: string;
+        updatedAt: string;
+      }) => Promise<unknown>;
+    };
+  },
 ) {
+  const workspaceStore = dependencies?.store ?? store;
+  const workspaceCoding = dependencies?.coding ?? coding;
   const root = await ensureUserWorkspaceRoot(username, userId);
   const [existingWorkspaces, legacyWorkspaces, entries] = await Promise.all([
-    coding.listWorkspacesForUser(userId),
-    Promise.resolve(store.listWorkspacesForUser(userId)),
+    workspaceCoding.listWorkspacesForUser(userId),
+    Promise.resolve(workspaceStore.listWorkspacesForUser(userId)),
     readdir(root, { withFileTypes: true }),
   ]);
 
@@ -986,7 +1062,7 @@ async function syncUserWorkspaceRecords(
         return;
       }
 
-      await coding.updateWorkspace(directory.existing.id, {
+      await workspaceCoding.updateWorkspace(directory.existing.id, {
         ownerUsername: username,
         name: directory.name,
         visible: directory.visible,
@@ -996,7 +1072,7 @@ async function syncUserWorkspaceRecords(
       return;
     }
 
-    await coding.createWorkspace({
+    await workspaceCoding.createWorkspace({
       id: directory.id,
       ownerUserId: userId,
       ownerUsername: username,
@@ -1997,131 +2073,80 @@ await app.register(fastifyMultipart, {
   },
 });
 
-let authState = await loadOrCreateAuthState();
-const seedUsers = getPublicUsers(authState);
-const fallbackOwner = seedUsers.find((entry) => entry.isAdmin) ?? seedUsers[0]!;
-
-const store = new SessionStore();
-await store.load({
-  fallbackOwnerUserId: fallbackOwner.id,
-  fallbackOwnerUsername: fallbackOwner.username,
+const runtime = await initializeHostRuntime({
+  staleSessionMessage: STALE_SESSION_MESSAGE,
+  syncUserWorkspaceRecords,
+  loadChatSystemPromptText,
+  loadChatRolePresetConfig,
 });
-const mongoDb = await getMongoDb();
-const chatHistory = new ChatHistoryRepository(mongoDb);
-const coding = new CodingRepository(mongoDb);
-await chatHistory.ensureIndexes();
-await coding.ensureIndexes();
-await Promise.all(seedUsers.map((user) => syncUserWorkspaceRecords(user.username, user.id)));
-await loadChatSystemPromptText();
-await loadChatRolePresetConfig();
-
-const codex = new CodexAppServerClient();
-await codex.ensureStarted();
-await store.markAllStale(STALE_SESSION_MESSAGE);
-await chatHistory.markAllStale(STALE_SESSION_MESSAGE);
-await coding.markAllStale(STALE_SESSION_MESSAGE);
-const cloudflare = new CloudflareTunnelManager();
-let cachedCloudflareStatus: Awaited<ReturnType<CloudflareTunnelManager['getStatus']>> | null = null;
-let cachedCloudflareStatusExpiresAt = 0;
-let cloudflareStatusRequest: Promise<Awaited<ReturnType<CloudflareTunnelManager['getStatus']>>> | null = null;
-
-function primeCloudflareStatusCache(status: Awaited<ReturnType<CloudflareTunnelManager['getStatus']>>) {
-  cachedCloudflareStatus = status;
-  cachedCloudflareStatusExpiresAt = Date.now() + CLOUDFLARE_STATUS_CACHE_TTL_MS;
-}
-
-function clearCloudflareStatusCache() {
-  cachedCloudflareStatus = null;
-  cachedCloudflareStatusExpiresAt = 0;
-  cloudflareStatusRequest = null;
-}
-
-function cloudflareStatusIsFresh() {
-  return cachedCloudflareStatus !== null && Date.now() < cachedCloudflareStatusExpiresAt;
-}
-
-async function refreshCloudflareStatusCache() {
-  if (cloudflareStatusRequest) {
-    return cloudflareStatusRequest;
-  }
-
-  cloudflareStatusRequest = cloudflare.getStatus()
-    .then((status) => {
-      primeCloudflareStatusCache(status);
-      return status;
-    })
-    .finally(() => {
-      cloudflareStatusRequest = null;
-    });
-
-  return cloudflareStatusRequest;
-}
-
-async function getCachedCloudflareStatus(options?: { preferFresh?: boolean }) {
-  if (cloudflareStatusIsFresh()) {
-    return cachedCloudflareStatus!;
-  }
-
-  if (!cachedCloudflareStatus) {
-    return refreshCloudflareStatusCache();
-  }
-
-  const refreshRequest = refreshCloudflareStatusCache();
-
-  if (options?.preferFresh) {
-    return refreshRequest;
-  }
-
-  void refreshRequest.catch(() => undefined);
-  return cachedCloudflareStatus!;
-}
-
-void refreshCloudflareStatusCache().catch(() => undefined);
-
-let availableModels = [...FALLBACK_MODELS];
-
-async function refreshAvailableModels() {
-  try {
-    const next = await codex.listModels();
-    if (next.length > 0) {
-      availableModels = next.filter((entry) => !entry.hidden);
-    }
-  } catch (error) {
-    app.log.warn(`model/list failed, using fallback catalog: ${errorMessage(error)}`);
-  }
-}
-
-await refreshAvailableModels();
+const { auth, store, chatHistory, coding, codex, cloudflare, cloudflareStatusCache, modelCatalog } = runtime;
+const adminUserService = new AdminUserService(auth, store, chatHistory, coding);
+const handleNotification = createCodexNotificationHandler({
+  store,
+  findRecordByThreadId,
+  updateRecord,
+  getCurrentRecord,
+  readSessionThread,
+  maybeAutoTitleChatSession,
+  maybeAutoTitleCodingSession,
+  syncConversationHistoryFromThread,
+  latestMeaningfulChatReplyFromTurn,
+  isTransitionOnlyChatReply,
+  summarizeNotification,
+  emptyReplyMessage: CHAT_EMPTY_REPLY_MESSAGE,
+});
+const handleServerRequest = createCodexServerRequestHandler({
+  codex,
+  store,
+  coding,
+  findRecordByThreadId,
+  updateRecord,
+  approvalTitle,
+  approvalRisk,
+  blockedChatPermissionReason,
+  requestedPermissionsFromParams,
+});
 
 function currentDefaultModel() {
-  return availableModels.find((entry) => entry.isDefault)?.model ?? availableModels[0]?.model ?? FALLBACK_MODELS[0]!.model;
+  return modelCatalog.currentDefaultModel();
 }
 
 function resolveModelOption(model: string | null | undefined) {
-  return availableModels.find((entry) => entry.model === model)
-    ?? availableModels.find((entry) => entry.isDefault)
-    ?? availableModels[0]
-    ?? FALLBACK_MODELS[0]!;
+  return modelCatalog.resolveOption(model);
 }
 
 function preferredReasoningEffortForModel(modelOption: ModelOption) {
-  const preferredEfforts: ReasoningEffort[] = ['xhigh', 'high', 'medium', 'low', 'minimal', 'none'];
-  for (const effort of preferredEfforts) {
-    if (modelOption.supportedReasoningEfforts.includes(effort)) {
-      return effort;
-    }
-  }
-
-  if (modelOption.supportedReasoningEfforts.includes(modelOption.defaultReasoningEffort)) {
-    return modelOption.defaultReasoningEffort;
-  }
-
-  return modelOption.supportedReasoningEfforts[0] ?? 'xhigh';
+  return modelCatalog.preferredReasoningEffortForModel(modelOption);
 }
 
 function currentDefaultEffort(model: string | null | undefined) {
-  return preferredReasoningEffortForModel(resolveModelOption(model));
+  return modelCatalog.currentDefaultEffort(model);
 }
+
+const {
+  createConversation: createChatConversation,
+  renameConversation,
+  updateConversationPreferences,
+  archiveConversation,
+  restoreConversation,
+} = createChatConversationService({
+  codex,
+  ensureChatWorkspace: (ownerUsername, ownerUserId) => (
+    ensureUserWorkspace(ownerUsername, ownerUserId, defaultChatWorkspaceName())
+  ),
+  persistConversation: (conversation) => store.upsertConversation(conversation),
+  ensureConversationHistory: (conversation) => chatHistory.ensureConversation(conversation),
+  updateConversation: (conversation, patch) => updateRecord(conversation, patch) as Promise<ConversationRecord | null>,
+  currentDefaultModel,
+  currentDefaultEffort,
+  defaultChatTitle,
+  trimOptional,
+  normalizeReasoningEffort,
+  findModelOption: (model) => modelCatalog.findByModel(model),
+  preferredReasoningEffortForModel,
+  loadChatRolePresetConfig,
+  normalizeChatRolePresetId,
+});
 
 function toCodingWorkspaceSummary(workspace: WorkspaceSummary): CodingWorkspaceSummary {
   return {
@@ -2145,92 +2170,36 @@ async function buildCodingBootstrapResponse(currentUser: UserRecord): Promise<Co
     approvals,
     workspaceState.root,
     workspaceState.workspaces,
-    availableModels,
+    modelCatalog.list(),
   );
 }
 
-async function createCodingWorkspaceForUser(
-  currentUser: UserRecord,
-  input: CreateCodingWorkspaceRequest,
-) {
-  const source = input.source === 'git' ? 'git' : 'empty';
-
-  if (source === 'git') {
-    const gitUrl = trimOptional(input.gitUrl);
-    if (!gitUrl) {
-      throw new Error('Git repository URL is required.');
-    }
-    return cloneWorkspaceFromGit(currentUser.username, currentUser.id, gitUrl);
-  }
-
-  const workspaceName = normalizeWorkspaceFolderName(input.name);
-  if (!workspaceName) {
-    throw new Error('Workspace name is required.');
-  }
-  return ensureUserWorkspace(currentUser.username, currentUser.id, workspaceName);
-}
-
-async function createDeveloperSession(
-  currentUser: UserRecord,
-  workspace: WorkspaceSummary,
-  input: {
-    title?: string;
-    model?: string | null;
-    reasoningEffort?: ReasoningEffort | null;
-    securityProfile?: SecurityProfile;
-    approvalMode?: ApprovalMode;
-  },
-) {
-  const requestedTitle = trimOptional(input.title);
-  const defaultTitle = requestedTitle
-    ? null
-    : defaultCodingSessionTitle((await coding.countSessionsForWorkspace(currentUser.id, workspace.id)) + 1);
-  const model = trimOptional(input.model) ?? currentDefaultModel();
-  const reasoningEffort = normalizeReasoningEffort(input.reasoningEffort) ?? currentDefaultEffort(model);
-  let securityProfile = normalizeSecurityProfile(input.securityProfile);
-  if (securityProfile === 'read-only') {
-    securityProfile = 'repo-write';
-  }
-  if (securityProfile === 'full-host' && !currentUser.canUseFullHost) {
-    throw new Error('You do not have permission to create full-host sessions.');
-  }
-
-  const approvalMode = normalizeApprovalMode(input.approvalMode);
-  const threadResponse = await codex.startThread({
-    cwd: workspace.path,
-    securityProfile,
-    model,
-  });
-
-  const now = new Date().toISOString();
-  const session: SessionRecord = {
-    id: randomUUID(),
-    ownerUserId: currentUser.id,
-    ownerUsername: currentUser.username,
-    sessionType: 'code',
-    workspaceId: workspace.id,
-    threadId: threadResponse.thread.id,
-    activeTurnId: null,
-    title: requestedTitle || defaultTitle || defaultCodingSessionTitle(),
-    autoTitle: !requestedTitle,
-    workspace: workspace.path,
-    archivedAt: null,
-    securityProfile,
-    approvalMode,
-    networkEnabled: false,
-    fullHostEnabled: securityProfile === 'full-host',
-    status: 'idle',
-    lastIssue: null,
-    hasTranscript: false,
-    model,
-    reasoningEffort,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await coding.upsertSession(session);
-  return session;
-}
+const createDeveloperSession = createDeveloperSessionService({
+  codex,
+  countSessionsForWorkspace: (userId, workspaceId) => coding.countSessionsForWorkspace(userId, workspaceId),
+  persistSession: (session) => coding.upsertSession(session),
+  currentDefaultModel,
+  currentDefaultEffort,
+  defaultCodingSessionTitle,
+  trimOptional,
+  normalizeReasoningEffort,
+  normalizeSecurityProfile,
+  normalizeApprovalMode,
+});
+const {
+  createWorkspace: createCodingWorkspace,
+  updateWorkspace: updateCodingWorkspace,
+  reorderWorkspaceList,
+} = createCodingWorkspaceService({
+  cloneWorkspaceFromGit,
+  ensureUserWorkspace,
+  listUserWorkspaces,
+  updateWorkspace: (workspaceId, patch) => coding.updateWorkspace(workspaceId, patch),
+  reorderWorkspaces: (userId, workspaceIds) => coding.reorderWorkspaces(userId, workspaceIds),
+  normalizeWorkspaceFolderName,
+  trimOptional,
+  errorMessage,
+});
 
 async function buildCodingSessionDetailResponse(session: SessionRecord) {
   const threadState = await readSessionThread(session);
@@ -2389,7 +2358,7 @@ function buildChatBootstrapPayload(
     currentUser,
     availableModes: availableModesForUser(currentUser),
     defaultMode: defaultModeForUser(currentUser),
-    availableModels,
+    availableModels: modelCatalog.list(),
     rolePresets,
     conversations: conversations.map(toApiChatConversationSummary),
     defaults: {
@@ -2704,317 +2673,102 @@ async function repairPendingChatAutoTitles(conversations: ConversationRecord[]) 
   }
 }
 
-async function restartSessionThread(session: TurnRecord, summary = 'Started a fresh Codex thread for this session.') {
-  const workspace = isConversation(session)
-    ? (await ensureUserWorkspace(session.ownerUsername, session.ownerUserId, defaultChatWorkspaceName())).path
-    : session.workspace;
-  const threadResponse = await codex.startThread({
-    cwd: workspace,
-    securityProfile: session.securityProfile,
-    model: session.model,
-  });
+async function resolveConversationTurnPreface(
+  conversation: ConversationRecord,
+  recoveryPrefaceText: string | null,
+) {
+  const systemPromptText = await loadChatSystemPromptText();
+  const rolePresetConfig = await loadChatRolePresetConfig();
+  const rolePromptText = chatRolePresetPromptText(conversation.rolePresetId, rolePresetConfig ?? undefined);
+  return buildChatTurnPreface(recoveryPrefaceText, systemPromptText, rolePromptText);
+}
 
-  store.clearApprovals(session.id);
-  store.clearLiveEvents(session.id);
-  store.addLiveEvent(session.id, {
-    id: randomUUID(),
-    method: 'session/restarted',
-    summary,
-    createdAt: new Date().toISOString(),
-  });
+async function persistConversationUserTurn(
+  conversation: ConversationRecord,
+  prompt: string | null,
+  attachments: SessionAttachmentRecord[],
+  turnId: string,
+  recovery: {
+    recoveryNeeded: boolean;
+    threadGeneration: number;
+  },
+) {
+  await chatHistory.appendMessages(conversation, [
+    {
+      role: 'user',
+      body: prompt ?? '',
+      attachments: attachmentRefsFromRecords(attachments),
+      sourceThreadId: conversation.threadId,
+      sourceTurnId: turnId,
+      dedupeKey: `user:${turnId}`,
+    },
+  ]);
 
-  if (isConversation(session)) {
-    // Rotate the persisted chat thread before updating the conversation record so
-    // recovery generation advances and the next turn receives prior context.
-    await chatHistory.rotateConversationThread(session, threadResponse.thread.id);
+  if (recovery.recoveryNeeded) {
+    await chatHistory.markRecoveryApplied(conversation.id, recovery.threadGeneration);
   }
-
-  const nextSession = isConversation(session)
-    ? ((await updateRecord(session, {
-        threadId: threadResponse.thread.id,
-        activeTurnId: null,
-        workspace,
-        status: 'idle',
-        networkEnabled: false,
-        recoveryState: 'ready',
-        retryable: false,
-        lastIssue: null,
-      })) ?? session)
-    : ((await updateRecord(session, {
-        threadId: threadResponse.thread.id,
-        activeTurnId: null,
-        workspace,
-        status: 'idle',
-        networkEnabled: false,
-        lastIssue: null,
-      })) ?? session);
-
-  return nextSession;
 }
 
-async function createForkedSession(currentUser: UserRecord, sourceSession: SessionRecord) {
-  const nextModel = sourceSession.model ?? currentDefaultModel();
-  const nextReasoningEffort = sourceSession.reasoningEffort ?? currentDefaultEffort(nextModel);
-  const nextTitle = nextForkedSessionTitle(sourceSession.title);
-  const threadResponse = await codex.startThread({
-    cwd: sourceSession.workspace,
-    securityProfile: sourceSession.securityProfile,
-    model: nextModel,
-  });
-
-  const now = new Date().toISOString();
-  const nextSession: SessionRecord = {
-    id: randomUUID(),
-    ownerUserId: currentUser.id,
-    ownerUsername: currentUser.username,
-    sessionType: 'code',
-    workspaceId: sourceSession.workspaceId,
-    threadId: threadResponse.thread.id,
-    activeTurnId: null,
-    title: nextTitle,
-    autoTitle: false,
-    workspace: sourceSession.workspace,
-    archivedAt: null,
-    securityProfile: sourceSession.securityProfile,
-    approvalMode: sourceSession.approvalMode,
-    networkEnabled: false,
-    fullHostEnabled: sourceSession.securityProfile === 'full-host',
-    status: 'idle',
-    lastIssue: null,
-    hasTranscript: false,
-    model: nextModel,
-    reasoningEffort: nextReasoningEffort,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await coding.upsertSession(nextSession);
-  return nextSession;
-}
-
-async function createForkedConversation(currentUser: UserRecord, sourceConversation: ConversationRecord) {
-  const nextModel = sourceConversation.model ?? currentDefaultModel();
-  const nextReasoningEffort = sourceConversation.reasoningEffort ?? currentDefaultEffort(nextModel);
-  const nextTitle = nextForkedSessionTitle(sourceConversation.title);
-  const workspaceInfo = await ensureUserWorkspace(
-    currentUser.username,
-    currentUser.id,
+const restartSessionThread = createSessionRestartService({
+  codex,
+  store,
+  ensureChatWorkspace: (ownerUsername, ownerUserId) => ensureUserWorkspace(
+    ownerUsername,
+    ownerUserId,
     defaultChatWorkspaceName(),
-  );
-  const threadResponse = await codex.startThread({
-    cwd: workspaceInfo.path,
-    securityProfile: 'repo-write',
-    model: nextModel,
-  });
+  ),
+  rotateConversationThread: (conversation, nextThreadId) => chatHistory.rotateConversationThread(conversation, nextThreadId),
+  updateRecord,
+});
+const { createForkedSession, createForkedConversation } = createSessionForkService({
+  codex,
+  ensureChatWorkspace: (ownerUsername, ownerUserId) => ensureUserWorkspace(
+    ownerUsername,
+    ownerUserId,
+    defaultChatWorkspaceName(),
+  ),
+  persistForkedSession: (session) => coding.upsertSession(session),
+  persistForkedConversation: async (conversation) => {
+    await store.upsertConversation(conversation);
+    await chatHistory.ensureConversation(conversation);
+  },
+  currentDefaultModel,
+  currentDefaultEffort,
+  nextForkedSessionTitle,
+});
 
-  const now = new Date().toISOString();
-  const nextConversation: ConversationRecord = {
-    id: randomUUID(),
-    ownerUserId: currentUser.id,
-    ownerUsername: currentUser.username,
-    sessionType: 'chat',
-    threadId: threadResponse.thread.id,
-    activeTurnId: null,
-    title: nextTitle,
-    autoTitle: false,
-    workspace: workspaceInfo.path,
-    archivedAt: null,
-    securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
-    networkEnabled: false,
-    fullHostEnabled: false,
-    status: 'idle',
-    recoveryState: 'ready',
-    retryable: false,
-    lastIssue: null,
-    hasTranscript: false,
-    model: nextModel,
-    reasoningEffort: nextReasoningEffort,
-    rolePresetId: sourceConversation.rolePresetId,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await store.upsertConversation(nextConversation);
-  await chatHistory.ensureConversation(nextConversation);
-  return nextConversation;
-}
-
-async function startTurnWithAutoRestart(session: TurnRecord, prompt: string | null, attachments: SessionAttachmentRecord[]) {
-  let currentSession = session;
-
-  if (
-    currentSession.status === 'stale'
-    || (isConversation(currentSession) && chatConversationRecoveryState(currentSession) === 'stale')
-  ) {
-    currentSession = await restartSessionThread(
-      currentSession,
-      'Automatically created a fresh thread before sending the next prompt.',
-    );
-  }
-
-  const runTurn = async (targetSession: TurnRecord) => {
-    const recovery = isConversation(targetSession)
-      ? await prepareConversationRecoveryState(targetSession)
-      : {
-        recoveryNeeded: false,
-        threadGeneration: 0,
-        prefaceText: null as string | null,
-      };
-    const systemPromptText = isConversation(targetSession)
-      ? await loadChatSystemPromptText()
-      : null;
-    const rolePresetConfig = isConversation(targetSession)
-      ? await loadChatRolePresetConfig()
-      : null;
-    const rolePromptText = isConversation(targetSession)
-      ? chatRolePresetPromptText(targetSession.rolePresetId, rolePresetConfig ?? undefined)
-      : null;
-    const prefaceText = isConversation(targetSession)
-      ? buildChatTurnPreface(recovery.prefaceText, systemPromptText, rolePromptText)
-      : recovery.prefaceText;
-    const input = buildTurnInput(prompt, attachments, {
-      prefaceText,
-    });
-    if (isConversation(targetSession)) {
-      await updateRecord(targetSession, {
-        status: 'running',
-        recoveryState: 'ready',
-        retryable: false,
-        lastIssue: null,
-      });
-    } else {
-      await updateRecord(targetSession, {
-        status: 'running',
-        lastIssue: null,
-      });
-    }
-    const turn = await codex.startTurn(targetSession.threadId, input, {
-      model: targetSession.model,
-      effort: targetSession.reasoningEffort,
-    });
-    await store.markAttachmentsConsumed(targetSession.id, attachments.map((attachment) => attachment.id));
-    const nextSession = isConversation(targetSession)
-      ? ((await updateRecord(targetSession, {
-          activeTurnId: turn.turn.id,
-          status: 'running',
-          recoveryState: 'ready',
-          retryable: false,
-          lastIssue: null,
-          hasTranscript: true,
-        })) ?? {
-          ...targetSession,
-          activeTurnId: turn.turn.id,
-          status: 'running',
-          recoveryState: 'ready',
-          retryable: false,
-          lastIssue: null,
-          hasTranscript: true,
-        })
-      : ((await updateRecord(targetSession, {
-          activeTurnId: turn.turn.id,
-          status: 'running',
-          lastIssue: null,
-          hasTranscript: true,
-        })) ?? {
-          ...targetSession,
-          activeTurnId: turn.turn.id,
-          status: 'running',
-          lastIssue: null,
-          hasTranscript: true,
-        });
-    if (isConversation(nextSession)) {
-      await chatHistory.appendMessages(nextSession, [
-        {
-          role: 'user',
-          body: prompt ?? '',
-          attachments: attachmentRefsFromRecords(attachments),
-          sourceThreadId: nextSession.threadId,
-          sourceTurnId: turn.turn.id,
-          dedupeKey: `user:${turn.turn.id}`,
-        },
-      ]);
-      if (recovery.recoveryNeeded) {
-        await chatHistory.markRecoveryApplied(nextSession.id, recovery.threadGeneration);
-      }
-    }
-    return { turn, session: nextSession };
-  };
-
-  try {
-    const result = await runTurn(currentSession);
-    return result;
-  } catch (error) {
-    if (!isThreadUnavailableError(error)) {
-      throw error;
-    }
-
-    const latestSession = (await getCurrentRecord(currentSession.id)) ?? currentSession;
-    currentSession = await restartSessionThread(
-      latestSession,
-      'Automatically created a fresh thread after a runtime reset.',
-    );
-    const result = await runTurn(currentSession);
-    return result;
-  }
-}
-
-async function handleChatApprovalRequest(session: TurnRecord, message: JsonRpcServerRequest) {
-  if (message.method === 'item/fileChange/requestApproval') {
-    await codex.respond(message.id, {
-      decision: 'accept',
-    });
-    return;
-  }
-
-  if (message.method === 'item/permissions/requestApproval') {
-    const blockedReason = blockedChatPermissionReason(message.params);
-    if (!blockedReason) {
-      await codex.respond(message.id, {
-        permissions: requestedPermissionsFromParams(message.params),
-        scope: 'turn',
-      });
-      await updateRecord(session, {
-        networkEnabled: true,
-        lastIssue: null,
-      });
-      store.addLiveEvent(session.id, {
-        id: randomUUID(),
-        method: 'session/chat-permission-granted',
-        summary: 'Automatically granted a safe extra permission request.',
-        createdAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    await codex.respond(message.id, {
-      permissions: {},
-      scope: 'turn',
-    });
-    store.addLiveEvent(session.id, {
-      id: randomUUID(),
-      method: 'session/chat-permission-blocked',
-      summary: blockedReason,
-      createdAt: new Date().toISOString(),
-    });
-    return;
-  } else if (message.method === 'item/commandExecution/requestApproval') {
-    await codex.respond(message.id, {
-      decision: 'decline',
-    });
-  } else {
-    await codex.respond(message.id, {
-      decision: 'cancel',
-    });
-  }
-
-  store.addLiveEvent(session.id, {
-    id: randomUUID(),
-    method: 'session/chat-tool-blocked',
-    summary: 'Blocked a tool or permission request in a chat-only session.',
-    createdAt: new Date().toISOString(),
-  });
-}
+const startTurnWithAutoRestart = createTurnStartService({
+  codex,
+  restartSessionThread,
+  getCurrentRecord,
+  prepareConversationRecoveryState,
+  resolveConversationPreface: resolveConversationTurnPreface,
+  buildTurnInput,
+  updateRecord,
+  markAttachmentsConsumed: (sessionId, attachmentIds) => store.markAttachmentsConsumed(sessionId, attachmentIds),
+  persistConversationUserTurn,
+  isThreadUnavailableError,
+});
+const { createMessage: createChatMessage, stopTurn: stopChatTurn } = createChatTurnService({
+  store,
+  codex: {
+    interruptTurn: async (threadId, turnId) => {
+      await codex.interruptTurn(threadId, turnId);
+    },
+  },
+  startTurnWithAutoRestart: async (conversation, prompt, attachments) => {
+    const result = await startTurnWithAutoRestart(conversation, prompt, attachments);
+    return {
+      turn: result.turn,
+      session: result.session as ConversationRecord,
+    };
+  },
+  updateConversation: (conversation, patch) => updateRecord(conversation, patch) as Promise<ConversationRecord | null>,
+  isThreadUnavailableError,
+  unavailableConversationPatch: unavailableChatConversationPatch,
+  errorMessage,
+  staleSessionMessage: STALE_SESSION_MESSAGE,
+});
 
 codex.on('debug', (message) => {
   app.log.info(message);
@@ -3037,168 +2791,30 @@ codex.on('runtimeStopped', (message: string) => {
   ]);
 });
 
-async function handleNotification(message: JsonRpcNotification) {
-  const threadId = extractThreadId(message.params);
-  if (!threadId) return;
-
-  const session = await findRecordByThreadId(threadId);
-  if (!session) return;
-
-  const event: SessionEvent = {
-    id: randomUUID(),
-    method: message.method,
-    summary: summarizeNotification(message.method, (message.params ?? {}) as Record<string, unknown>),
-    createdAt: new Date().toISOString(),
-  };
-  store.addLiveEvent(session.id, event);
-
-  if (message.method === 'thread/status/changed') {
-    const statusType = String(((message.params as Record<string, unknown>).status as { type?: string } | undefined)?.type ?? '');
-    const nextStatus: SessionStatus = statusType === 'active' ? 'running' : statusType === 'idle' ? 'idle' : session.status;
-    if (isConversation(session)) {
-      const nextPatch: Partial<ConversationRecord> = {
-        status: nextStatus,
-        recoveryState: 'ready',
-        retryable: false,
-        lastIssue: null,
-        ...(statusType === 'idle' ? { activeTurnId: null } : {}),
-      };
-      await updateRecord(session, nextPatch);
-    } else {
-      const nextPatch: Partial<SessionRecord> = {
-        status: nextStatus,
-        lastIssue: null,
-        ...(statusType === 'idle' ? { activeTurnId: null } : {}),
-      };
-      await updateRecord(session, nextPatch);
-    }
-    return;
-  }
-
-  if (message.method === 'turn/completed') {
-    const completedTurnId = session.activeTurnId;
-    const nextStatus: SessionStatus = isDeveloperSession(session) && store.getApprovals(session.id).length > 0 ? 'needs-approval' : 'idle';
-    let nextSession: TurnRecord;
-    if (isConversation(session)) {
-      const nextPatch: Partial<ConversationRecord> = {
-        activeTurnId: null,
-        status: nextStatus,
-        recoveryState: 'ready',
-        retryable: false,
-        lastIssue: null,
-      };
-      nextSession = (await updateRecord(session, nextPatch)) ?? {
-        ...session,
-        ...nextPatch,
-      };
-    } else {
-      const nextPatch: Partial<SessionRecord> = {
-        activeTurnId: null,
-        status: nextStatus,
-        lastIssue: null,
-      };
-      nextSession = (await updateRecord(session, nextPatch)) ?? {
-        ...session,
-        ...nextPatch,
-      };
-    }
-    if (isConversation(nextSession)) {
-      const latestSession = await getCurrentRecord(nextSession.id);
-      if (latestSession && isConversation(latestSession)) {
-        const threadState = await readSessionThread(latestSession);
-        if (isConversation(threadState.session)) {
-          await maybeAutoTitleChatSession(threadState.session, threadState.thread);
-          await syncConversationHistoryFromThread(threadState.session, threadState.thread);
-
-          if (completedTurnId && threadState.thread) {
-            const latestReply = latestMeaningfulChatReplyFromTurn(threadState.thread, completedTurnId);
-            if (!latestReply || isTransitionOnlyChatReply(latestReply)) {
-              await updateRecord(threadState.session, {
-                status: 'error',
-                recoveryState: 'ready',
-                retryable: true,
-                lastIssue: CHAT_EMPTY_REPLY_MESSAGE,
-              });
-              store.addLiveEvent(threadState.session.id, {
-                id: randomUUID(),
-                method: 'session/chat-empty-reply',
-                summary: CHAT_EMPTY_REPLY_MESSAGE,
-                createdAt: new Date().toISOString(),
-              });
-            }
-          }
-        }
-      }
-    }
-    if (isConversation(nextSession)) {
-      await maybeAutoTitleChatSession(nextSession);
-    } else {
-      await maybeAutoTitleCodingSession(nextSession);
-    }
-  }
-}
-
-async function handleServerRequest(message: JsonRpcServerRequest) {
-  const threadId = extractThreadId(message.params);
-  if (!threadId) {
-    await codex.respond(message.id, { decision: 'cancel' });
-    return;
-  }
-
-  const session = await findRecordByThreadId(threadId);
-  if (!session) {
-    await codex.respond(message.id, { decision: 'cancel' });
-    return;
-  }
-
-  if (session.sessionType === 'chat') {
-    await handleChatApprovalRequest(session, message);
-    return;
-  }
-
-  const approval: PendingApproval = {
-    id: String(message.id),
-    sessionId: session.id,
-    rpcRequestId: message.id,
-    method: message.method,
-    title: approvalTitle(message.method),
-    risk: approvalRisk(message.method, (message.params ?? {}) as Record<string, unknown>),
-    scopeOptions: ['once', 'session'],
-    source: 'codex',
-    payload: message.params ?? {},
-    createdAt: new Date().toISOString(),
-  };
-
-  store.addApproval(approval);
-  store.addLiveEvent(session.id, {
-    id: randomUUID(),
-    method: message.method,
-    summary: approval.title,
-    createdAt: approval.createdAt,
-  });
-  await coding.updateSession(session.id, { status: 'needs-approval', lastIssue: null });
-}
-
 app.addHook('onRequest', async (request, reply) => {
-  const path = requestPath(request.url);
   const tokenFromQuery = typeof (request.query as { token?: unknown } | undefined)?.token === 'string'
-    ? (request.query as { token?: string }).token
+    ? ((request.query as { token?: string }).token ?? null)
     : null;
-  const cookieToken = request.cookies[AUTH_COOKIE_NAME];
+  const cookieToken = request.cookies[AUTH_COOKIE_NAME] ?? null;
   const authorization = request.headers.authorization;
   const bearerToken = typeof authorization === 'string' && authorization.startsWith('Bearer ')
     ? authorization.slice('Bearer '.length).trim()
     : null;
 
-  const matchedUser = [tokenFromQuery, cookieToken, bearerToken]
-    .map((candidate) => findUserByToken(authState, candidate))
-    .find((entry) => entry !== null) ?? null;
+  const decision = resolveRequestAuth(auth, {
+    url: request.url,
+    method: request.method,
+    queryToken: tokenFromQuery,
+    cookieToken,
+    bearerToken,
+    devBypassEnabled: DEV_DISABLE_AUTH,
+  });
 
-  if (matchedUser) {
-    (request as AuthenticatedRequest).authUser = toUserRecord(matchedUser);
+  if (decision.kind === 'authenticated') {
+    (request as AuthenticatedRequest).authUser = decision.user;
 
-    if (cookieToken !== matchedUser.token) {
-      reply.setCookie(AUTH_COOKIE_NAME, matchedUser.token, {
+    if (decision.cookieTokenToSet) {
+      reply.setCookie(AUTH_COOKIE_NAME, decision.cookieTokenToSet, {
         path: '/',
         httpOnly: true,
         sameSite: 'lax',
@@ -3206,22 +2822,18 @@ app.addHook('onRequest', async (request, reply) => {
       });
     }
 
-    if (tokenFromQuery && request.method === 'GET' && !path.startsWith('/api/')) {
-      return reply.redirect(clearTokenFromUrl(request.url));
+    if (decision.redirectTo) {
+      return reply.redirect(decision.redirectTo);
     }
 
     return;
   }
 
-  if (
-    path === '/login'
-    || path === '/api/auth/login'
-    || path === '/api/health'
-  ) {
+  if (decision.kind === 'allow-anonymous') {
     return;
   }
 
-  if (path.startsWith('/api/')) {
+  if (decision.kind === 'reject-api') {
     reply.code(401).send({ error: 'Authentication required' });
     return reply;
   }
@@ -3230,6 +2842,9 @@ app.addHook('onRequest', async (request, reply) => {
 });
 
 app.get('/login', async (_request, reply) => {
+  if (DEV_DISABLE_AUTH) {
+    return reply.redirect('/');
+  }
   reply.type('text/html; charset=utf-8');
   reply.header('Cache-Control', 'no-store');
   return loginPageHtml();
@@ -3239,7 +2854,7 @@ app.post('/api/auth/login', async (request, reply) => {
   const body = request.body as { username?: string; password?: string } | undefined;
   const username = body?.username?.trim() ?? '';
   const password = body?.password ?? '';
-  const user = verifyPassword(authState, username, password);
+  const user = auth.verifyCredentials(username, password);
 
   if (!user) {
     reply.code(401);
@@ -3252,7 +2867,7 @@ app.post('/api/auth/login', async (request, reply) => {
     sameSite: 'lax',
     secure: cookieIsSecure(request),
   });
-  return { ok: true, username: user.username };
+  return { ok: true, username: user.user.username };
 });
 
 app.post('/api/auth/logout', async (_request, reply) => {
@@ -3277,7 +2892,7 @@ app.get('/api/bootstrap', async (request) => {
     workspaceStatePromise,
     coding.listSessionsForUser(currentUser.id),
     sessionApprovalsForUser(currentUser.id),
-    getCachedCloudflareStatus(),
+    cloudflareStatusCache.get(),
   ]);
   return buildBootstrapPayload(
     currentUser,
@@ -3287,7 +2902,7 @@ app.get('/api/bootstrap', async (request) => {
     cloudflareStatus,
     workspaceState.root,
     workspaceState.workspaces,
-    availableModels,
+    modelCatalog.list(),
   );
 });
 
@@ -3493,73 +3108,19 @@ app.post('/api/chat/conversations', async (request, reply) => {
   }
 
   const body = (request.body ?? {}) as CreateChatConversationRequest;
-  const conversationId = randomUUID();
-  const requestedTitle = trimOptional(body.title);
-  const model = trimOptional(body.model) ?? currentDefaultModel();
-  const reasoningEffort = normalizeReasoningEffort(body.reasoningEffort) ?? currentDefaultEffort(model);
-  const rolePresetConfig = await loadChatRolePresetConfig();
-  const hasRolePresetId = Object.prototype.hasOwnProperty.call(body, 'rolePresetId');
-  const requestedRolePresetId = hasRolePresetId ? trimOptional(body.rolePresetId) : null;
-  const rolePresetId = hasRolePresetId
-    ? (requestedRolePresetId ? normalizeChatRolePresetId(requestedRolePresetId, rolePresetConfig) : null)
-    : rolePresetConfig.defaultPresetId;
-  if (requestedRolePresetId && !rolePresetId) {
-    reply.code(400);
-    return { error: 'Unknown role preset.' };
-  }
-
-  let workspaceInfo: Awaited<ReturnType<typeof ensureUserWorkspace>>;
   try {
-    workspaceInfo = await ensureUserWorkspace(
-      currentUser.username,
-      currentUser.id,
-      defaultChatWorkspaceName(),
-    );
+    const conversation = await createChatConversation(currentUser, body);
+    reply.code(201);
+    return {
+      conversation: toApiChatConversation(conversation),
+    };
   } catch (error) {
-    reply.code(400);
-    return { error: errorMessage(error) };
+    if (error instanceof ChatConversationServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
-
-  const threadResponse = await codex.startThread({
-    cwd: workspaceInfo.path,
-    securityProfile: 'repo-write',
-    model,
-  });
-
-  const now = new Date().toISOString();
-  const conversation: ConversationRecord = {
-    id: conversationId,
-    ownerUserId: currentUser.id,
-    ownerUsername: currentUser.username,
-    sessionType: 'chat',
-    threadId: threadResponse.thread.id,
-    activeTurnId: null,
-    title: requestedTitle || defaultChatTitle(),
-    autoTitle: !requestedTitle,
-    workspace: workspaceInfo.path,
-    archivedAt: null,
-    securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
-    networkEnabled: false,
-    fullHostEnabled: false,
-    status: 'idle',
-    recoveryState: 'ready',
-    retryable: false,
-    lastIssue: null,
-    hasTranscript: false,
-    model,
-    reasoningEffort,
-    rolePresetId,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await store.upsertConversation(conversation);
-  await chatHistory.ensureConversation(conversation);
-  reply.code(201);
-  return {
-    conversation: toApiChatConversation(conversation),
-  };
 });
 
 app.patch('/api/chat/conversations/:conversationId', async (request, reply) => {
@@ -3571,20 +3132,18 @@ app.patch('/api/chat/conversations/:conversationId', async (request, reply) => {
     return { error: 'Conversation not found' };
   }
 
-  const title = trimOptional(body.title);
-  if (!title) {
-    reply.code(400);
-    return { error: 'Conversation title is required.' };
+  try {
+    const nextConversation = await renameConversation(conversation, body);
+    return {
+      conversation: toApiChatConversation(nextConversation),
+    };
+  } catch (error) {
+    if (error instanceof ChatConversationServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
-
-  const nextConversation = (await updateRecord(conversation, {
-    title,
-    autoTitle: false,
-  }) as ConversationRecord | null) ?? conversation;
-
-  return {
-    conversation: toApiChatConversation(nextConversation),
-  };
 });
 
 app.patch('/api/chat/conversations/:conversationId/preferences', async (request, reply) => {
@@ -3596,37 +3155,18 @@ app.patch('/api/chat/conversations/:conversationId/preferences', async (request,
     return { error: 'Conversation not found' };
   }
 
-  const requestedModel = trimOptional(body.model) ?? conversation.model ?? currentDefaultModel();
-  const modelOption = availableModels.find((entry) => entry.model === requestedModel);
-  if (!modelOption) {
-    reply.code(400);
-    return { error: 'Unknown model.' };
+  try {
+    const nextConversation = await updateConversationPreferences(conversation, body);
+    return {
+      conversation: toApiChatConversation(nextConversation),
+    };
+  } catch (error) {
+    if (error instanceof ChatConversationServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
-
-  const requestedEffort = normalizeReasoningEffort(body.reasoningEffort);
-  const reasoningEffort = requestedEffort && modelOption.supportedReasoningEfforts.includes(requestedEffort)
-    ? requestedEffort
-    : preferredReasoningEffortForModel(modelOption);
-  const rolePresetConfig = await loadChatRolePresetConfig();
-  const hasRolePresetId = Object.prototype.hasOwnProperty.call(body, 'rolePresetId');
-  const requestedRolePresetId = hasRolePresetId ? trimOptional(body.rolePresetId) : null;
-  const rolePresetId = !hasRolePresetId
-    ? conversation.rolePresetId
-    : (requestedRolePresetId ? normalizeChatRolePresetId(requestedRolePresetId, rolePresetConfig) : null);
-  if (requestedRolePresetId && !rolePresetId) {
-    reply.code(400);
-    return { error: 'Unknown role preset.' };
-  }
-
-  const nextConversation = (await updateRecord(conversation, {
-    model: modelOption.model,
-    reasoningEffort,
-    rolePresetId,
-  }) as ConversationRecord | null) ?? conversation;
-
-  return {
-    conversation: toApiChatConversation(nextConversation),
-  };
 });
 
 app.post('/api/chat/conversations/:conversationId/archive', async (request, reply) => {
@@ -3637,20 +3177,7 @@ app.post('/api/chat/conversations/:conversationId/archive', async (request, repl
     return { error: 'Conversation not found' };
   }
 
-  if (conversation.archivedAt) {
-    return {
-      conversation: toApiChatConversation(conversation),
-    };
-  }
-
-  const nextConversation = (await updateRecord(conversation, {
-    archivedAt: new Date().toISOString(),
-    activeTurnId: null,
-    status: 'idle',
-    networkEnabled: false,
-    lastIssue: null,
-  }) as ConversationRecord | null) ?? conversation;
-
+  const nextConversation = await archiveConversation(conversation);
   return {
     conversation: toApiChatConversation(nextConversation),
   };
@@ -3664,18 +3191,7 @@ app.post('/api/chat/conversations/:conversationId/restore', async (request, repl
     return { error: 'Conversation not found' };
   }
 
-  if (!conversation.archivedAt) {
-    return {
-      conversation: toApiChatConversation(conversation),
-    };
-  }
-
-  const nextConversation = (await updateRecord(conversation, {
-    archivedAt: null,
-    status: 'idle',
-    lastIssue: null,
-  }) as ConversationRecord | null) ?? conversation;
-
+  const nextConversation = await restoreConversation(conversation);
   return {
     conversation: toApiChatConversation(nextConversation),
   };
@@ -3725,43 +3241,18 @@ app.post('/api/chat/conversations/:conversationId/messages', async (request, rep
     return { error: 'Conversation not found' };
   }
 
-  const prompt = body.prompt?.trim() ?? '';
-  const attachmentIds = Array.isArray(body.attachmentIds)
-    ? [...new Set(body.attachmentIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
-    : [];
-  const attachments = attachmentIds.map((attachmentId) => store.getAttachment(conversationId, attachmentId));
-
-  if (!prompt && attachmentIds.length === 0) {
-    reply.code(400);
-    return { error: 'Prompt or attachment is required.' };
-  }
-
-  if (attachments.some((attachment) => !attachment || attachment.consumedAt)) {
-    reply.code(400);
-    return { error: 'One or more attachments are missing or already used.' };
-  }
-
   try {
-    const result = await startTurnWithAutoRestart(
-      conversation,
-      prompt || null,
-      attachments.filter((attachment): attachment is SessionAttachmentRecord => Boolean(attachment)),
-    );
+    const result = await createChatMessage(conversation, body);
     return {
       turn: result.turn,
-      conversation: toApiChatConversation(result.session as ConversationRecord),
+      conversation: toApiChatConversation(result.conversation),
     };
   } catch (error) {
-    const message = errorMessage(error);
-    await updateRecord(conversation, {
-      activeTurnId: null,
-      status: 'error',
-      recoveryState: 'ready',
-      retryable: true,
-      lastIssue: message,
-    });
-    reply.code(500);
-    return { error: message };
+    if (error instanceof ChatTurnServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
 });
 
@@ -3773,46 +3264,19 @@ app.post('/api/chat/conversations/:conversationId/stop', async (request, reply) 
     return { error: 'Conversation not found' };
   }
 
-  if (!conversation.activeTurnId) {
-    reply.code(409);
-    return { error: 'This conversation does not have an active turn to stop.' };
-  }
-
   try {
-    await codex.interruptTurn(conversation.threadId, conversation.activeTurnId);
-    store.addLiveEvent(conversation.id, {
-      id: randomUUID(),
-      method: 'turn/interrupted',
-      summary: 'Stopped the active turn.',
-      createdAt: new Date().toISOString(),
-    });
-    const nextConversation = (await updateRecord(conversation, {
-      activeTurnId: null,
-      status: 'idle',
-      recoveryState: 'ready',
-      retryable: false,
-      lastIssue: 'Stopped by user.',
-    }) as ConversationRecord | null) ?? conversation;
+    const nextConversation = await stopChatTurn(conversation);
     return {
       conversation: toApiChatConversation(nextConversation),
     };
   } catch (error) {
-    if (isThreadUnavailableError(error)) {
-      const nextConversation = (await updateRecord(conversation, unavailableChatConversationPatch(conversation)) as ConversationRecord | null) ?? conversation;
-      reply.code(409);
-      return { error: STALE_SESSION_MESSAGE, conversation: toApiChatConversation(nextConversation) };
+    if (error instanceof ChatTurnServiceError) {
+      reply.code(error.statusCode);
+      return error.conversation
+        ? { error: error.message, conversation: toApiChatConversation(error.conversation) }
+        : { error: error.message };
     }
-
-    const message = errorMessage(error);
-    await updateRecord(conversation, {
-      activeTurnId: null,
-      status: 'error',
-      recoveryState: 'ready',
-      retryable: true,
-      lastIssue: message,
-    });
-    reply.code(500);
-    return { error: message };
+    throw error;
   }
 });
 
@@ -3849,18 +3313,19 @@ app.post('/api/coding/workspaces', async (request, reply) => {
 
   const body = (request.body ?? {}) as CreateCodingWorkspaceRequest;
   try {
-    const workspace = await createCodingWorkspaceForUser(currentUser, body);
-    const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
+    const result = await createCodingWorkspace(currentUser, body);
     reply.code(201);
     return {
-      workspace: toCodingWorkspaceSummary(workspace),
-      workspaceRoot: workspaceState.root,
-      workspaces: workspaceState.workspaces.map(toCodingWorkspaceSummary),
+      workspace: toCodingWorkspaceSummary(result.workspace),
+      workspaceRoot: result.workspaceState.root,
+      workspaces: result.workspaceState.workspaces.map(toCodingWorkspaceSummary),
     };
   } catch (error) {
-    const message = errorMessage(error);
-    reply.code(message.includes('already exists') ? 409 : 400);
-    return { error: message };
+    if (error instanceof CodingWorkspaceServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
 });
 
@@ -3878,23 +3343,20 @@ app.patch('/api/coding/workspaces/:workspaceId', async (request, reply) => {
   }
 
   const body = (request.body ?? {}) as UpdateCodingWorkspaceRequest;
-  const patch: Partial<typeof workspace> = {};
-  if (Object.prototype.hasOwnProperty.call(body, 'visible')) {
-    patch.visible = Boolean(body.visible);
+  try {
+    const result = await updateCodingWorkspace(currentUser, workspace, body);
+    return {
+      workspace: toCodingWorkspaceSummary(result.workspace),
+      workspaceRoot: result.workspaceState.root,
+      workspaces: result.workspaceState.workspaces.map(toCodingWorkspaceSummary),
+    };
+  } catch (error) {
+    if (error instanceof CodingWorkspaceServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
-
-  const nextWorkspace = await coding.updateWorkspace(workspace.id, patch);
-  if (!nextWorkspace) {
-    reply.code(404);
-    return { error: 'Workspace not found.' };
-  }
-
-  const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
-  return {
-    workspace: toCodingWorkspaceSummary(nextWorkspace),
-    workspaceRoot: workspaceState.root,
-    workspaces: workspaceState.workspaces.map(toCodingWorkspaceSummary),
-  };
 });
 
 app.post('/api/coding/workspaces/reorder', async (request, reply) => {
@@ -3905,30 +3367,19 @@ app.post('/api/coding/workspaces/reorder', async (request, reply) => {
   }
 
   const body = (request.body ?? {}) as ReorderCodingWorkspacesRequest;
-  const nextWorkspaceIds = Array.isArray(body.workspaceIds)
-    ? body.workspaceIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    : [];
-  const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
-  const currentWorkspaceIds = workspaceState.workspaces.map((workspace) => workspace.id);
-
-  if (new Set(nextWorkspaceIds).size !== nextWorkspaceIds.length) {
-    reply.code(400);
-    return { error: 'Workspace order contains duplicates.' };
+  try {
+    const result = await reorderWorkspaceList(currentUser, body);
+    return {
+      workspaceRoot: result.workspaceRoot,
+      workspaces: result.workspaces.map(toCodingWorkspaceSummary),
+    };
+  } catch (error) {
+    if (error instanceof CodingWorkspaceServiceError) {
+      reply.code(error.statusCode);
+      return { error: error.message };
+    }
+    throw error;
   }
-
-  if (
-    nextWorkspaceIds.length !== currentWorkspaceIds.length
-    || nextWorkspaceIds.some((workspaceId) => !currentWorkspaceIds.includes(workspaceId))
-  ) {
-    reply.code(400);
-    return { error: 'Workspace order must include every workspace exactly once.' };
-  }
-
-  const workspaces = await coding.reorderWorkspaces(currentUser.id, nextWorkspaceIds);
-  return {
-    workspaceRoot: workspaceState.root,
-    workspaces: workspaces.map(toCodingWorkspaceSummary),
-  };
 });
 
 app.post('/api/coding/workspaces/:workspaceId/sessions', async (request, reply) => {
@@ -4180,7 +3631,7 @@ app.patch('/api/coding/sessions/:sessionId/preferences', async (request, reply) 
   }
 
   const requestedModel = trimOptional(body.model) ?? session.model ?? currentDefaultModel();
-  const modelOption = availableModels.find((entry) => entry.model === requestedModel);
+  const modelOption = modelCatalog.findByModel(requestedModel);
   if (!modelOption) {
     reply.code(400);
     return { error: 'Unknown model.' };
@@ -4545,7 +3996,7 @@ app.get('/api/admin/users', async (request, reply) => {
   }
 
   return {
-    users: getPublicUsers(authState),
+    users: adminUserService.listUsers(),
   };
 });
 
@@ -4677,13 +4128,9 @@ app.post('/api/admin/users', async (request, reply) => {
 
   try {
     const body = (request.body ?? {}) as CreateUserRequest;
-    const result = await createUser(authState, body);
-    authState = result.auth;
+    const result = await adminUserService.createUser(body);
     reply.code(201);
-    return {
-      user: result.user,
-      users: getPublicUsers(authState),
-    };
+    return result;
   } catch (error) {
     reply.code(400);
     return { error: errorMessage(error) };
@@ -4700,11 +4147,9 @@ app.patch('/api/admin/users/:userId', async (request, reply) => {
   try {
     const { userId } = request.params as { userId: string };
     const body = (request.body ?? {}) as UpdateUserRequest;
-    const previousUser = getPublicUsers(authState).find((entry) => entry.id === userId);
-    const result = await updateUser(authState, userId, body);
-    authState = result.auth;
+    const result = await adminUserService.updateUser(userId, body, currentUser.id);
 
-    if (currentUser.id === userId && previousUser && previousUser.token !== result.user.token) {
+    if (result.shouldRefreshCookie) {
       reply.setCookie(AUTH_COOKIE_NAME, result.user.token, {
         path: '/',
         httpOnly: true,
@@ -4713,16 +4158,7 @@ app.patch('/api/admin/users/:userId', async (request, reply) => {
       });
     }
 
-    if (previousUser && previousUser.username !== result.user.username) {
-      await store.updateOwnerUsername(userId, result.user.username);
-      await chatHistory.updateOwnerUsername(userId, result.user.username);
-      await coding.updateOwnerUsername(userId, result.user.username);
-    }
-
-    return {
-      user: result.user,
-      users: getPublicUsers(authState),
-    };
+    return result;
   } catch (error) {
     reply.code(400);
     return { error: errorMessage(error) };
@@ -4736,42 +4172,29 @@ app.delete('/api/admin/users/:userId', async (request, reply) => {
     return { error: 'Admin access required' };
   }
 
-  const { userId } = request.params as { userId: string };
-  const chatConversations = await chatHistory.listConversationRecordsForUser(userId);
-  if (
-    await coding.countSessionsForUser(userId) > 0
-    || store.listConversationsForUser(userId).length > 0
-    || chatConversations.length > 0
-  ) {
-    reply.code(409);
-    return { error: 'Delete this user’s conversations and sessions before removing the user.' };
-  }
-
   try {
-    authState = await deleteUser(authState, userId, currentUser.id);
-    return {
-      users: getPublicUsers(authState),
-    };
+    const { userId } = request.params as { userId: string };
+    return await adminUserService.deleteUser(userId, currentUser.id);
   } catch (error) {
-    reply.code(400);
+    reply.code(error instanceof AdminUserServiceError ? error.statusCode : 400);
     return { error: errorMessage(error) };
   }
 });
 
 app.get('/api/cloudflare/status', async () => ({
-  cloudflare: await getCachedCloudflareStatus({ preferFresh: true }),
+  cloudflare: await cloudflareStatusCache.get({ preferFresh: true }),
 }));
 
 app.post('/api/cloudflare/connect', async (_request, reply) => {
   try {
-    clearCloudflareStatusCache();
+    cloudflareStatusCache.clear();
     const status = await cloudflare.connect();
-    primeCloudflareStatusCache(status);
+    cloudflareStatusCache.prime(status);
     return {
       cloudflare: status,
     };
   } catch (error) {
-    clearCloudflareStatusCache();
+    cloudflareStatusCache.clear();
     reply.code(500);
     return {
       error: errorMessage(error) || 'Failed to connect Cloudflare tunnel',
@@ -4781,14 +4204,14 @@ app.post('/api/cloudflare/connect', async (_request, reply) => {
 
 app.post('/api/cloudflare/disconnect', async (_request, reply) => {
   try {
-    clearCloudflareStatusCache();
+    cloudflareStatusCache.clear();
     const status = await cloudflare.disconnect();
-    primeCloudflareStatusCache(status);
+    cloudflareStatusCache.prime(status);
     return {
       cloudflare: status,
     };
   } catch (error) {
-    clearCloudflareStatusCache();
+    cloudflareStatusCache.clear();
     reply.code(500);
     return {
       error: errorMessage(error) || 'Failed to disconnect Cloudflare tunnel',
@@ -5282,7 +4705,7 @@ app.patch('/api/sessions/:sessionId/preferences', async (request, reply) => {
   }
 
   const requestedModel = trimOptional(body.model) ?? session.model ?? currentDefaultModel();
-  const modelOption = availableModels.find((entry) => entry.model === requestedModel);
+  const modelOption = modelCatalog.findByModel(requestedModel);
   if (!modelOption) {
     reply.code(400);
     return { error: 'Unknown model.' };
@@ -5571,8 +4994,7 @@ app.setNotFoundHandler(async (request, reply) => {
 });
 
 const shutdown = async () => {
-  await cloudflare.disconnect();
-  await codex.stop();
+  await runtime.shutdown();
   await app.close();
 };
 
@@ -5587,7 +5009,6 @@ try {
   await app.listen({ host: HOST, port: PORT });
 } catch (error) {
   app.log.error(error);
-  await cloudflare.disconnect();
-  await codex.stop();
+  await runtime.shutdown();
   process.exit(1);
 }

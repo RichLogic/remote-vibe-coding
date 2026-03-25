@@ -97,6 +97,12 @@ npm run dev:host
 npm run dev:web
 ```
 
+If the host is running on a non-default port, pass it when you start the web client:
+
+```bash
+npm run dev:web -- --api-port 8788
+```
+
 Open `http://127.0.0.1:5173`.
 
 Development defaults:
@@ -104,6 +110,7 @@ Development defaults:
 - host: `http://127.0.0.1:8787`
 - web: `http://127.0.0.1:5173`
 - Vite proxies `/api` to the host
+- `--api-port` overrides the default host port for the dev proxy
 
 ## Single-Origin Build
 
@@ -143,6 +150,12 @@ http://127.0.0.1:8787/?token=YOUR_TOKEN
 ```
 
 Then you can create or update users from the admin UI.
+
+Development-only shortcut:
+
+- set `RVC_DEV_DISABLE_AUTH=1` before `npm run dev:host`
+- the host will skip browser login and treat requests as the seeded admin user
+- keep this off outside local/dev preview usage
 
 ## Data and Storage
 
@@ -184,6 +197,7 @@ Current attachment behavior:
 | `RVC_AUTH_USERNAME` | Seed username for the first admin user |
 | `RVC_AUTH_PASSWORD` | Seed password for the first admin user |
 | `RVC_AUTH_TOKEN` | Optional fixed token for the seeded user |
+| `RVC_DEV_DISABLE_AUTH` | Dev-only auth bypass for browser requests when set to `1` |
 
 ### Cloudflare
 
