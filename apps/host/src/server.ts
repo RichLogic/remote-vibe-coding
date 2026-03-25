@@ -531,6 +531,12 @@ function isThreadUnavailableError(error: unknown) {
   return errorMessage(error).includes('thread not loaded');
 }
 
+function isThreadMaterializingError(error: unknown) {
+  const message = errorMessage(error);
+  return message.includes('is not materialized yet')
+    || message.includes('includeTurns is unavailable before first user message');
+}
+
 function isConversation(record: TurnRecord): record is ConversationRecord {
   return record.sessionType === 'chat';
 }
@@ -1848,14 +1854,20 @@ async function waitForTurnThread(threadId: string, turnId: string, timeoutMs = C
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
-    const response = await codex.readThread(threadId);
-    const thread = isCodexThread(response.thread) ? response.thread : null;
-    const turn = thread?.turns.find((entry) => entry.id === turnId) ?? null;
-    if (thread && turn && !turnIsActive(turn.status)) {
-      if (turn.error?.message) {
-        throw new Error(turn.error.message);
+    try {
+      const response = await codex.readThread(threadId);
+      const thread = isCodexThread(response.thread) ? response.thread : null;
+      const turn = thread?.turns.find((entry) => entry.id === turnId) ?? null;
+      if (thread && turn && !turnIsActive(turn.status)) {
+        if (turn.error?.message) {
+          throw new Error(turn.error.message);
+        }
+        return thread;
       }
-      return thread;
+    } catch (error) {
+      if (!isThreadMaterializingError(error)) {
+        throw error;
+      }
     }
     await delay(CHAT_SUMMARY_POLL_INTERVAL_MS);
   }
@@ -2566,6 +2578,13 @@ async function readSessionThread(session: TurnRecord) {
       }
     }
   } catch (error) {
+    if (isThreadMaterializingError(error)) {
+      return {
+        session: currentSession,
+        thread,
+      };
+    }
+
     const message = errorMessage(error);
     app.log.warn(`thread/read failed for ${session.threadId}: ${message}`);
 
@@ -2629,7 +2648,9 @@ async function maybeAutoTitleChatSession(session: TurnRecord, threadOverride: Co
       autoTitle: false,
     });
   } catch (error) {
-    app.log.warn(`chat auto-title failed for ${latestSession.id}: ${errorMessage(error)}`);
+    if (!isThreadMaterializingError(error)) {
+      app.log.warn(`chat auto-title failed for ${latestSession.id}: ${errorMessage(error)}`);
+    }
   }
 }
 
@@ -2655,7 +2676,9 @@ async function maybeAutoTitleCodingSession(session: SessionRecord, threadOverrid
       autoTitle: false,
     });
   } catch (error) {
-    app.log.warn(`coding auto-title failed for ${latestSession.id}: ${errorMessage(error)}`);
+    if (!isThreadMaterializingError(error)) {
+      app.log.warn(`coding auto-title failed for ${latestSession.id}: ${errorMessage(error)}`);
+    }
   }
 }
 
