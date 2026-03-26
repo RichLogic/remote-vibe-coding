@@ -855,6 +855,29 @@ function isUnreadChatCompletion(
   return session.hasTranscript && markers[session.id] === session.updatedAt;
 }
 
+function deriveCodingSessionState(
+  session: Pick<SessionRecord, 'activeTurnId' | 'status' | 'hasTranscript'> & { pendingApprovalCount?: number },
+  options?: {
+    activeApproval?: PendingApproval | null;
+    busy?: string | null;
+    hasActiveTurn?: boolean;
+  },
+): NotificationSessionState {
+  if ((session.pendingApprovalCount ?? 0) > 0 || options?.activeApproval || session.status === 'needs-approval') {
+    return 'pending';
+  }
+  if (options?.busy === 'start-turn' || options?.hasActiveTurn || Boolean(session.activeTurnId) || session.status === 'running') {
+    return 'processing';
+  }
+  if (session.status === 'error') {
+    return 'error';
+  }
+  if (session.status === 'stale') {
+    return 'stale';
+  }
+  return session.hasTranscript ? 'completed' : 'new';
+}
+
 function deriveSummarySessionState(
   session: SessionSummary | ConversationSummary,
   markers: ChatCompletionMarkerMap,
@@ -873,22 +896,7 @@ function deriveSummarySessionState(
     return isUnreadChatCompletion(session, markers) ? 'completed' : 'normal';
   }
 
-  if ('pendingApprovalCount' in session && session.pendingApprovalCount > 0) {
-    return 'pending';
-  }
-  if (session.status === 'needs-approval') {
-    return 'pending';
-  }
-  if (session.status === 'running') {
-    return 'processing';
-  }
-  if (session.status === 'error') {
-    return 'error';
-  }
-  if (session.status === 'stale') {
-    return 'stale';
-  }
-  return session.hasTranscript ? 'completed' : 'new';
+  return deriveCodingSessionState(session);
 }
 
 function deriveNotificationSessionState(session: SessionSummary | ConversationSummary): NotificationSessionState {
@@ -906,19 +914,7 @@ function deriveNotificationSessionState(session: SessionSummary | ConversationSu
     return 'completed';
   }
 
-  if (session.pendingApprovalCount > 0 || session.status === 'needs-approval') {
-    return 'pending';
-  }
-  if (session.status === 'running') {
-    return 'processing';
-  }
-  if (session.status === 'error') {
-    return 'error';
-  }
-  if (session.status === 'stale') {
-    return 'stale';
-  }
-  return session.hasTranscript ? 'completed' : 'new';
+  return deriveCodingSessionState(session);
 }
 
 function currentNotificationPermission(): SystemNotificationPermission {
@@ -982,12 +978,8 @@ function deriveDetailSessionState(
   session: SessionDetailResponse['session'] | null,
   options: {
     activeApproval: PendingApproval | null;
-    chatCompletionMarkers: ChatCompletionMarkerMap;
-    transcriptCount: number;
-    transcriptSyncPending: boolean;
     busy: string | null;
     hasActiveTurn: boolean;
-    hasActivity: boolean;
   },
 ): UiSessionState | null {
   if (!session) {
@@ -1009,24 +1001,11 @@ function deriveDetailSessionState(
     }
     return 'completed';
   }
-  if (options.activeApproval || session.status === 'needs-approval') {
-    return 'pending';
-  }
-  if (session.status === 'error') {
-    return 'error';
-  }
-  if (
-    options.busy === 'start-turn'
-    || options.hasActiveTurn
-    || session.status === 'running'
-    || options.transcriptSyncPending
-  ) {
-    return 'processing';
-  }
-  if (session.status === 'stale') {
-    return 'stale';
-  }
-  return options.transcriptCount === 0 ? 'new' : 'completed';
+  return deriveCodingSessionState(session, {
+    activeApproval: options.activeApproval,
+    busy: options.busy,
+    hasActiveTurn: options.hasActiveTurn,
+  });
 }
 
 function uiSessionStateLabel(language: Language, state: UiSessionState) {
@@ -3618,12 +3597,8 @@ export function App() {
     : null;
   const detailSessionState = deriveDetailSessionState(detail?.session ?? null, {
     activeApproval,
-    chatCompletionMarkers,
-    transcriptCount: transcriptItems.length,
-    transcriptSyncPending: activeMode === 'developer' && Boolean(detail && detail.transcriptTotal > transcriptItems.length),
     busy,
     hasActiveTurn: sessionHasActiveTurn,
-    hasActivity: sessionActivityItems.length > 0,
   });
   const detailSessionStatusLabel = detailSessionState ? uiSessionStateLabel(language, detailSessionState) : null;
   const detailSessionStatusTitle = detailSessionState === 'pending'
