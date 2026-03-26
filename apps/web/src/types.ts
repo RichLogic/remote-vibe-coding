@@ -1,5 +1,5 @@
 export type SecurityProfile = 'read-only' | 'repo-write' | 'full-host';
-export type ApprovalMode = 'less-approval' | 'full-approval';
+export type ApprovalMode = 'detailed' | 'less-interruption' | 'full-auto';
 export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'running' | 'needs-approval' | 'idle' | 'error' | 'stale';
 export type ChatUiStatus = 'new' | 'processing' | 'completed' | 'error';

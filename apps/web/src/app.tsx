@@ -38,7 +38,6 @@ import {
   fetchCodingSessionTranscript,
   forkCodingSession,
   reorderCodingWorkspaces,
-  resolveCodingApproval,
   startCodingTurn,
   stopCodingSession,
   updateCodingSession,
@@ -90,7 +89,7 @@ type UiSessionState = 'normal' | 'new' | 'pending' | 'completed' | 'error' | 'pr
 type NotificationSessionState = Exclude<UiSessionState, 'normal'>;
 type ChatCompletionMarkerMap = Record<string, string>;
 type ChatStatusRecord = Pick<ConversationSummary, 'id' | 'activeTurnId' | 'status' | 'uiStatus' | 'hasTranscript' | 'updatedAt'>;
-type ModeOption = 'detailed' | 'less-interruptive' | 'all-permissions';
+type ModeOption = ApprovalMode;
 type SystemNotificationPermission = NotificationPermission | 'unsupported';
 
 interface UserFormState {
@@ -130,6 +129,7 @@ const FALLBACK_REASONING: ReasoningEffort[] = ['minimal', 'low', 'medium', 'high
 const TRANSCRIPT_PAGE_SIZE = 40;
 const CREATE_WORKSPACE_OPTION = '__new_workspace__';
 const COMPOSER_MAX_LINES = 6;
+const ACTIVITY_TICKER_TRANSITION_MS = 280;
 const OPTIMISTIC_SESSION_PREFIX = '__optimistic_session__:';
 const OPTIMISTIC_WORKSPACE_PREFIX = '__optimistic_workspace__:';
 const CHAT_COMPLETION_MARKERS_STORAGE_KEY = 'rvc-chat-completion-markers';
@@ -157,7 +157,7 @@ const UI_SESSION_STATE_LABELS: Record<Language, Record<UiSessionState, string>> 
   },
 };
 
-const CHAT_ACTIVITY_LABELS: Record<Language, Record<'thinking' | 'searching' | 'drafting', string>> = {
+const SESSION_ACTIVITY_LABELS: Record<Language, Record<'thinking' | 'searching' | 'drafting', string>> = {
   en: {
     thinking: 'Thinking through the answer',
     searching: 'Searching the web',
@@ -168,11 +168,6 @@ const CHAT_ACTIVITY_LABELS: Record<Language, Record<'thinking' | 'searching' | '
     searching: '正在搜索网页',
     drafting: '正在整理回复',
   },
-};
-
-const CHAT_ACTIVITY_SECTION_LABELS: Record<Language, string> = {
-  en: 'Codex activity',
-  zh: 'Codex 动态',
 };
 
 const CLOUDFLARE_STATE_LABELS: Record<Language, Record<'idle' | 'connecting' | 'connected' | 'error', string>> = {
@@ -205,6 +200,8 @@ const COPY = {
     networkStatusRecovering: 'Reconnecting',
     networkStatusDown: 'Offline',
     networkStatusComment: 'Shows whether the browser can still reach the local host service.',
+    networkAlertRecovering: 'Trying to reconnect to the local host service.',
+    networkAlertDown: 'The browser cannot reach the local host service right now.',
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
     languageSetting: 'Language',
@@ -222,7 +219,7 @@ const COPY = {
     deleteComment: 'Permanently delete this session.',
     modelComment: 'Choose which model this session will use for future turns.',
     thinkingComment: 'Set the reasoning depth for future turns in this session.',
-    auditModelComment: 'Choose the frontend mode preset for this session.',
+    auditModelComment: 'Choose how automated this coding session should be.',
     attachComment: 'Attach files to your next prompt.',
     stopComment: 'Stop the active turn.',
     sendComment: 'Send the current prompt.',
@@ -234,8 +231,8 @@ const COPY = {
     editWorkspaces: 'Edit',
     finish: 'Finish',
     reorderWorkspace: 'Drag to reorder workspace',
-    createWorkspaceTitle: 'Create',
-    createWorkspaceAction: 'Create',
+    createWorkspaceTitle: 'New',
+    createWorkspaceAction: 'New',
     visibleWorkspaces: 'Visible',
     hideWorkspace: 'Hide',
     showWorkspace: 'Show',
@@ -271,6 +268,7 @@ const COPY = {
     toolCommand: 'Command',
     toolFiles: 'Files',
     toolEvent: 'Tool',
+    answerLabel: 'Answer',
     selectOrCreate: 'Select a session to continue working.',
     runtimeReset: 'Runtime reset detected',
     threadMissing: 'Codex no longer has this thread loaded',
@@ -340,7 +338,7 @@ const COPY = {
     workspaceRequired: 'Choose a workspace.',
     titleRequired: 'Title is required when creating a new workspace.',
     workspaceSelect: 'Choose workspace',
-    newWorkspaceOption: 'Create from title',
+    newWorkspaceOption: 'New from title',
     title: 'Title',
     optionalSessionTitle: 'Optional session title',
     securityProfile: 'Security profile',
@@ -367,7 +365,7 @@ const COPY = {
     fullHostProfile: 'Full',
     detailedMode: 'Detailed',
     lessInterruptiveMode: 'Less interruption',
-    allPermissionsMode: 'All permissions',
+    allPermissionsMode: 'Full auto',
     noRolePreset: 'None',
     chatSessionHint: 'Chat sessions can edit files inside the shared chat workspace.',
     chatAutoTitleHint: 'The title will be generated automatically after your first message.',
@@ -457,6 +455,8 @@ const COPY = {
     networkStatusRecovering: '正在重连',
     networkStatusDown: '已离线',
     networkStatusComment: '显示浏览器当前是否还能连接到本地 Host 服务。',
+    networkAlertRecovering: '正在尝试重新连接本地 Host 服务。',
+    networkAlertDown: '浏览器当前无法连接到本地 Host 服务。',
     hideSidebar: '隐藏侧栏',
     showSidebar: '显示侧栏',
     languageSetting: '语言',
@@ -474,7 +474,7 @@ const COPY = {
     deleteComment: '永久删除这个会话。',
     modelComment: '选择这个会话后续 turn 使用的模型。',
     thinkingComment: '设置这个会话后续 turn 的思考深度。',
-    auditModelComment: '选择这个会话的前端模式占位。',
+    auditModelComment: '选择这个 coding 会话的自动化模式。',
     attachComment: '给下一条 prompt 附加文件。',
     stopComment: '停止当前正在运行的 turn。',
     sendComment: '发送当前 prompt。',
@@ -486,8 +486,8 @@ const COPY = {
     editWorkspaces: '编辑',
     finish: '完成',
     reorderWorkspace: '拖动以调整 workspace 顺序',
-    createWorkspaceTitle: '创建',
-    createWorkspaceAction: '创建',
+    createWorkspaceTitle: '新建',
+    createWorkspaceAction: '新建',
     visibleWorkspaces: '展示中',
     hideWorkspace: '隐藏',
     showWorkspace: '显示',
@@ -523,6 +523,7 @@ const COPY = {
     toolCommand: '命令',
     toolFiles: '改动',
     toolEvent: '工具',
+    answerLabel: 'Answer',
     selectOrCreate: '选择一个会话继续工作。',
     runtimeReset: '运行时已重置',
     threadMissing: 'Codex 已经不再持有这个 thread',
@@ -619,7 +620,7 @@ const COPY = {
     fullHostProfile: 'Full',
     detailedMode: '详细',
     lessInterruptiveMode: '少打扰',
-    allPermissionsMode: '所有权限',
+    allPermissionsMode: '全自动',
     noRolePreset: '无',
     chatSessionHint: '聊天会话可以修改共享 Chat workspace 里的文件。',
     chatAutoTitleHint: '发出第一条消息后，会自动生成标题。',
@@ -908,7 +909,7 @@ function deriveDetailSessionState(
     transcriptSyncPending: boolean;
     busy: string | null;
     hasActiveTurn: boolean;
-    hasChatActivity: boolean;
+    hasActivity: boolean;
   },
 ): UiSessionState | null {
   if (!session) {
@@ -952,6 +953,24 @@ function deriveDetailSessionState(
 
 function uiSessionStateLabel(language: Language, state: UiSessionState) {
   return UI_SESSION_STATE_LABELS[language][state];
+}
+
+function sessionMarkerStyle(state: UiSessionState): CSSProperties {
+  switch (state) {
+    case 'pending':
+      return { backgroundColor: '#f59e0b', borderColor: 'rgba(217, 119, 6, 0.22)' };
+    case 'processing':
+      return { backgroundColor: '#3b82f6', borderColor: 'rgba(37, 99, 235, 0.22)' };
+    case 'completed':
+      return { backgroundColor: '#16a34a', borderColor: 'rgba(22, 163, 74, 0.22)' };
+    case 'error':
+      return { backgroundColor: '#dc2626', borderColor: 'rgba(220, 38, 38, 0.22)' };
+    case 'stale':
+      return { backgroundColor: '#9ca3af', borderColor: 'rgba(107, 114, 128, 0.22)' };
+    case 'new':
+    case 'normal':
+      return { backgroundColor: 'rgba(255, 255, 255, 0.96)', borderColor: 'rgba(43, 36, 30, 0.08)' };
+  }
 }
 
 function workspaceNameFromPath(workspacePath: string, workspaceRoot: string | null | undefined) {
@@ -1042,7 +1061,7 @@ function chatConversationToConversationSummary(
     workspace: conversation.workspace,
     archivedAt: conversation.archivedAt,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: conversation.networkEnabled,
     fullHostEnabled: false,
     status: conversation.status,
@@ -1096,8 +1115,8 @@ function securityProfileLabel(language: Language, sessionType: SessionType, secu
 
 function modeOptionLabel(language: Language, mode: ModeOption) {
   const copy = COPY[language];
-  if (mode === 'all-permissions') return copy.allPermissionsMode;
-  if (mode === 'less-interruptive') return copy.lessInterruptiveMode;
+  if (mode === 'full-auto') return copy.allPermissionsMode;
+  if (mode === 'less-interruption') return copy.lessInterruptiveMode;
   return copy.detailedMode;
 }
 
@@ -1125,7 +1144,7 @@ function toolLabel(entry: SessionTranscriptEntry, language: Language) {
   return language === 'zh' ? '工具' : 'Tool';
 }
 
-function chatActivityKind(event: SessionEvent): 'thinking' | 'searching' | 'drafting' | null {
+function sessionActivityKind(event: SessionEvent): 'thinking' | 'searching' | 'drafting' | null {
   if (event.method === 'item/agentMessage/delta') {
     return 'drafting';
   }
@@ -1149,7 +1168,7 @@ function chatActivityKind(event: SessionEvent): 'thinking' | 'searching' | 'draf
   return null;
 }
 
-function isChatActivityTerminalEvent(event: SessionEvent) {
+function isSessionActivityTerminalEvent(event: SessionEvent) {
   if (event.method === 'turn/completed' || event.method === 'turn/interrupted' || event.method === 'session/restarted') {
     return true;
   }
@@ -1157,20 +1176,20 @@ function isChatActivityTerminalEvent(event: SessionEvent) {
   return event.method === 'thread/status/changed' && /\bidle\b/i.test(event.summary);
 }
 
-function deriveChatActivityItems(events: SessionEvent[], language: Language) {
-  const lastTerminalIndex = [...events].reverse().findIndex(isChatActivityTerminalEvent);
+function deriveSessionActivityItems(events: SessionEvent[], language: Language) {
+  const lastTerminalIndex = [...events].reverse().findIndex(isSessionActivityTerminalEvent);
   const relevantEvents = lastTerminalIndex === -1
     ? events
     : events.slice(events.length - lastTerminalIndex);
   const items: Array<{ id: string; label: string }> = [];
 
   for (const event of relevantEvents) {
-    const kind = chatActivityKind(event);
+    const kind = sessionActivityKind(event);
     if (!kind) {
       continue;
     }
 
-    const label = CHAT_ACTIVITY_LABELS[language][kind];
+    const label = SESSION_ACTIVITY_LABELS[language][kind];
     const previous = items.at(-1);
     if (previous?.label === label) {
       items[items.length - 1] = {
@@ -1202,22 +1221,12 @@ function formatAttachmentSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function composerDraftKey(mode: AppMode, sessionId: string | null) {
+  return sessionId ? `${mode}:${sessionId}` : null;
+}
+
 function isTranscriptNearBottom(scrollContainer: HTMLDivElement) {
   return (scrollContainer.scrollHeight - (scrollContainer.scrollTop + scrollContainer.clientHeight)) < 96;
-}
-
-function transcriptSpeakerName(language: Language, kind: TranscriptEventKind) {
-  if (kind === 'assistant') {
-    return 'Codex';
-  }
-  if (kind === 'user') {
-    return language === 'zh' ? '你' : 'You';
-  }
-  return kind;
-}
-
-function transcriptSpeakerAvatar(kind: TranscriptEventKind) {
-  return kind === 'assistant' ? 'C' : 'Y';
 }
 
 function firstAllowedSessionType(bootstrap: BootstrapPayload | null): SessionType {
@@ -1409,9 +1418,12 @@ function visibleDeveloperWorkspaces(workspaces: WorkspaceSummary[]) {
 }
 
 function normalizeWorkspaceLayoutOrder(workspaces: WorkspaceSummary[]) {
+  const fixedWorkspaces = sortWorkspaceSummaries(workspaces.filter((workspace) => isFixedChatWorkspace(workspace)));
+  const editableWorkspaces = selectableDeveloperWorkspaces(workspaces);
   return [
-    ...sortWorkspaceSummaries(workspaces.filter((workspace) => workspace.visible)),
-    ...sortWorkspaceSummaries(workspaces.filter((workspace) => !workspace.visible)),
+    ...sortWorkspaceSummaries(editableWorkspaces.filter((workspace) => workspace.visible)),
+    ...sortWorkspaceSummaries(editableWorkspaces.filter((workspace) => !workspace.visible)),
+    ...fixedWorkspaces,
   ].map((workspace, index) => ({
     ...workspace,
     sortOrder: index,
@@ -1961,7 +1973,7 @@ export function App() {
     return Number.isFinite(stored) ? Math.min(520, Math.max(260, stored)) : 320;
   });
   const [error, setError] = useState<string | null>(null);
-  const [prompt, setPrompt] = useState('');
+  const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [rolesOpen, setRolesOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -1989,8 +2001,7 @@ export function App() {
   const [editTitle, setEditTitle] = useState('');
   const [editWorkspaceName, setEditWorkspaceName] = useState('');
   const [editSecurityProfile, setEditSecurityProfile] = useState<'repo-write' | 'full-host'>('repo-write');
-  const [sessionApprovalMode, setSessionApprovalMode] = useState<ApprovalMode>('less-approval');
-  const [sessionModeSelections, setSessionModeSelections] = useState<Record<string, ModeOption>>({});
+  const [sessionApprovalMode, setSessionApprovalMode] = useState<ApprovalMode>('detailed');
   const [sessionModel, setSessionModel] = useState('');
   const [sessionEffort, setSessionEffort] = useState<ReasoningEffort>('xhigh');
   const [sessionRolePresetId, setSessionRolePresetId] = useState('');
@@ -2006,18 +2017,20 @@ export function App() {
   const [transcriptLoadingOlder, setTranscriptLoadingOlder] = useState(false);
   const [transcriptLoadedOlder, setTranscriptLoadedOlder] = useState(false);
   const [chatLiveEvents, setChatLiveEvents] = useState<SessionEvent[]>([]);
+  const [visibleSessionActivityLabel, setVisibleSessionActivityLabel] = useState<string | null>(null);
+  const [departingSessionActivityLabel, setDepartingSessionActivityLabel] = useState<string | null>(null);
   const [isPromptComposing, setIsPromptComposing] = useState(false);
-  const [approvalSelectionIndex, setApprovalSelectionIndex] = useState(0);
   const promptCompositionResetTimerRef = useRef<number | null>(null);
+  const activityTickerTimerRef = useRef<number | null>(null);
   const lastPromptCompositionEndAtRef = useRef(0);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRailBodyRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTranscriptToBottomRef = useRef(false);
   const restoreTranscriptScrollHeightRef = useRef<number | null>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const inlineRenameInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceDraftInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
-  const approvalPromptRef = useRef<HTMLDivElement | null>(null);
   const chatProcessingSnapshotRef = useRef<Record<string, boolean>>({});
   const workspaceExpansionInitializedRef = useRef(false);
   const dragWorkspaceIdRef = useRef<string | null>(null);
@@ -2025,9 +2038,12 @@ export function App() {
   const notificationSnapshotsReadyRef = useRef(false);
   const notificationSessionSnapshotsRef = useRef<Record<string, NotificationSessionSnapshot>>({});
   const seenApprovalIdsRef = useRef<Set<string>>(new Set());
+  const activityTickerOwnerRef = useRef<string | null>(null);
   const copy = COPY[language];
 
   const currentUserRoles = deriveRolesFromLegacy(bootstrap?.currentUser);
+  const selectedPromptDraftKey = composerDraftKey(activeMode, selectedSessionId);
+  const prompt = selectedPromptDraftKey ? (promptDrafts[selectedPromptDraftKey] ?? '') : '';
   const availableModes = derivedAvailableModes(bootstrap);
   const bootstrapWorkspaces = normalizedWorkspaces(bootstrap);
   const bootstrapSessions = normalizedDeveloperSessions(bootstrap);
@@ -2044,12 +2060,57 @@ export function App() {
     ?? availableModels[0]
     ?? null;
   const currentSessionMode = detail?.session.sessionType === 'code'
-    ? (sessionModeSelections[detail.session.id] ?? 'detailed')
+    ? sessionApprovalMode
     : 'detailed';
   const currentSessionEfforts = currentSessionModelOption?.supportedReasoningEfforts.length
     ? currentSessionModelOption.supportedReasoningEfforts
     : FALLBACK_REASONING;
   const editingChatRolePreset = chatRolePresetList?.rolePresets.find((preset) => preset.id === editingChatRolePresetId) ?? null;
+
+  function updatePromptDraft(draftKey: string | null, nextPrompt: string) {
+    if (!draftKey) return;
+
+    setPromptDrafts((current) => {
+      if (!nextPrompt) {
+        if (!(draftKey in current)) {
+          return current;
+        }
+        const { [draftKey]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      if (current[draftKey] === nextPrompt) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [draftKey]: nextPrompt,
+      };
+    });
+  }
+
+  function migratePromptDraft(sourceKey: string | null, targetKey: string | null) {
+    if (!sourceKey || !targetKey || sourceKey === targetKey) {
+      return;
+    }
+
+    setPromptDrafts((current) => {
+      const draft = current[sourceKey];
+      if (typeof draft !== 'string' || draft.length === 0) {
+        if (!(sourceKey in current)) {
+          return current;
+        }
+        const { [sourceKey]: _removed, ...rest } = current;
+        return rest;
+      }
+
+      const next = { ...current };
+      next[targetKey] = draft;
+      delete next[sourceKey];
+      return next;
+    });
+  }
 
   function syncChatConversationSnapshot(nextConversation: ChatConversation) {
     setChatBootstrap((current) => (
@@ -2692,22 +2753,6 @@ export function App() {
   }, [activeMode, bootstrapConversations, detail, selectedSessionId]);
 
   useEffect(() => {
-    if (activeMode !== 'chat' || !selectedSessionId) {
-      return;
-    }
-
-    setChatCompletionMarkers((current) => {
-      if (!(selectedSessionId in current)) {
-        return current;
-      }
-
-      const next = { ...current };
-      delete next[selectedSessionId];
-      return next;
-    });
-  }, [activeMode, selectedSessionId]);
-
-  useEffect(() => {
     if (!bootstrap) return;
     if (activeMode !== 'developer') {
       if (selectedWorkspaceId !== null) {
@@ -2875,6 +2920,7 @@ export function App() {
   }, [adminOpen, bootstrap?.currentUser.isAdmin, copy.unknownError]);
 
   useEffect(() => () => {
+    clearActivityTickerTimer();
     if (promptCompositionResetTimerRef.current) {
       window.clearTimeout(promptCompositionResetTimerRef.current);
     }
@@ -2938,17 +2984,17 @@ export function App() {
   const developerModeEnabled = availableModes.includes('developer');
   const chatModeEnabled = availableModes.includes('chat');
   const currentRailHidden = activeMode === 'developer' ? developerRailHidden : chatRailHidden;
-  const primaryNavWidth = 72;
+  const primaryNavWidth = 64;
   const networkLabel = networkState === 'ok'
     ? copy.networkStatusOk
     : networkState === 'recovering'
       ? copy.networkStatusRecovering
       : copy.networkStatusDown;
-  const approvalOptions: Array<{ decision: 'accept' | 'decline'; scope: 'once' | 'session'; label: string; tone?: 'secondary' }> = [
-    { decision: 'accept', scope: 'once', label: copy.approveOnce },
-    { decision: 'accept', scope: 'session', label: copy.approveSession },
-    { decision: 'decline', scope: 'once', label: copy.decline, tone: 'secondary' },
-  ];
+  const networkAlertMessage = networkState === 'recovering'
+    ? copy.networkAlertRecovering
+    : networkState === 'down'
+      ? copy.networkAlertDown
+      : null;
   const allSessions = [
     ...optimisticSessions,
     ...bootstrapSessions,
@@ -2973,8 +3019,11 @@ export function App() {
   const selectedWorkspace = developerWorkspaceOptions.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
   const visibleDeveloperSessions = visibleWorkspaceSessions;
   const railItems = activeMode === 'developer' ? visibleDeveloperSessions : sortedConversations;
-  const chatActivityItems = activeMode === 'chat'
-    ? deriveChatActivityItems(chatLiveEvents, language)
+  const sessionActivityItems = detail
+    ? deriveSessionActivityItems(
+      detail.session.sessionType === 'chat' ? chatLiveEvents : detail.liveEvents,
+      language,
+    )
     : [];
   const detailSessionState = deriveDetailSessionState(detail?.session ?? null, {
     activeApproval,
@@ -2983,13 +3032,69 @@ export function App() {
     transcriptSyncPending: activeMode === 'developer' && Boolean(detail && detail.transcriptTotal > transcriptItems.length),
     busy,
     hasActiveTurn: sessionHasActiveTurn,
-    hasChatActivity: chatActivityItems.length > 0,
+    hasActivity: sessionActivityItems.length > 0,
   });
+  const detailSessionStatusLabel = detailSessionState ? uiSessionStateLabel(language, detailSessionState) : null;
+  const detailSessionStatusTitle = detailSessionState === 'pending'
+    ? activeApproval?.title ?? copy.approvalPendingHint
+    : detailSessionState === 'processing'
+      ? copy.processingHint
+      : detailSessionState === 'completed'
+        ? copy.turnCompleteHint
+        : detailSessionState === 'new'
+          ? copy.noTurnsHint
+          : detailSessionState === 'error'
+            ? detail?.session.lastIssue ?? copy.errorHint
+            : detailSessionState === 'stale'
+              ? copy.staleHint
+              : detailSessionState === 'normal'
+                ? copy.normalHint
+                : null;
+  const activityTickerOwnerKey = detail ? `${detail.session.sessionType}:${detail.session.id}` : null;
+  const latestSessionActivityLabel = detailSessionState === 'processing'
+    ? sessionActivityItems.at(-1)?.label ?? null
+    : null;
   const detailSessionTitle = detail?.session
     ? detail.session.sessionType === 'code'
       ? `${workspaceNameForSession(detail.session, allWorkspaces, bootstrap?.workspaceRoot)} · ${detail.session.title}`
       : detail.session.title
     : copy.selectOrCreate;
+
+  useEffect(() => {
+    if (activityTickerOwnerRef.current !== activityTickerOwnerKey) {
+      activityTickerOwnerRef.current = activityTickerOwnerKey;
+      clearActivityTickerTimer();
+      setDepartingSessionActivityLabel(null);
+      setVisibleSessionActivityLabel(latestSessionActivityLabel);
+      return;
+    }
+
+    if (!latestSessionActivityLabel) {
+      clearActivityTickerTimer();
+      setDepartingSessionActivityLabel(null);
+      setVisibleSessionActivityLabel(null);
+      return;
+    }
+
+    if (!visibleSessionActivityLabel) {
+      setVisibleSessionActivityLabel(latestSessionActivityLabel);
+      return;
+    }
+
+    if (visibleSessionActivityLabel === latestSessionActivityLabel) {
+      return;
+    }
+
+    const previousLabel = visibleSessionActivityLabel;
+    clearActivityTickerTimer();
+    setDepartingSessionActivityLabel(previousLabel);
+    setVisibleSessionActivityLabel(latestSessionActivityLabel);
+    activityTickerTimerRef.current = window.setTimeout(() => {
+      setDepartingSessionActivityLabel((current) => current === previousLabel ? null : current);
+      activityTickerTimerRef.current = null;
+    }, ACTIVITY_TICKER_TRANSITION_MS);
+  }, [activityTickerOwnerKey, latestSessionActivityLabel, visibleSessionActivityLabel]);
+
   const canSaveSession = Boolean(
     detail
     && editTitle.trim(),
@@ -3018,8 +3123,8 @@ export function App() {
   ];
   const modeSelectOptions: SelectOption[] = [
     { value: 'detailed', label: copy.detailedMode },
-    { value: 'less-interruptive', label: copy.lessInterruptiveMode },
-    { value: 'all-permissions', label: copy.allPermissionsMode },
+    { value: 'less-interruption', label: copy.lessInterruptiveMode },
+    { value: 'full-auto', label: copy.allPermissionsMode },
   ];
   const workspaceSelectOptions: SelectOption[] = [
     { value: '', label: copy.workspaceSelect },
@@ -3035,14 +3140,6 @@ export function App() {
       ? [{ value: 'full-host', label: copy.fullHostProfile }]
       : []),
   ];
-
-  useEffect(() => {
-    setApprovalSelectionIndex(0);
-    if (detailSessionState !== 'pending' || !activeApproval) return;
-    window.setTimeout(() => {
-      approvalPromptRef.current?.focus();
-    }, 0);
-  }, [detailSessionState, activeApproval?.id]);
 
   async function refreshCurrentSelection(sessionId = selectedSessionId) {
     const nextBootstrap = await refreshBootstrapState();
@@ -3127,6 +3224,10 @@ export function App() {
         ],
       };
     });
+    migratePromptDraft(
+      composerDraftKey('chat', sessionId),
+      composerDraftKey('chat', conversation.id),
+    );
     setSelectedSessionId(conversation.id);
     setDetail(optimisticDetail(chatConversationToConversationSummary(conversation)));
     return conversation.id;
@@ -3136,6 +3237,13 @@ export function App() {
     if (promptCompositionResetTimerRef.current) {
       window.clearTimeout(promptCompositionResetTimerRef.current);
       promptCompositionResetTimerRef.current = null;
+    }
+  }
+
+  function clearActivityTickerTimer() {
+    if (activityTickerTimerRef.current) {
+      window.clearTimeout(activityTickerTimerRef.current);
+      activityTickerTimerRef.current = null;
     }
   }
 
@@ -3279,7 +3387,7 @@ export function App() {
         workspace: workspace.path,
         archivedAt: null,
         securityProfile: 'repo-write',
-        approvalMode: 'less-approval',
+        approvalMode: 'detailed',
         networkEnabled: false,
         fullHostEnabled: false,
         status: 'running',
@@ -3296,7 +3404,6 @@ export function App() {
       setSelectedWorkspaceId(workspace.id);
       setSelectedSessionId(optimisticId);
       setSessionMenuSessionId(null);
-      setPrompt('');
 
       const session = await createCodingWorkspaceSession(workspace.id, {
         securityProfile: 'repo-write',
@@ -3350,16 +3457,23 @@ export function App() {
           visible: workspace.visible,
         })
       )));
-      const persistedWorkspaceIds = sortWorkspaceSummaries(nextWorkspaces)
+      const persistedWorkspaceIds = normalizeWorkspaceLayoutOrder(nextWorkspaces)
         .map((workspace) => workspace.id)
         .filter((workspaceId) => !workspaceId.startsWith(OPTIMISTIC_WORKSPACE_PREFIX));
       if (persistedWorkspaceIds.length > 0) {
-        await reorderCodingWorkspaces({
+        const response = await reorderCodingWorkspaces({
           workspaceIds: persistedWorkspaceIds,
         });
+        setBootstrap((current) => (
+          current
+            ? {
+                ...current,
+                workspaceRoot: response.workspaceRoot,
+                workspaces: sortWorkspaceSummaries(response.workspaces),
+              }
+            : current
+        ));
       }
-
-      await refreshBootstrapState();
     } catch (workspaceError) {
       setBootstrap(previousBootstrap);
       setError(workspaceError instanceof Error ? workspaceError.message : copy.editWorkspaces);
@@ -3440,6 +3554,26 @@ export function App() {
     return event.clientY - bounds.top < bounds.height / 2 ? 'before' : 'after';
   }
 
+  function maybeAutoScrollWorkspaceRail(clientY: number) {
+    const railBody = workspaceRailBodyRef.current;
+    if (!railBody || !dragWorkspaceIdRef.current) {
+      return;
+    }
+
+    const bounds = railBody.getBoundingClientRect();
+    const threshold = 56;
+    const maxStep = 28;
+    if (clientY < bounds.top + threshold) {
+      const intensity = Math.min(1, (bounds.top + threshold - clientY) / threshold);
+      railBody.scrollTop -= Math.max(12, Math.ceil(maxStep * intensity));
+      return;
+    }
+    if (clientY > bounds.bottom - threshold) {
+      const intensity = Math.min(1, (clientY - (bounds.bottom - threshold)) / threshold);
+      railBody.scrollTop += Math.max(12, Math.ceil(maxStep * intensity));
+    }
+  }
+
   async function handleWorkspaceDrop(targetWorkspaceId: string, position: WorkspaceDropPosition) {
     const activeDragWorkspaceId = dragWorkspaceIdRef.current;
     if (!activeDragWorkspaceId || activeDragWorkspaceId === targetWorkspaceId) {
@@ -3462,17 +3596,14 @@ export function App() {
     }
     const insertIndex = position === 'after' ? targetIndex + 1 : targetIndex;
     remaining.splice(insertIndex, 0, draggedWorkspace);
-    const hiddenWorkspaces = sortWorkspaceSummaries(allWorkspaces.filter((workspace) => !workspace.visible));
     const normalizedVisible = remaining.map((entry, index) => ({
       ...entry,
       sortOrder: index,
     }));
-    const normalizedHidden = hiddenWorkspaces.map((entry, index) => ({
-      ...entry,
-      sortOrder: normalizedVisible.length + index,
-    }));
-    const visibleMap = new Map([...normalizedVisible, ...normalizedHidden].map((entry) => [entry.id, entry]));
-    const nextWorkspaces = allWorkspaces.map((entry) => visibleMap.get(entry.id) ?? entry);
+    const visibleMap = new Map(normalizedVisible.map((entry) => [entry.id, entry]));
+    const nextWorkspaces = normalizeWorkspaceLayoutOrder(
+      allWorkspaces.map((entry) => visibleMap.get(entry.id) ?? entry),
+    );
 
     clearWorkspaceDragState();
     await persistWorkspaceLayout(nextWorkspaces, previousBootstrap);
@@ -3506,7 +3637,7 @@ export function App() {
       workspace: optimisticWorkspace,
       archivedAt: null,
       securityProfile: 'repo-write',
-      approvalMode: 'less-approval',
+      approvalMode: 'detailed',
       networkEnabled: false,
       fullHostEnabled: false,
       status: 'idle',
@@ -3531,7 +3662,6 @@ export function App() {
     setTranscriptItems([]);
     setTranscriptNextCursor(null);
     setTranscriptLoadedOlder(false);
-    setPrompt('');
     window.setTimeout(() => {
       promptTextareaRef.current?.focus();
     }, 0);
@@ -3632,7 +3762,7 @@ export function App() {
           ...(draftAttachments.length > 0 ? { attachmentIds: draftAttachments.map((attachment) => attachment.id) } : {}),
         });
       }
-      setPrompt('');
+      updatePromptDraft(composerDraftKey(activeMode, targetSessionId), '');
       await refreshCurrentSelection(targetSessionId);
       setError(null);
     } catch (turnError) {
@@ -3882,11 +4012,8 @@ export function App() {
 
   function handleSessionModeChange(nextMode: string) {
     if (!detail || detail.session.sessionType !== 'code') return;
-    if (nextMode !== 'detailed' && nextMode !== 'less-interruptive' && nextMode !== 'all-permissions') return;
-    setSessionModeSelections((current) => ({
-      ...current,
-      [detail.session.id]: nextMode,
-    }));
+    if (nextMode !== 'detailed' && nextMode !== 'less-interruption' && nextMode !== 'full-auto') return;
+    handleSessionApprovalModeChange(nextMode as ApprovalMode);
   }
 
   async function handleChatRolePresetChange(nextRolePresetValue: string) {
@@ -4637,42 +4764,6 @@ export function App() {
     setEditSecurityProfile(session.securityProfile === 'full-host' ? 'full-host' : 'repo-write');
   }
 
-  async function handleApprovalAction(approval: PendingApproval, decision: 'accept' | 'decline', scope: 'once' | 'session') {
-    setBusy(approval.id);
-    try {
-      await resolveCodingApproval(approval.sessionId, approval.id, { decision, scope });
-      await refreshCurrentSelection(selectedSessionId);
-      setError(null);
-    } catch (approvalError) {
-      setError(approvalError instanceof Error ? approvalError.message : copy.decline);
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  function handleApprovalPromptKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (!activeApproval) return;
-
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      setApprovalSelectionIndex((current) => (current + 1) % approvalOptions.length);
-      return;
-    }
-
-    if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setApprovalSelectionIndex((current) => (current - 1 + approvalOptions.length) % approvalOptions.length);
-      return;
-    }
-
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      const option = approvalOptions[approvalSelectionIndex] ?? approvalOptions[0];
-      if (!option) return;
-      void handleApprovalAction(activeApproval, option.decision, option.scope);
-    }
-  }
-
   async function handleLogout() {
     setBusy('logout');
     try {
@@ -4845,7 +4936,11 @@ export function App() {
             {railDeleteConfirming ? <CheckIcon /> : <TrashIcon />}
           </button>
         ) : (
-          <span className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`} aria-hidden="true" />
+          <span
+            className={`session-node-marker session-node-marker-${sessionState} ${markerShapeClass}`}
+            style={sessionMarkerStyle(sessionState)}
+            aria-hidden="true"
+          />
         )}
       </span>
     );
@@ -4919,6 +5014,7 @@ export function App() {
             if (!dragWorkspaceIdRef.current) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = 'move';
+            maybeAutoScrollWorkspaceRail(event.clientY);
             setWorkspaceDropIndicator((current) => (
               current?.workspaceId === workspace.id && current.position === position
                 ? current
@@ -4947,6 +5043,7 @@ export function App() {
             if (!workspaceDraggable || !activeDragWorkspaceId || activeDragWorkspaceId === workspace.id) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = 'move';
+            maybeAutoScrollWorkspaceRail(event.clientY);
             const nextPosition = workspaceDropPositionFromEvent(event);
             setWorkspaceDropIndicator((current) => (
               current?.workspaceId === workspace.id && current.position === nextPosition
@@ -5288,21 +5385,34 @@ export function App() {
 
   return (
     <main className="shell">
-      {error ? (
+      {error || networkAlertMessage ? (
         <div className="toast-stack" role="status" aria-live="polite">
-          <div className="toast toast-error">
-            <span>{error}</span>
-            <button type="button" className="button-secondary toast-close" onClick={() => setError(null)}>
-              {copy.close}
-            </button>
-          </div>
+          {networkAlertMessage ? (
+            <div className={`toast ${networkState === 'down' ? 'toast-error' : 'toast-warning'}`}>
+              <div className="toast-copy">
+                <strong>{networkLabel}</strong>
+                <span>{networkAlertMessage}</span>
+              </div>
+            </div>
+          ) : null}
+          {error ? (
+            <div className="toast toast-error">
+              <span>{error}</span>
+              <button type="button" className="button-secondary toast-close" onClick={() => setError(null)}>
+                {copy.close}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
       <div className="shell-main">
         <section
           className={`workspace ${currentRailHidden ? 'workspace-rail-hidden' : ''}`}
-          style={{ '--sidebar-shell-width': `${currentRailHidden ? primaryNavWidth : primaryNavWidth + railWidth}px` } as CSSProperties}
+          style={{
+            '--primary-nav-width': `${primaryNavWidth}px`,
+            '--sidebar-shell-width': `${currentRailHidden ? primaryNavWidth : primaryNavWidth + railWidth}px`,
+          } as CSSProperties}
         >
           <div className={`sidebar-shell ${currentRailHidden ? 'sidebar-shell-collapsed' : ''}`}>
             <aside className="primary-nav">
@@ -5363,18 +5473,6 @@ export function App() {
                 </button>
               </div>
 
-              <div className="primary-nav-footer">
-                <div
-                  className={`primary-nav-network primary-nav-network-${networkState}`}
-                  role="status"
-                  aria-live="polite"
-                  title={networkLabel}
-                  aria-label={networkLabel}
-                >
-                  <span className="primary-nav-network-dot" aria-hidden="true" />
-                  <span className="sr-only">{networkLabel}</span>
-                </div>
-              </div>
             </aside>
 
             {!currentRailHidden ? (
@@ -5385,7 +5483,16 @@ export function App() {
                   </div>
                 </div>
 
-                <div className="rail-body">
+                <div
+                  ref={workspaceRailBodyRef}
+                  className="rail-body"
+                  onDragOver={(event) => {
+                    if (activeMode !== 'developer' || !workspaceEditMode || !dragWorkspaceIdRef.current) {
+                      return;
+                    }
+                    maybeAutoScrollWorkspaceRail(event.clientY);
+                  }}
+                >
                   {activeMode === 'developer' ? (
                     <div className="rail-section">
                       <ul className="session-list workspace-tree">
@@ -5427,7 +5534,7 @@ export function App() {
                       >
                         {workspaceEditMode ? copy.finish : copy.editWorkspaces}
                       </button>
-                      <button type="button" onClick={() => openWorkspaceManager('create')}>
+                      <button type="button" className="button-warm" onClick={() => openWorkspaceManager('create')}>
                         {copy.createWorkspaceAction}
                       </button>
                     </div>
@@ -5442,6 +5549,7 @@ export function App() {
                       </button>
                       <button
                         type="button"
+                        className="button-warm"
                         onClick={() => {
                           void handleCreateConversation();
                         }}
@@ -5509,9 +5617,17 @@ export function App() {
                 ) : (
                   <h2>{copy.selectOrCreate}</h2>
                 )}
-                {detail ? (
-                  inlineRenameActive || sessionIsChat ? null : (
-                    <div className="session-title-actions">
+                {detail && !inlineRenameActive && (detailSessionStatusLabel || !sessionIsChat) ? (
+                  <div className="session-title-actions">
+                    {detailSessionStatusLabel ? (
+                      <span
+                        className={`session-status-badge session-status-badge-${detailSessionState} session-title-status-badge`}
+                        title={detailSessionStatusTitle ?? undefined}
+                      >
+                        {detailSessionStatusLabel}
+                      </span>
+                    ) : null}
+                    {!sessionIsChat ? (
                       <button
                         type="button"
                         className="button-secondary icon-button"
@@ -5527,8 +5643,8 @@ export function App() {
                       >
                         <InfoIcon />
                       </button>
-                    </div>
-                  )
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -5568,16 +5684,10 @@ export function App() {
 
                         return (
                           <article key={event.id} className={`chat-message chat-${event.kind}`}>
-                            {event.kind === 'assistant' ? (
-                              <div className={`chat-avatar chat-avatar-${event.kind}`} aria-hidden="true">
-                                {transcriptSpeakerAvatar(event.kind)}
-                              </div>
-                            ) : null}
                             <div className="chat-message-main">
                               {event.kind === 'assistant' ? (
                                 <div className="chat-message-head">
-                                  <strong>{transcriptSpeakerName(language, event.kind)}</strong>
-                                  {event.meta ? <span>{event.meta}</span> : null}
+                                  <strong>{copy.answerLabel}</strong>
                                 </div>
                               ) : null}
                               {event.attachments.length > 0 ? (
@@ -5626,116 +5736,31 @@ export function App() {
                         );
                       })
                     )}
-                    {activeMode === 'chat' && detailSessionState === 'processing' && chatActivityItems.length > 0 ? (
-                      <article className="chat-message chat-activity-bubble">
-                        <div className="chat-activity-bubble-head">
-                          <span>{CHAT_ACTIVITY_SECTION_LABELS[language]}</span>
-                        </div>
-                        <div className="chat-activity-bubble-body">
-                          {chatActivityItems.map((item, index) => (
-                            <div
-                              key={item.id}
-                              className={`chat-activity-step ${index === chatActivityItems.length - 1 ? 'chat-activity-step-active' : ''}`}
-                            >
-                              <strong>{item.label}</strong>
-                            </div>
-                          ))}
+                    {detailSessionState === 'processing' && (visibleSessionActivityLabel || departingSessionActivityLabel) ? (
+                      <article className="chat-message chat-assistant chat-activity-message">
+                        <div className="chat-message-main chat-activity-message-main">
+                          <div className="chat-activity-message-copy">
+                            <span>{copy.processingStatus}</span>
+                          </div>
+                          <div className="chat-activity-ticker" aria-live="polite" aria-atomic="true">
+                            {departingSessionActivityLabel ? (
+                              <span className="chat-activity-ticker-item chat-activity-ticker-item-leaving">
+                                {departingSessionActivityLabel}
+                              </span>
+                            ) : null}
+                            {visibleSessionActivityLabel ? (
+                              <span
+                                className={`chat-activity-ticker-item ${departingSessionActivityLabel ? 'chat-activity-ticker-item-entering' : 'chat-activity-ticker-item-current'}`}
+                              >
+                                {visibleSessionActivityLabel}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </article>
                     ) : null}
                   </div>
                 </div>
-
-                {detailSessionState ? (
-                  <section
-                    ref={detailSessionState === 'pending' ? approvalPromptRef : null}
-                    className={`session-status-bar session-status-${detailSessionState}`}
-                    tabIndex={detailSessionState === 'pending' ? 0 : undefined}
-                    onKeyDown={detailSessionState === 'pending' ? handleApprovalPromptKeyDown : undefined}
-                  >
-                    <div className="session-status-copy">
-                      <div className="session-status-title-row">
-                        <span className={`session-status-badge session-status-badge-${detailSessionState}`}>
-                          {detailSessionState === 'processing'
-                            ? copy.processingStatus
-                            : detailSessionState === 'normal'
-                              ? copy.normalStatus
-                              : detailSessionState === 'pending'
-                                ? copy.approvalPendingStatus
-                                : detailSessionState === 'completed'
-                                  ? copy.turnCompleteStatus
-                                  : detailSessionState === 'error'
-                                    ? copy.errorStatus
-                                    : detailSessionState === 'stale'
-                                      ? copy.staleStatus
-                                      : copy.noTurnsYet}
-                        </span>
-                        {detailSessionState === 'pending' && activeApproval ? (
-                          <strong>{activeApproval.title}</strong>
-                        ) : null}
-                      </div>
-
-                      {detailSessionState === 'processing' ? (
-                        <p>{copy.processingHint}</p>
-                      ) : null}
-
-                      {detailSessionState === 'normal' ? (
-                        <>
-                          <p>{sessionIsChat
-                            ? (detail.session.hasTranscript ? copy.normalHint : copy.noTurnsHint)
-                            : copy.noTurnsHint}
-                          </p>
-                          {sessionIsChat && detail.session.lastIssue ? <p className="detail-card-meta">{detail.session.lastIssue}</p> : null}
-                        </>
-                      ) : null}
-
-                      {detailSessionState === 'pending' ? (
-                        <>
-                          {activeApproval ? <p>{activeApproval.risk}</p> : null}
-                          <p className="detail-card-meta">{copy.approvalPendingHint}</p>
-                          {activeApproval ? <p className="detail-card-meta">{copy.approvalKeyboardHint}</p> : null}
-                          {pendingApprovals.length > 1 ? (
-                            <p className="detail-card-meta">{formatRemainingApprovals(pendingApprovals.length - 1, language)}</p>
-                          ) : null}
-                        </>
-                      ) : null}
-
-                      {detailSessionState === 'completed' ? (
-                        <p>{copy.turnCompleteHint}</p>
-                      ) : null}
-
-                      {detailSessionState === 'new' ? (
-                        <p>{copy.noTurnsHint}</p>
-                      ) : null}
-
-                      {detailSessionState === 'error' ? (
-                        <p>{detail.session.lastIssue ?? copy.errorHint}</p>
-                      ) : null}
-
-                      {detailSessionState === 'stale' ? (
-                        <p>{copy.staleHint}</p>
-                      ) : null}
-                    </div>
-
-                    {detailSessionState === 'pending' && activeApproval ? (
-                      <div className="approval-inline-options session-status-actions">
-                        {approvalOptions.map((option, index) => (
-                          <button
-                            key={`${option.decision}-${option.scope}`}
-                            type="button"
-                            className={`approval-inline-option ${index === approvalSelectionIndex ? 'approval-inline-option-active' : ''} ${option.tone === 'secondary' ? 'approval-inline-option-secondary' : ''}`}
-                            onClick={() => void handleApprovalAction(activeApproval, option.decision, option.scope)}
-                            disabled={busy === activeApproval.id}
-                          >
-                            <span className="approval-inline-marker">{index === approvalSelectionIndex ? '›' : ''}</span>
-                            <span>{option.label}</span>
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                  </section>
-                ) : null}
-
                 <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
                   <div className="composer-shell">
                     <input
@@ -5823,7 +5848,7 @@ export function App() {
                       <textarea
                         ref={promptTextareaRef}
                         value={prompt}
-                        onChange={(event) => setPrompt(event.target.value)}
+                        onChange={(event) => updatePromptDraft(selectedPromptDraftKey, event.target.value)}
                         onPaste={handleComposerPaste}
                         onKeyDown={handlePromptKeyDown}
                         onCompositionStart={handlePromptCompositionStart}
@@ -6153,6 +6178,7 @@ export function App() {
 
               <button
                 type="submit"
+                className="button-warm"
                 disabled={busy === 'create-workspace' || (workspaceDraftSource === 'empty' ? !workspaceDraftName.trim() : !workspaceDraftGitUrl.trim())}
               >
                 {busy === 'create-workspace' ? copy.creating : copy.createWorkspaceAction}
