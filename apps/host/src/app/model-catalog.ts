@@ -1,5 +1,6 @@
-import type { CodexAppServerClient } from '../codex-app-server.js';
-import type { ModelOption, ReasoningEffort } from '../types.js';
+import { DEFAULT_AGENT_EXECUTOR } from '../executor.js';
+import type { AgentExecutor, ExecutorModelCatalog, ModelOption, ReasoningEffort } from '../types.js';
+import type { AgentRuntimeRegistry, RuntimeModelCatalogPort } from './agent-runtime.js';
 
 const FALLBACK_MODELS: ModelOption[] = [
   {
@@ -14,41 +15,88 @@ const FALLBACK_MODELS: ModelOption[] = [
   },
 ];
 
+type RuntimeCatalogSource = RuntimeModelCatalogPort | Pick<AgentRuntimeRegistry, 'defaultExecutor' | 'entries' | 'supportedExecutors'>;
+
+function isRegistrySource(source: RuntimeCatalogSource): source is Pick<AgentRuntimeRegistry, 'defaultExecutor' | 'entries' | 'supportedExecutors'> {
+  return typeof (source as Pick<AgentRuntimeRegistry, 'entries'>).entries === 'function';
+}
+
 export class ModelCatalog {
-  private models = [...FALLBACK_MODELS];
+  private readonly modelsByExecutor = new Map<AgentExecutor, ModelOption[]>([
+    [DEFAULT_AGENT_EXECUTOR, [...FALLBACK_MODELS]],
+  ]);
 
-  constructor(private readonly codex: CodexAppServerClient) {}
+  constructor(private readonly runtimeSource: RuntimeCatalogSource) {}
 
-  list() {
-    return this.models;
+  private defaultExecutor() {
+    return isRegistrySource(this.runtimeSource)
+      ? this.runtimeSource.defaultExecutor()
+      : DEFAULT_AGENT_EXECUTOR;
+  }
+
+  private configuredExecutors() {
+    return isRegistrySource(this.runtimeSource)
+      ? this.runtimeSource.supportedExecutors()
+      : [DEFAULT_AGENT_EXECUTOR];
+  }
+
+  private runtimeEntries() {
+    return isRegistrySource(this.runtimeSource)
+      ? this.runtimeSource.entries().map(({ executor, runtime }: { executor: AgentExecutor; runtime: unknown }) => ({
+        executor,
+        runtime: runtime as RuntimeModelCatalogPort,
+      }))
+      : [{
+        executor: DEFAULT_AGENT_EXECUTOR,
+        runtime: this.runtimeSource,
+      }];
+  }
+
+  private modelsFor(executor: AgentExecutor) {
+    return this.modelsByExecutor.get(executor)
+      ?? (executor === DEFAULT_AGENT_EXECUTOR ? FALLBACK_MODELS : []);
+  }
+
+  list(executor: AgentExecutor = this.defaultExecutor()) {
+    return this.modelsFor(executor);
+  }
+
+  listByExecutor(): ExecutorModelCatalog {
+    return Object.fromEntries(
+      this.configuredExecutors().map((executor: AgentExecutor) => [executor, this.list(executor)]),
+    ) as ExecutorModelCatalog;
   }
 
   async refresh() {
-    try {
-      const next = await this.codex.listModels();
-      if (next.length > 0) {
-        this.models = next.filter((entry) => !entry.hidden);
+    for (const { executor, runtime } of this.runtimeEntries()) {
+      try {
+        const next = await runtime.listModels();
+        if (next.length > 0) {
+          this.modelsByExecutor.set(executor, next.filter((entry: ModelOption) => !entry.hidden));
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`model/list failed for ${executor}, using fallback catalog: ${message}`);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`model/list failed, using fallback catalog: ${message}`);
     }
 
-    return this.models;
+    return this.list();
   }
 
-  currentDefaultModel() {
-    return this.models.find((entry) => entry.isDefault)?.model ?? this.models[0]?.model ?? FALLBACK_MODELS[0]!.model;
+  currentDefaultModel(executor: AgentExecutor = this.defaultExecutor()) {
+    const models = this.list(executor);
+    return models.find((entry) => entry.isDefault)?.model ?? models[0]?.model ?? FALLBACK_MODELS[0]!.model;
   }
 
-  findByModel(model: string | null | undefined) {
-    return this.models.find((entry) => entry.model === model) ?? null;
+  findByModel(model: string | null | undefined, executor: AgentExecutor = this.defaultExecutor()) {
+    return this.list(executor).find((entry) => entry.model === model) ?? null;
   }
 
-  resolveOption(model: string | null | undefined) {
-    return this.findByModel(model)
-      ?? this.models.find((entry) => entry.isDefault)
-      ?? this.models[0]
+  resolveOption(model: string | null | undefined, executor: AgentExecutor = this.defaultExecutor()) {
+    const models = this.list(executor);
+    return this.findByModel(model, executor)
+      ?? models.find((entry) => entry.isDefault)
+      ?? models[0]
       ?? FALLBACK_MODELS[0]!;
   }
 
@@ -67,7 +115,7 @@ export class ModelCatalog {
     return modelOption.supportedReasoningEfforts[0] ?? 'xhigh';
   }
 
-  currentDefaultEffort(model: string | null | undefined) {
-    return this.preferredReasoningEffortForModel(this.resolveOption(model));
+  currentDefaultEffort(model: string | null | undefined, executor: AgentExecutor = this.defaultExecutor()) {
+    return this.preferredReasoningEffortForModel(this.resolveOption(model, executor));
   }
 }

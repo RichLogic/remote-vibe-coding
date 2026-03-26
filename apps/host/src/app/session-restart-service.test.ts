@@ -19,7 +19,7 @@ function buildChatSession(): ConversationRecord {
     workspace: '/tmp/old-chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: true,
     fullHostEnabled: false,
     status: 'error',
@@ -41,6 +41,7 @@ function buildCodeSession(): SessionRecord {
     ownerUserId: 'owner-1',
     ownerUsername: 'owner',
     sessionType: 'code',
+    executor: 'codex',
     workspaceId: 'workspace-1',
     threadId: 'thread-code-old',
     activeTurnId: 'turn-code',
@@ -49,7 +50,7 @@ function buildCodeSession(): SessionRecord {
     workspace: '/tmp/code',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: true,
     fullHostEnabled: false,
     status: 'error',
@@ -73,12 +74,18 @@ function createHarness() {
   };
 
   const restartSessionThread = createSessionRestartService({
-    codex: {
+    chatRuntime: {
       async startThread(options) {
         threadStarts.push(options);
         return { thread: { id: `next-thread-${threadStarts.length}` } };
       },
     },
+    runtimeForExecutor: () => ({
+      async startThread(options) {
+        threadStarts.push(options);
+        return { thread: { id: `next-thread-${threadStarts.length}` } };
+      },
+    }),
     store: {
       clearApprovals(sessionId) {
         clears.approvals.push(sessionId);

@@ -20,7 +20,7 @@ function buildChatSession(): ConversationRecord {
     workspace: '/tmp/chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'running',
@@ -42,6 +42,7 @@ function buildCodeSession(): SessionRecord {
     ownerUserId: 'owner-1',
     ownerUsername: 'owner',
     sessionType: 'code',
+    executor: 'codex',
     workspaceId: 'workspace-1',
     threadId: 'thread-code',
     activeTurnId: 'turn-2',
@@ -50,7 +51,7 @@ function buildCodeSession(): SessionRecord {
     workspace: '/tmp/code',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'running',
@@ -76,6 +77,7 @@ function createHarness(session: TurnRecord | null, overrides?: {
     coding: [] as Array<{ sessionId: string; thread: CodexThread | null | undefined }>,
   };
   const syncedConversations: Array<{ sessionId: string; thread: CodexThread | null }> = [];
+  const syncedCodingSessions: Array<{ sessionId: string; thread: CodexThread | null }> = [];
   const thread = { id: session?.threadId ?? 'thread-missing', items: [] } as unknown as CodexThread;
 
   const handler = createCodexNotificationHandler({
@@ -109,6 +111,9 @@ function createHarness(session: TurnRecord | null, overrides?: {
     async syncConversationHistoryFromThread(conversation, currentThread) {
       syncedConversations.push({ sessionId: conversation.id, thread: currentThread });
     },
+    async syncCodingHistoryFromThread(codingSession, currentThread) {
+      syncedCodingSessions.push({ sessionId: codingSession.id, thread: currentThread });
+    },
     latestMeaningfulChatReplyFromTurn() {
       return Object.prototype.hasOwnProperty.call(overrides ?? {}, 'latestReply')
         ? overrides?.latestReply ?? null
@@ -125,7 +130,7 @@ function createHarness(session: TurnRecord | null, overrides?: {
     now: () => '2026-01-02T00:00:00.000Z',
   });
 
-  return { handler, liveEvents, updatedRecords, autoTitles, syncedConversations };
+  return { handler, liveEvents, updatedRecords, autoTitles, syncedConversations, syncedCodingSessions };
 }
 
 test('Codex notification handler updates session status on thread status changes', async () => {
@@ -158,7 +163,14 @@ test('Codex notification handler marks coding sessions as needing approval after
     recordId: 'code-1',
     patch: { activeTurnId: null, status: 'needs-approval', lastIssue: null },
   });
-  assert.deepEqual(harness.autoTitles.coding, [{ sessionId: 'code-1', thread: undefined }]);
+  assert.deepEqual(harness.syncedCodingSessions, [{
+    sessionId: 'code-1',
+    thread: { id: 'thread-code', items: [] } as unknown as CodexThread,
+  }]);
+  assert.deepEqual(harness.autoTitles.coding, [{
+    sessionId: 'code-1',
+    thread: { id: 'thread-code', items: [] } as unknown as CodexThread,
+  }]);
 });
 
 test('Codex notification handler syncs chat history and flags empty replies', async () => {

@@ -1,9 +1,13 @@
 import { ChatHistoryRepository } from '../chat-history.js';
 import { CloudflareTunnelManager } from '../cloudflare.js';
-import { CodexAppServerClient } from '../codex-app-server.js';
+import { CodingHistoryRepository } from '../coding/history.js';
 import { CodingRepository } from '../coding/repository.js';
+import { ClaudeCodeCliRuntime, claudeCodeExecutableAvailable } from '../claude-code-runtime.js';
+import { DEFAULT_AGENT_EXECUTOR } from '../executor.js';
 import { getMongoDb } from '../mongo.js';
 import { SessionStore } from '../store.js';
+import { CodexAppServerClient } from '../codex-app-server.js';
+import { StaticAgentRuntimeRegistry, type AgentRuntimeRegistry } from './agent-runtime.js';
 import { HostAuthState } from './auth-state.js';
 import { CloudflareStatusCache } from './cloudflare-status-cache.js';
 import { ModelCatalog } from './model-catalog.js';
@@ -12,8 +16,9 @@ export interface HostRuntime {
   auth: HostAuthState;
   store: SessionStore;
   chatHistory: ChatHistoryRepository;
+  codingHistory: CodingHistoryRepository;
   coding: CodingRepository;
-  codex: CodexAppServerClient;
+  runtimeRegistry: AgentRuntimeRegistry;
   cloudflare: CloudflareTunnelManager;
   cloudflareStatusCache: CloudflareStatusCache;
   modelCatalog: ModelCatalog;
@@ -46,8 +51,10 @@ export async function initializeHostRuntime(options: InitializeHostRuntimeOption
 
   const mongoDb = await getMongoDb();
   const chatHistory = new ChatHistoryRepository(mongoDb);
+  const codingHistory = new CodingHistoryRepository(mongoDb);
   const coding = new CodingRepository(mongoDb);
   await chatHistory.ensureIndexes();
+  await codingHistory.ensureIndexes();
   await coding.ensureIndexes();
 
   const seedUsers = auth.listUsers();
@@ -58,8 +65,14 @@ export async function initializeHostRuntime(options: InitializeHostRuntimeOption
   await options.loadChatSystemPromptText();
   await options.loadChatRolePresetConfig();
 
-  const codex = new CodexAppServerClient();
-  await codex.ensureStarted();
+  const agentRuntime = new CodexAppServerClient();
+  await agentRuntime.ensureStarted();
+  const claudeRuntime = claudeCodeExecutableAvailable()
+    ? new ClaudeCodeCliRuntime()
+    : null;
+  if (claudeRuntime) {
+    await claudeRuntime.ensureStarted();
+  }
   await store.markAllStale(options.staleSessionMessage);
   await chatHistory.markAllStale(options.staleSessionMessage);
   await coding.markAllStale(options.staleSessionMessage);
@@ -68,21 +81,29 @@ export async function initializeHostRuntime(options: InitializeHostRuntimeOption
   const cloudflareStatusCache = new CloudflareStatusCache(cloudflare);
   void cloudflareStatusCache.refresh().catch(() => undefined);
 
-  const modelCatalog = new ModelCatalog(codex);
+  const runtimeRegistry = new StaticAgentRuntimeRegistry({
+    [DEFAULT_AGENT_EXECUTOR]: agentRuntime,
+    ...(claudeRuntime ? { 'claude-code': claudeRuntime } : {}),
+  }, DEFAULT_AGENT_EXECUTOR);
+  const modelCatalog = new ModelCatalog(runtimeRegistry);
   await modelCatalog.refresh();
 
   return {
     auth,
     store,
     chatHistory,
+    codingHistory,
     coding,
-    codex,
+    runtimeRegistry,
     cloudflare,
     cloudflareStatusCache,
     modelCatalog,
     async shutdown() {
       await cloudflare.disconnect();
-      await codex.stop();
+      if (claudeRuntime) {
+        await claudeRuntime.stop();
+      }
+      await agentRuntime.stop();
     },
   };
 }

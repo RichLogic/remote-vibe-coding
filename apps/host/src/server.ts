@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { basename, extname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -8,36 +8,54 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyCookie from '@fastify/cookie';
 import fastifyMultipart from '@fastify/multipart';
-import fastifyStatic from '@fastify/static';
 import { PDFParse } from 'pdf-parse';
 
+import { normalizeApprovalMode } from './approval-mode.js';
+import { normalizeAgentExecutor } from './executor.js';
+import { normalizeChatGeneratedTitle, normalizeGeneratedTitle } from './generated-title.js';
 import {
   AUTH_COOKIE_NAME,
   loginPageHtml,
 } from './auth.js';
-import { AdminUserService, AdminUserServiceError } from './app/admin-user-service.js';
+import { AdminUserService } from './app/admin-user-service.js';
 import {
-  ChatConversationServiceError,
   createChatConversationService,
 } from './app/chat-conversation-service.js';
-import { ChatTurnServiceError, createChatTurnService } from './app/chat-turn-service.js';
+import { createChatTurnService } from './app/chat-turn-service.js';
 import {
   CodingWorkspaceServiceError,
   createCodingWorkspaceService,
 } from './app/coding-workspace-service.js';
-import { createCodexNotificationHandler } from './app/codex-notification-handler.js';
-import { createCodexServerRequestHandler } from './app/codex-server-request-handler.js';
+import { createRuntimeNotificationHandler } from './app/codex-notification-handler.js';
+import { createRuntimeServerRequestHandler } from './app/codex-server-request-handler.js';
 import { createDeveloperSessionService } from './app/developer-session-create-service.js';
 import { initializeHostRuntime } from './app/host-runtime.js';
-import { resolveRequestAuth } from './app/request-auth.js';
+import { registerRequestAuthHook, type AuthenticatedRequest } from './app/request-auth-hook.js';
+import { bindRuntimeEvents } from './app/runtime-events.js';
 import { createSessionForkService } from './app/session-fork-service.js';
 import { createSessionRestartService } from './app/session-restart-service.js';
 import { createTurnStartService } from './app/turn-start-service.js';
+import { createUserWorkspaceService } from './app/user-workspace-service.js';
+import { registerWebClientServing } from './app/web-client-serving.js';
 import { buildBootstrapPayload, buildCodingBootstrapPayload } from './bootstrap.js';
 import {
   type ChatMessageRecord,
   type PersistedChatAttachmentRef,
 } from './chat-history.js';
+import { ChatPromptConfigStore } from './chat-prompt-config.js';
+import {
+  buildChatBootstrapPayload,
+  buildChatConversationDetailResponse,
+  toApiChatConversation,
+  unavailableChatConversationPatch as createUnavailableChatConversationPatch,
+} from './chat-presentation.js';
+import { registerAdminRoutes } from './routes/admin-routes.js';
+import { registerChatRoutes } from './routes/chat-routes.js';
+import { registerCodingRoutes } from './routes/coding-routes.js';
+import { registerCoreRoutes } from './routes/core-routes.js';
+import { registerSessionRoutes } from './routes/session-routes.js';
+import { registerWorkspaceRoutes } from './routes/workspace-routes.js';
+import { buildPersistedCodingHistory } from './coding/history.js';
 import type { CodingSessionRecord as SessionRecord } from './coding/types.js';
 import type {
   CodingBootstrapPayload,
@@ -47,37 +65,18 @@ import type {
   ReorderCodingWorkspacesRequest,
   UpdateCodingWorkspaceRequest,
 } from './coding/types.js';
-import type {
-  ChatConversation as ApiChatConversation,
-  ChatConversationDetailResponse,
-  ChatRolePresetDetail as ApiChatRolePresetDetail,
-  ChatRolePreset as ApiChatRolePreset,
-  ChatConversationSummary as ApiChatConversationSummary,
-  ChatBootstrapPayload,
-  ChatRolePresetListResponse,
-  ChatTranscriptPageResponse,
-  CreateChatRolePresetRequest,
-  CreateChatConversationRequest,
-  CreateChatMessageRequest,
-  UpdateChatRolePresetRequest,
-  UpdateChatConversationPreferencesRequest,
-  UpdateChatConversationRequest,
-} from './chat/types.js';
-import type { JsonRpcNotification, JsonRpcServerRequest } from './codex-app-server.js';
-import { CHAT_ROLE_PRESETS_FILE, CHAT_SYSTEM_PROMPT_FILE, DEV_DISABLE_AUTH, HOST, PORT, WEB_DIST_DIR, WORKSPACE_ROOT } from './config.js';
+import { DEV_DISABLE_AUTH, HOST, PORT, WEB_DIST_DIR, WORKSPACE_ROOT } from './config.js';
 import type {
   ApprovalMode,
-  ChatRecoveryState,
-  ChatUiStatus,
+  AgentExecutor,
   CodexThread,
+  CodexTurn,
   CodexThreadInput,
   CodexThreadItem,
   ConversationRecord,
-  CreateWorkspaceRequest,
   CreateConversationRequest,
   CreateSessionRequest,
   CreateTurnRequest,
-  CreateUserRequest,
   ModelOption,
   ReasoningEffort,
   ResolveApprovalRequest,
@@ -94,15 +93,9 @@ import type {
   UpdateConversationRequest,
   UpdateSessionRequest,
   UpdateSessionPreferencesRequest,
-  UpdateWorkspaceRequest,
-  UpdateUserRequest,
   UserRecord,
   WorkspaceSummary,
 } from './types.js';
-
-type AuthenticatedRequest = FastifyRequest & {
-  authUser?: UserRecord;
-};
 
 type TurnRecord = ConversationRecord | SessionRecord;
 
@@ -161,25 +154,11 @@ const CHAT_TRANSITION_ONLY_REPLY_PATTERNS = [
 
 const CHAT_EMPTY_REPLY_MESSAGE = 'Chat turn ended before returning a real answer.';
 const CHAT_INTERRUPTED_MESSAGE = 'This turn was interrupted before it finished. Send the next prompt to retry.';
+const CHAT_ATTACHMENT_REPLY_MAX_CHARS = 12_000;
+const CHAT_ATTACHMENT_REPLY_MAX_LINES = 220;
+const CHAT_ATTACHMENT_PREVIEW_MAX_CHARS = 1_600;
+const CHAT_ATTACHMENT_PREVIEW_MAX_LINES = 32;
 const execFileAsync = promisify(execFile);
-
-interface ChatRolePresetConfigEntry {
-  id: string;
-  label: string;
-  description: string | null;
-  promptText: string;
-}
-
-interface ChatRolePresetConfigState {
-  defaultPresetId: string | null;
-  presets: ChatRolePresetConfigEntry[];
-}
-
-let cachedChatSystemPromptText: string | null = null;
-let cachedChatRolePresetConfig: ChatRolePresetConfigState = {
-  defaultPresetId: null,
-  presets: [],
-};
 
 function approvalTitle(method: string): string {
   switch (method) {
@@ -555,10 +534,6 @@ function normalizeSecurityProfile(value: unknown): SecurityProfile {
   return 'repo-write';
 }
 
-function normalizeApprovalMode(value: unknown): ApprovalMode {
-  return value === 'full-approval' ? 'full-approval' : 'less-approval';
-}
-
 function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
   switch (value) {
     case 'none':
@@ -636,145 +611,6 @@ function userCanUseMode(user: UserRecord, mode: 'chat' | 'developer') {
   return availableModesForUser(user).includes(mode);
 }
 
-function normalizeGeneratedTitle(value: string | null | undefined) {
-  const normalized = (value ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-  if (!normalized) return null;
-  return normalized.length > 60
-    ? `${normalized.slice(0, 59).trimEnd()}…`
-    : normalized;
-}
-
-function promptTextFromConfig(value: { prompt?: unknown; instructions?: unknown }) {
-  return typeof value.prompt === 'string'
-    ? value.prompt.trim()
-    : Array.isArray(value.instructions)
-      ? value.instructions.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).join('\n')
-      : '';
-}
-
-function normalizeChatRolePresetConfig(
-  parsed: {
-    defaultPresetId?: unknown;
-    presets?: unknown;
-  },
-): ChatRolePresetConfigState {
-  const presets = Array.isArray(parsed.presets)
-    ? parsed.presets.flatMap((entry): ChatRolePresetConfigEntry[] => {
-        if (!entry || typeof entry !== 'object') {
-          return [];
-        }
-        const record = entry as {
-          id?: unknown;
-          label?: unknown;
-          description?: unknown;
-          prompt?: unknown;
-          instructions?: unknown;
-        };
-        const id = trimOptional(record.id);
-        const label = trimOptional(record.label);
-        const promptText = promptTextFromConfig(record);
-        if (!id || !label || !promptText) {
-          return [];
-        }
-        return [{
-          id,
-          label,
-          description: trimOptional(record.description),
-          promptText,
-        }];
-      })
-    : [];
-  const dedupedPresets = presets.filter((preset, index, current) => (
-    current.findIndex((entry) => entry.id === preset.id) === index
-  ));
-  const config: ChatRolePresetConfigState = {
-    defaultPresetId: null,
-    presets: dedupedPresets,
-  };
-  config.defaultPresetId = normalizeChatRolePresetId(trimOptional(parsed.defaultPresetId), config);
-  return config;
-}
-
-async function writeJsonFileAtomic(filePath: string, payload: unknown) {
-  const content = `${JSON.stringify(payload, null, 2)}\n`;
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
-  await writeFile(tempPath, content, 'utf8');
-  await rename(tempPath, filePath);
-}
-
-async function saveChatRolePresetConfig(config: ChatRolePresetConfigState) {
-  const normalized = normalizeChatRolePresetConfig({
-    defaultPresetId: config.defaultPresetId,
-    presets: config.presets.map((preset) => ({
-      id: preset.id,
-      label: preset.label,
-      description: preset.description,
-      prompt: preset.promptText,
-    })),
-  });
-  await writeJsonFileAtomic(CHAT_ROLE_PRESETS_FILE, {
-    version: 1,
-    name: 'chat-role-presets',
-    defaultPresetId: normalized.defaultPresetId,
-    presets: normalized.presets.map((preset) => ({
-      id: preset.id,
-      label: preset.label,
-      description: preset.description,
-      prompt: preset.promptText,
-    })),
-  });
-  cachedChatRolePresetConfig = normalized;
-  return normalized;
-}
-
-function normalizeChatRolePresetId(
-  value: string | null | undefined,
-  config = cachedChatRolePresetConfig,
-) {
-  const nextId = trimOptional(value);
-  if (!nextId) {
-    return null;
-  }
-  return config.presets.some((preset) => preset.id === nextId) ? nextId : null;
-}
-
-function chatRolePresetPromptText(
-  rolePresetId: string | null | undefined,
-  config = cachedChatRolePresetConfig,
-) {
-  const normalizedId = normalizeChatRolePresetId(rolePresetId, config);
-  return config.presets.find((preset) => preset.id === normalizedId)?.promptText ?? null;
-}
-
-function stripChatPromptPreface(
-  value: string | null | undefined,
-  rolePresetId: string | null | undefined,
-  config = cachedChatRolePresetConfig,
-) {
-  const raw = (value ?? '').trim();
-  if (!raw) {
-    return null;
-  }
-
-  let stripped = raw;
-  const promptSections = [
-    cachedChatSystemPromptText?.trim() ?? null,
-    chatRolePresetPromptText(rolePresetId, config)?.trim() ?? null,
-  ];
-
-  for (const section of promptSections) {
-    if (!section || !stripped.startsWith(section)) {
-      continue;
-    }
-    stripped = stripped.slice(section.length).trim();
-  }
-
-  return stripped || null;
-}
-
 const CHAT_RECOVERY_PREFACE_LEAD = 'You are continuing an existing chat after the runtime thread was restarted.';
 
 function visibleUserTextFromThreadInput(value: string) {
@@ -785,7 +621,7 @@ function visibleUserTextFromThreadInput(value: string) {
 function looksLikeChatTurnPrefaceText(
   value: string,
   rolePresetId: string | null | undefined,
-  config = cachedChatRolePresetConfig,
+  config = chatPromptConfig.getCachedRolePresetConfig(),
 ) {
   const normalized = value.trim();
   if (!normalized) {
@@ -796,80 +632,15 @@ function looksLikeChatTurnPrefaceText(
     return true;
   }
 
-  const promptSections = [
-    cachedChatSystemPromptText?.trim() ?? null,
-    chatRolePresetPromptText(rolePresetId, config)?.trim() ?? null,
-  ];
+  const promptSections = chatPromptConfig.promptSections(rolePresetId, config);
 
   return promptSections.some((section) => Boolean(section) && normalized.startsWith(section!));
-}
-
-async function loadChatSystemPromptText() {
-  try {
-    const raw = await readFile(CHAT_SYSTEM_PROMPT_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as {
-      prompt?: unknown;
-      instructions?: unknown;
-    };
-    const promptText = promptTextFromConfig(parsed);
-    cachedChatSystemPromptText = promptText || null;
-    return cachedChatSystemPromptText;
-  } catch (error) {
-    app.log.warn(`chat system prompt load failed: ${errorMessage(error)}`);
-    cachedChatSystemPromptText = null;
-    return null;
-  }
-}
-
-async function loadChatRolePresetConfig() {
-  try {
-    const raw = await readFile(CHAT_ROLE_PRESETS_FILE, 'utf8');
-    const parsed = JSON.parse(raw) as {
-      defaultPresetId?: unknown;
-      presets?: unknown;
-    };
-    cachedChatRolePresetConfig = normalizeChatRolePresetConfig(parsed);
-    return cachedChatRolePresetConfig;
-  } catch (error) {
-    app.log.warn(`chat role presets load failed: ${errorMessage(error)}`);
-    cachedChatRolePresetConfig = {
-      defaultPresetId: null,
-      presets: [],
-    };
-    return cachedChatRolePresetConfig;
-  }
-}
-
-function apiChatRolePresets(config = cachedChatRolePresetConfig): ApiChatRolePreset[] {
-  return config.presets.map(({ id, label, description }) => ({
-    id,
-    label,
-    description,
-    isDefault: config.defaultPresetId === id,
-  }));
-}
-
-function apiChatRolePresetDetails(config = cachedChatRolePresetConfig): ApiChatRolePresetDetail[] {
-  return config.presets.map(({ id, label, description, promptText }) => ({
-    id,
-    label,
-    description,
-    prompt: promptText,
-    isDefault: config.defaultPresetId === id,
-  }));
-}
-
-function chatRolePresetListResponse(config = cachedChatRolePresetConfig): ChatRolePresetListResponse {
-  return {
-    rolePresets: apiChatRolePresetDetails(config),
-    defaultRolePresetId: config.defaultPresetId,
-  };
 }
 
 function extractFirstUserPrompt(
   thread: CodexThread | null,
   rolePresetId: string | null | undefined,
-  config = cachedChatRolePresetConfig,
+  config = chatPromptConfig.getCachedRolePresetConfig(),
 ) {
   if (!thread) return null;
 
@@ -902,10 +673,10 @@ function extractFirstUserPrompt(
 function deriveChatTitleFromThread(
   thread: CodexThread | null,
   rolePresetId: string | null | undefined,
-  config = cachedChatRolePresetConfig,
+  config = chatPromptConfig.getCachedRolePresetConfig(),
 ) {
-  return normalizeGeneratedTitle(extractFirstUserPrompt(thread, rolePresetId, config))
-    ?? normalizeGeneratedTitle(stripChatPromptPreface(thread?.preview, rolePresetId, config));
+  return normalizeChatGeneratedTitle(extractFirstUserPrompt(thread, rolePresetId, config))
+    ?? normalizeChatGeneratedTitle(chatPromptConfig.stripPromptPreface(thread?.preview, rolePresetId, config));
 }
 
 function extractFirstDeveloperPrompt(thread: CodexThread | null) {
@@ -954,254 +725,6 @@ function nextForkedSessionTitle(title: string) {
   }
 
   return `${baseTitle} (${nextIndex + 1})`;
-}
-
-function userWorkspaceRoot(username: string, userId: string) {
-  return join(
-    WORKSPACE_ROOT,
-    normalizeWorkspaceSegment(username, `user-${userId.slice(0, 8)}`),
-  );
-}
-
-async function ensureUserWorkspaceRoot(
-  username: string,
-  userId: string,
-) {
-  const root = userWorkspaceRoot(username, userId);
-  await mkdir(root, { recursive: true });
-  return root;
-}
-
-async function syncUserWorkspaceRecords(
-  username: string,
-  userId: string,
-  dependencies?: {
-    store: {
-      listWorkspacesForUser: (ownerUserId: string) => Array<WorkspaceSummary & {
-        createdAt: string;
-        updatedAt: string;
-      }>;
-    };
-    coding: {
-      listWorkspacesForUser: (ownerUserId: string) => Promise<Array<{
-        id: string;
-        ownerUsername: string;
-        name: string;
-        path: string;
-        visible: boolean;
-        sortOrder: number;
-        createdAt: string;
-        updatedAt: string;
-      }>>;
-      updateWorkspace: (
-        workspaceId: string,
-        patch: {
-          ownerUsername: string;
-          name: string;
-          visible: boolean;
-          sortOrder: number;
-          updatedAt: string;
-        },
-      ) => Promise<unknown>;
-      createWorkspace: (workspace: {
-        id: string;
-        ownerUserId: string;
-        ownerUsername: string;
-        name: string;
-        path: string;
-        visible: boolean;
-        sortOrder: number;
-        createdAt: string;
-        updatedAt: string;
-      }) => Promise<unknown>;
-    };
-  },
-) {
-  const workspaceStore = dependencies?.store ?? store;
-  const workspaceCoding = dependencies?.coding ?? coding;
-  const root = await ensureUserWorkspaceRoot(username, userId);
-  const [existingWorkspaces, legacyWorkspaces, entries] = await Promise.all([
-    workspaceCoding.listWorkspacesForUser(userId),
-    Promise.resolve(workspaceStore.listWorkspacesForUser(userId)),
-    readdir(root, { withFileTypes: true }),
-  ]);
-
-  const existingByPath = new Map(existingWorkspaces.map((workspace) => [workspace.path, workspace]));
-  const legacyByPath = new Map(
-    legacyWorkspaces
-      .filter((workspace) => workspace.path.startsWith(`${root}/`))
-      .map((workspace) => [workspace.path, workspace]),
-  );
-
-  const directories = entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-    .map((entry) => {
-      const path = join(root, entry.name);
-      const existing = existingByPath.get(path) ?? null;
-      const legacy = legacyByPath.get(path) ?? null;
-      return {
-        path,
-        existing,
-        id: existing?.id ?? legacy?.id ?? randomUUID(),
-        name: legacy?.name ?? existing?.name ?? entry.name,
-        visible: legacy?.visible ?? existing?.visible ?? true,
-        sortHint: legacy?.sortOrder ?? existing?.sortOrder ?? Number.MAX_SAFE_INTEGER,
-        createdAt: existing?.createdAt ?? legacy?.createdAt ?? new Date().toISOString(),
-        updatedAt: existing?.updatedAt ?? legacy?.updatedAt ?? new Date().toISOString(),
-      };
-    })
-    .sort((left, right) => {
-      if (left.sortHint !== right.sortHint) {
-        return left.sortHint - right.sortHint;
-      }
-      return left.name.localeCompare(right.name);
-    });
-
-  await Promise.all(directories.map(async (directory, index) => {
-    if (directory.existing) {
-      if (
-        directory.existing.ownerUsername === username
-        && directory.existing.name === directory.name
-        && directory.existing.visible === directory.visible
-        && directory.existing.sortOrder === index
-      ) {
-        return;
-      }
-
-      await workspaceCoding.updateWorkspace(directory.existing.id, {
-        ownerUsername: username,
-        name: directory.name,
-        visible: directory.visible,
-        sortOrder: index,
-        updatedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    await workspaceCoding.createWorkspace({
-      id: directory.id,
-      ownerUserId: userId,
-      ownerUsername: username,
-      name: directory.name,
-      path: directory.path,
-      visible: directory.visible,
-      sortOrder: index,
-      createdAt: directory.createdAt,
-      updatedAt: directory.updatedAt,
-    });
-  }));
-
-  return {
-    root,
-    workspacePaths: new Set(directories.map((directory) => directory.path)),
-  };
-}
-
-async function listUserWorkspaces(
-  username: string,
-  userId: string,
-): Promise<{ root: string; workspaces: WorkspaceSummary[] }> {
-  const { root, workspacePaths } = await syncUserWorkspaceRecords(username, userId);
-  const workspaces = (await coding.listWorkspacesForUser(userId))
-    .filter((workspace) => workspacePaths.has(workspace.path))
-    .map((workspace) => ({
-    id: workspace.id,
-    name: workspace.name,
-    path: workspace.path,
-    visible: workspace.visible,
-    sortOrder: workspace.sortOrder,
-    }));
-  return { root, workspaces };
-}
-
-async function ensureUserWorkspace(
-  username: string,
-  userId: string,
-  workspaceName: string,
-) {
-  const root = await ensureUserWorkspaceRoot(username, userId);
-  const workspace = join(root, workspaceName);
-  await mkdir(workspace, { recursive: true });
-  await ensureWorkspaceExists(workspace);
-  const existing = await coding.findWorkspaceByPathForUser(userId, workspace);
-  const record = existing ?? await coding.createWorkspace({
-    id: randomUUID(),
-    ownerUserId: userId,
-    ownerUsername: username,
-    name: workspaceName,
-    path: workspace,
-    visible: true,
-    sortOrder: (await coding.listWorkspacesForUser(userId)).length,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  });
-  return {
-    root,
-    id: record.id,
-    name: record.name,
-    path: record.path,
-    visible: record.visible,
-    sortOrder: record.sortOrder,
-  };
-}
-
-function workspaceNameFromGitUrl(gitUrl: string) {
-  const trimmed = gitUrl.trim();
-  const match = trimmed.match(/([^/:]+?)(?:\.git)?$/i);
-  if (!match?.[1]) {
-    return null;
-  }
-  return normalizeWorkspaceFolderName(match[1]);
-}
-
-async function cloneWorkspaceFromGit(
-  username: string,
-  userId: string,
-  gitUrl: string,
-) {
-  const workspaceName = workspaceNameFromGitUrl(gitUrl);
-  if (!workspaceName) {
-    throw new Error('Could not derive a workspace name from the Git remote.');
-  }
-
-  const root = await ensureUserWorkspaceRoot(username, userId);
-  const workspacePath = join(root, workspaceName);
-  const existing = await coding.findWorkspaceByPathForUser(userId, workspacePath);
-  if (existing) {
-    throw new Error('Workspace already exists.');
-  }
-
-  const alreadyExistsOnDisk = await stat(workspacePath)
-    .then((info) => info.isDirectory())
-    .catch(() => false);
-  if (alreadyExistsOnDisk) {
-    throw new Error('Workspace folder already exists.');
-  }
-
-  await execFileAsync('git', ['clone', gitUrl, workspacePath]);
-  await ensureWorkspaceExists(workspacePath);
-
-  const now = new Date().toISOString();
-  const record = await coding.createWorkspace({
-    id: randomUUID(),
-    ownerUserId: userId,
-    ownerUsername: username,
-    name: workspaceName,
-    path: workspacePath,
-    visible: true,
-    sortOrder: (await coding.listWorkspacesForUser(userId)).length,
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  return {
-    root,
-    id: record.id,
-    name: record.name,
-    path: record.path,
-    visible: record.visible,
-    sortOrder: record.sortOrder,
-  };
 }
 
 function attachmentContentPath(_ownerKind: 'conversation' | 'session', ownerId: string, attachmentId: string) {
@@ -1449,6 +972,113 @@ function shouldPersistChatRuntimeMessage(message: {
   return message.role !== 'assistant' || !isTransitionOnlyChatReply(message.body);
 }
 
+function truncateChatAttachmentPreview(text: string | null | undefined) {
+  const trimmed = text?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  const limitedLines = lines.slice(0, CHAT_ATTACHMENT_PREVIEW_MAX_LINES);
+  let preview = limitedLines.join('\n');
+  let truncated = lines.length > CHAT_ATTACHMENT_PREVIEW_MAX_LINES;
+
+  if (preview.length > CHAT_ATTACHMENT_PREVIEW_MAX_CHARS) {
+    preview = preview.slice(0, CHAT_ATTACHMENT_PREVIEW_MAX_CHARS);
+    truncated = true;
+  }
+
+  preview = preview.trimEnd();
+  if (!preview) {
+    return null;
+  }
+
+  return truncated ? `${preview}\n\n[...]` : preview;
+}
+
+function shouldPersistAssistantReplyAsAttachment(body: string) {
+  const trimmed = body.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return trimmed.length > CHAT_ATTACHMENT_REPLY_MAX_CHARS
+    || trimmed.split(/\r?\n/).length > CHAT_ATTACHMENT_REPLY_MAX_LINES;
+}
+
+function safeAttachmentIdPart(value: string | null | undefined, fallback: string) {
+  const normalized = (value ?? '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return normalized || fallback;
+}
+
+type ConversationRuntimeMessage = {
+  role: 'user' | 'assistant';
+  body: string;
+  attachments: PersistedChatAttachmentRef[];
+  sourceTurnId: string;
+  sourceItemId: string;
+  dedupeKey: string;
+};
+
+function chatAssistantAttachmentId(message: Pick<ConversationRuntimeMessage, 'sourceTurnId' | 'sourceItemId'>) {
+  return `chat-response-${safeAttachmentIdPart(message.sourceTurnId, 'turn')}-${safeAttachmentIdPart(message.sourceItemId, 'item')}`;
+}
+
+async function materializeLongChatAssistantAttachment(
+  conversation: ConversationRecord,
+  message: ConversationRuntimeMessage,
+) {
+  if (message.role !== 'assistant' || !shouldPersistAssistantReplyAsAttachment(message.body)) {
+    return null;
+  }
+
+  const attachmentId = chatAssistantAttachmentId(message);
+  const existingAttachment = store.getAttachment(conversation.id, attachmentId);
+  if (existingAttachment) {
+    return existingAttachment;
+  }
+
+  try {
+    const attachmentsDir = join(conversation.workspace, '.rvc-chat', 'attachments');
+    await mkdir(attachmentsDir, { recursive: true });
+
+    const now = new Date().toISOString();
+    const timestamp = now.slice(0, 19).replace(/[:T]/g, '-');
+    const storedFilename = sanitizeAttachmentFilename(
+      `chat-response-${timestamp}.md`,
+      'chat-response.md',
+    );
+    const storagePath = join(attachmentsDir, `${attachmentId}-${storedFilename}`);
+    const buffer = Buffer.from(message.body, 'utf8');
+    await writeFile(storagePath, buffer);
+
+    const attachment: SessionAttachmentRecord = {
+      id: attachmentId,
+      ownerKind: 'conversation',
+      ownerId: conversation.id,
+      sessionId: conversation.id,
+      ownerUserId: conversation.ownerUserId,
+      ownerUsername: conversation.ownerUsername,
+      kind: 'file',
+      filename: storedFilename,
+      mimeType: 'text/markdown; charset=utf-8',
+      sizeBytes: buffer.byteLength,
+      storagePath,
+      extractedText: message.body,
+      consumedAt: now,
+      createdAt: now,
+    };
+
+    await store.addAttachment(attachment);
+    return attachment;
+  } catch {
+    return null;
+  }
+}
+
 async function extractPdfText(buffer: Buffer) {
   try {
     const parser = new PDFParse({ data: buffer });
@@ -1615,16 +1245,14 @@ function itemToTranscriptEntry(
   return null;
 }
 
-function collectTranscriptEntries(
-  thread: CodexThread | null,
+function collectTranscriptEntriesFromTurns(
+  turns: CodexTurn[],
   sessionId: string,
   attachments: SessionAttachmentRecord[],
   attachmentBuilder: AttachmentSummaryBuilder = attachmentSummary,
 ) {
-  if (!thread) return [];
-
   const entries: SessionTranscriptEntry[] = [];
-  for (const turn of thread.turns) {
+  for (const turn of turns) {
     for (const item of turn.items) {
       const entry = itemToTranscriptEntry(item, entries.length, sessionId, attachments, attachmentBuilder);
       if (entry) {
@@ -1635,11 +1263,18 @@ function collectTranscriptEntries(
   return entries;
 }
 
-function collectCommands(thread: CodexThread | null) {
-  if (!thread) return [];
+function collectTranscriptEntries(
+  thread: CodexThread | null,
+  sessionId: string,
+  attachments: SessionAttachmentRecord[],
+  attachmentBuilder: AttachmentSummaryBuilder = attachmentSummary,
+) {
+  return collectTranscriptEntriesFromTurns(thread?.turns ?? [], sessionId, attachments, attachmentBuilder);
+}
 
+function collectCommandsFromTurns(turns: CodexTurn[]) {
   const commands: SessionCommandEvent[] = [];
-  for (const turn of thread.turns) {
+  for (const turn of turns) {
     for (const item of turn.items) {
       if (item.type !== 'commandExecution') continue;
       const commandItem = item as {
@@ -1668,11 +1303,13 @@ function collectCommands(thread: CodexThread | null) {
   return commands;
 }
 
-function collectFileChanges(thread: CodexThread | null) {
-  if (!thread) return [];
+function collectCommands(thread: CodexThread | null) {
+  return collectCommandsFromTurns(thread?.turns ?? []);
+}
 
+function collectFileChangesFromTurns(turns: CodexTurn[]) {
   const changes: SessionFileChangeEvent[] = [];
-  for (const turn of thread.turns) {
+  for (const turn of turns) {
     for (const item of turn.items) {
       if (item.type !== 'fileChange') continue;
       const fileChangeItem = item as {
@@ -1698,6 +1335,10 @@ function collectFileChanges(thread: CodexThread | null) {
     }
   }
   return changes;
+}
+
+function collectFileChanges(thread: CodexThread | null) {
+  return collectFileChangesFromTurns(thread?.turns ?? []);
 }
 
 function toThreadSummary(thread: CodexThread | null) {
@@ -1749,6 +1390,7 @@ function attachmentRefsFromRecords(attachments: SessionAttachmentRecord[]): Pers
     mimeType: attachment.mimeType,
     sizeBytes: attachment.sizeBytes,
     storagePath: attachment.storagePath,
+    previewText: truncateChatAttachmentPreview(attachment.extractedText),
     createdAt: attachment.createdAt,
   }));
 }
@@ -1807,6 +1449,12 @@ function formatChatMessageForMemory(message: ChatMessageRecord) {
   if (text) {
     return text;
   }
+  const attachmentPreview = message.attachments
+    .map((attachment) => attachment.previewText?.trim() ?? '')
+    .find((value) => value.length > 0);
+  if (attachmentPreview) {
+    return attachmentPreview;
+  }
   if (message.attachments.length > 0) {
     const count = message.attachments.length;
     return `[${count} attachment${count === 1 ? '' : 's'} omitted from recovery context]`;
@@ -1855,7 +1503,7 @@ async function waitForTurnThread(threadId: string, turnId: string, timeoutMs = C
 
   while (Date.now() < deadline) {
     try {
-      const response = await codex.readThread(threadId);
+      const response = await chatRuntime.readThread(threadId);
       const thread = isCodexThread(response.thread) ? response.thread : null;
       const turn = thread?.turns.find((entry) => entry.id === turnId) ?? null;
       if (thread && turn && !turnIsActive(turn.status)) {
@@ -1895,23 +1543,9 @@ function collectConversationRuntimeMessages(
   conversation: ConversationRecord,
   thread: CodexThread,
   attachments: SessionAttachmentRecord[],
-): Array<{
-  role: 'user' | 'assistant';
-  body: string;
-  attachments: PersistedChatAttachmentRef[];
-  sourceTurnId: string;
-  sourceItemId: string;
-  dedupeKey: string;
-}> {
+) : ConversationRuntimeMessage[] {
   const attachmentsById = new Map(attachments.map((attachment) => [attachment.id, attachment]));
-  const messages: Array<{
-    role: 'user' | 'assistant';
-    body: string;
-    attachments: PersistedChatAttachmentRef[];
-    sourceTurnId: string;
-    sourceItemId: string;
-    dedupeKey: string;
-  }> = [];
+  const messages: ConversationRuntimeMessage[] = [];
 
   for (const turn of thread.turns) {
     if (conversation.activeTurnId && turn.id === conversation.activeTurnId) {
@@ -1934,15 +1568,8 @@ function collectConversationRuntimeMessages(
         attachments: entry.attachments
           .map((attachment) => attachmentsById.get(attachment.id))
           .filter((attachment): attachment is SessionAttachmentRecord => Boolean(attachment))
-          .map((attachment) => ({
-            attachmentId: attachment.id,
-            kind: attachment.kind,
-            filename: attachment.filename,
-            mimeType: attachment.mimeType,
-            sizeBytes: attachment.sizeBytes,
-            storagePath: attachment.storagePath,
-            createdAt: attachment.createdAt,
-        })),
+          .map((attachment) => attachmentRefsFromRecords([attachment])[0])
+          .filter((attachment): attachment is PersistedChatAttachmentRef => Boolean(attachment)),
         sourceTurnId: turn.id,
         sourceItemId: item.id,
         dedupeKey: entry.kind === 'user' ? `user:${turn.id}` : `assistant:${turn.id}:${item.id}`,
@@ -1969,15 +1596,74 @@ async function syncConversationHistoryFromThread(conversation: ConversationRecor
     return;
   }
 
-  await chatHistory.appendMessages(conversation, persistedMessages.map((message) => ({
-    role: message.role,
-    body: message.body,
-    attachments: message.attachments,
-    sourceThreadId: thread.id,
-    sourceTurnId: message.sourceTurnId,
-    sourceItemId: message.sourceItemId,
-    dedupeKey: message.dedupeKey,
-  })));
+  const historyInputs = [];
+  for (const message of persistedMessages) {
+    const generatedAttachment = await materializeLongChatAssistantAttachment(conversation, message);
+    historyInputs.push({
+      role: message.role,
+      body: generatedAttachment ? '' : message.body,
+      attachments: generatedAttachment ? attachmentRefsFromRecords([generatedAttachment]) : message.attachments,
+      sourceThreadId: thread.id,
+      sourceTurnId: message.sourceTurnId,
+      sourceItemId: message.sourceItemId,
+      dedupeKey: message.dedupeKey,
+    });
+  }
+
+  await chatHistory.appendMessages(conversation, historyInputs);
+}
+
+function projectPersistedCodingTurns(
+  session: SessionRecord,
+  thread: CodexThread | null,
+  attachments: SessionAttachmentRecord[],
+) {
+  if (!thread) {
+    return [];
+  }
+
+  return thread.turns
+    .filter((turn) => !turnIsActive(turn.status))
+    .map((turn) => ({
+      turnId: turn.id,
+      threadId: thread.id,
+      status: turn.status,
+      transcriptEntries: collectTranscriptEntriesFromTurns([turn], session.id, attachments),
+      commands: collectCommandsFromTurns([turn]),
+      changes: collectFileChangesFromTurns([turn]),
+    }));
+}
+
+async function syncCodingHistoryFromThread(session: SessionRecord, thread: CodexThread | null) {
+  const attachments = store.listAttachments(session.id);
+  const projections = projectPersistedCodingTurns(session, thread, attachments);
+  if (projections.length === 0) {
+    return codingHistory.listTurns(session.id);
+  }
+
+  return codingHistory.mergeTurnProjections(session.id, projections);
+}
+
+async function buildCodingHistoryView(
+  session: SessionRecord,
+  thread: CodexThread | null,
+  attachmentBuilder: AttachmentSummaryBuilder = attachmentSummary,
+) {
+  const persistedTurns = await syncCodingHistoryFromThread(session, thread);
+  const attachments = store.listAttachments(session.id);
+  const activeTurns = thread?.turns.filter((turn) => turnIsActive(turn.status)) ?? [];
+  const liveSegments = activeTurns.length > 0
+    ? [{
+        transcriptEntries: collectTranscriptEntriesFromTurns(activeTurns, session.id, attachments, attachmentBuilder),
+        commands: collectCommandsFromTurns(activeTurns),
+        changes: collectFileChangesFromTurns(activeTurns),
+      }]
+    : [];
+
+  return buildPersistedCodingHistory([
+    ...persistedTurns,
+    ...liveSegments,
+  ]);
 }
 
 async function generateConversationSummary(
@@ -1989,12 +1675,12 @@ async function generateConversationSummary(
     return existingSummary?.trim() ?? '';
   }
 
-  const threadResponse = await codex.startThread({
+  const threadResponse = await chatRuntime.startThread({
     cwd: conversation.workspace,
     securityProfile: 'read-only',
     model: conversation.model,
   });
-  const turnResponse = await codex.startTurn(
+  const turnResponse = await chatRuntime.startTurn(
     threadResponse.thread.id,
     [textThreadInput(buildChatSummaryPrompt(existingSummary, messages))],
     {
@@ -2073,6 +1759,9 @@ const app = Fastify({
   logger: true,
   trustProxy: true,
 });
+const chatPromptConfig = new ChatPromptConfigStore((message) => {
+  app.log.warn(message);
+});
 
 await app.register(cors, {
   origin: true,
@@ -2085,15 +1774,44 @@ await app.register(fastifyMultipart, {
   },
 });
 
+const workspaceService = createUserWorkspaceService({
+  workspaceRoot: WORKSPACE_ROOT,
+  normalizeWorkspaceSegment,
+  normalizeWorkspaceFolderName,
+  ensureWorkspaceExists,
+  cloneWorkspaceInto: async (gitUrl, workspacePath) => {
+    await execFileAsync('git', ['clone', gitUrl, workspacePath]);
+  },
+});
+
 const runtime = await initializeHostRuntime({
   staleSessionMessage: STALE_SESSION_MESSAGE,
-  syncUserWorkspaceRecords,
-  loadChatSystemPromptText,
-  loadChatRolePresetConfig,
+  syncUserWorkspaceRecords: (username, userId, dependencies) => (
+    workspaceService.syncUserWorkspaceRecords(username, userId, dependencies)
+  ),
+  loadChatSystemPromptText: () => chatPromptConfig.loadSystemPromptText(),
+  loadChatRolePresetConfig: () => chatPromptConfig.loadRolePresetConfig(),
 });
-const { auth, store, chatHistory, coding, codex, cloudflare, cloudflareStatusCache, modelCatalog } = runtime;
+const { auth, store, chatHistory, codingHistory, coding, runtimeRegistry, cloudflare, cloudflareStatusCache, modelCatalog } = runtime;
+const chatRuntime = runtimeRegistry.defaultRuntime();
+const runtimeForExecutor = (executor: AgentExecutor) => runtimeRegistry.require(executor);
+const runtimeForRecord = (record: TurnRecord) => (
+  isDeveloperSession(record)
+    ? runtimeForExecutor(record.executor)
+    : chatRuntime
+);
+const userWorkspaceRoot = (username: string, userId: string) => workspaceService.userWorkspaceRoot(username, userId);
+const listUserWorkspaces = (username: string, userId: string) => (
+  workspaceService.listUserWorkspaces(username, userId, { store, coding })
+);
+const ensureUserWorkspace = (username: string, userId: string, workspaceName: string) => (
+  workspaceService.ensureUserWorkspace(username, userId, workspaceName, { coding })
+);
+const cloneWorkspaceFromGit = (username: string, userId: string, gitUrl: string) => (
+  workspaceService.cloneWorkspaceFromGit(username, userId, gitUrl, { coding })
+);
 const adminUserService = new AdminUserService(auth, store, chatHistory, coding);
-const handleNotification = createCodexNotificationHandler({
+const handleNotification = createRuntimeNotificationHandler({
   store,
   findRecordByThreadId,
   updateRecord,
@@ -2102,37 +1820,74 @@ const handleNotification = createCodexNotificationHandler({
   maybeAutoTitleChatSession,
   maybeAutoTitleCodingSession,
   syncConversationHistoryFromThread,
+  syncCodingHistoryFromThread,
   latestMeaningfulChatReplyFromTurn,
   isTransitionOnlyChatReply,
   summarizeNotification,
   emptyReplyMessage: CHAT_EMPTY_REPLY_MESSAGE,
 });
-const handleServerRequest = createCodexServerRequestHandler({
-  codex,
-  store,
-  coding,
-  findRecordByThreadId,
-  updateRecord,
-  approvalTitle,
-  approvalRisk,
-  blockedChatPermissionReason,
-  requestedPermissionsFromParams,
-});
-
-function currentDefaultModel() {
-  return modelCatalog.currentDefaultModel();
+function currentDefaultModel(executor?: AgentExecutor) {
+  return modelCatalog.currentDefaultModel(executor);
 }
 
-function resolveModelOption(model: string | null | undefined) {
-  return modelCatalog.resolveOption(model);
+function resolveModelOption(model: string | null | undefined, executor?: AgentExecutor) {
+  return modelCatalog.resolveOption(model, executor);
 }
 
 function preferredReasoningEffortForModel(modelOption: ModelOption) {
   return modelCatalog.preferredReasoningEffortForModel(modelOption);
 }
 
-function currentDefaultEffort(model: string | null | undefined) {
-  return modelCatalog.currentDefaultEffort(model);
+function currentDefaultEffort(model: string | null | undefined, executor?: AgentExecutor) {
+  return modelCatalog.currentDefaultEffort(model, executor);
+}
+
+function toApiChatConversationRecord(record: ConversationRecord) {
+  return toApiChatConversation(record, {
+    normalizeRolePresetId: (value) => chatPromptConfig.normalizeRolePresetId(value),
+  });
+}
+
+function buildChatBootstrapResponse(
+  currentUser: UserRecord,
+  conversations: ConversationRecord[],
+  rolePresets: ReturnType<ChatPromptConfigStore['apiRolePresets']>,
+  defaultRolePresetId: string | null,
+) {
+  const defaultModel = currentDefaultModel();
+  return buildChatBootstrapPayload({
+    currentUser,
+    conversations,
+    rolePresets,
+    defaultRolePresetId,
+    availableModes: availableModesForUser(currentUser),
+    defaultMode: defaultModeForUser(currentUser),
+    availableModels: modelCatalog.list(),
+    defaultModel,
+    defaultReasoningEffort: currentDefaultEffort(defaultModel),
+    normalizeRolePresetId: (value) => chatPromptConfig.normalizeRolePresetId(value),
+  });
+}
+
+function buildChatConversationDetailPayload(
+  conversation: ConversationRecord,
+  thread: ReturnType<typeof toThreadSummary>,
+  transcriptTotal: number,
+) {
+  return buildChatConversationDetailResponse({
+    conversation,
+    thread,
+    transcriptTotal,
+    draftAttachments: store.listDraftAttachments(conversation.id).map(chatAttachmentSummary),
+    normalizeRolePresetId: (value) => chatPromptConfig.normalizeRolePresetId(value),
+  });
+}
+
+function unavailableChatConversationStatePatch(
+  record: Pick<ConversationRecord, 'activeTurnId' | 'status' | 'lastIssue'>,
+  reason = STALE_SESSION_MESSAGE,
+) {
+  return createUnavailableChatConversationPatch(record, CHAT_INTERRUPTED_MESSAGE, reason);
 }
 
 const {
@@ -2142,7 +1897,7 @@ const {
   archiveConversation,
   restoreConversation,
 } = createChatConversationService({
-  codex,
+  runtime: chatRuntime,
   ensureChatWorkspace: (ownerUsername, ownerUserId) => (
     ensureUserWorkspace(ownerUsername, ownerUserId, defaultChatWorkspaceName())
   ),
@@ -2156,8 +1911,8 @@ const {
   normalizeReasoningEffort,
   findModelOption: (model) => modelCatalog.findByModel(model),
   preferredReasoningEffortForModel,
-  loadChatRolePresetConfig,
-  normalizeChatRolePresetId,
+  loadChatRolePresetConfig: () => chatPromptConfig.loadRolePresetConfig(),
+  normalizeChatRolePresetId: (value, config) => chatPromptConfig.normalizeRolePresetId(value, config),
 });
 
 function toCodingWorkspaceSummary(workspace: WorkspaceSummary): CodingWorkspaceSummary {
@@ -2182,19 +1937,74 @@ async function buildCodingBootstrapResponse(currentUser: UserRecord): Promise<Co
     approvals,
     workspaceState.root,
     workspaceState.workspaces,
-    modelCatalog.list(),
+    runtimeRegistry.supportedExecutors(),
+    runtimeRegistry.defaultExecutor(),
+    modelCatalog.listByExecutor(),
   );
 }
 
+async function buildAppBootstrapResponse(currentUser: UserRecord) {
+  const workspaceStatePromise = userCanUseMode(currentUser, 'developer')
+    ? listUserWorkspaces(currentUser.username, currentUser.id)
+    : Promise.resolve({ root: userWorkspaceRoot(currentUser.username, currentUser.id), workspaces: [] });
+  const conversations = store.listConversationsForUser(currentUser.id);
+  const [workspaceState, sessions, approvals, cloudflareStatus] = await Promise.all([
+    workspaceStatePromise,
+    coding.listSessionsForUser(currentUser.id),
+    sessionApprovalsForUser(currentUser.id),
+    cloudflareStatusCache.get(),
+  ]);
+  return buildBootstrapPayload(
+    currentUser,
+    sessions,
+    conversations,
+    approvals,
+    cloudflareStatus,
+    workspaceState.root,
+    workspaceState.workspaces,
+    runtimeRegistry.supportedExecutors(),
+    runtimeRegistry.defaultExecutor(),
+    modelCatalog.listByExecutor(),
+  );
+}
+
+async function connectCloudflareAndRefreshStatus() {
+  cloudflareStatusCache.clear();
+  try {
+    const status = await cloudflare.connect();
+    cloudflareStatusCache.prime(status);
+    return status;
+  } catch (error) {
+    cloudflareStatusCache.clear();
+    throw error;
+  }
+}
+
+async function disconnectCloudflareAndRefreshStatus() {
+  cloudflareStatusCache.clear();
+  try {
+    const status = await cloudflare.disconnect();
+    cloudflareStatusCache.prime(status);
+    return status;
+  } catch (error) {
+    cloudflareStatusCache.clear();
+    throw error;
+  }
+}
+
 const createDeveloperSession = createDeveloperSessionService({
-  codex,
+  isExecutorSupported: (executor) => runtimeRegistry.get(executor) !== null,
+  runtimeForExecutor,
   countSessionsForWorkspace: (userId, workspaceId) => coding.countSessionsForWorkspace(userId, workspaceId),
   persistSession: (session) => coding.upsertSession(session),
+  currentDefaultExecutor: () => runtimeRegistry.defaultExecutor(),
   currentDefaultModel,
-  currentDefaultEffort,
   defaultCodingSessionTitle,
   trimOptional,
+  normalizeExecutor: normalizeAgentExecutor,
   normalizeReasoningEffort,
+  findModelOption: (model, executor) => modelCatalog.findByModel(model, executor),
+  preferredReasoningEffortForModel,
   normalizeSecurityProfile,
   normalizeApprovalMode,
 });
@@ -2216,26 +2026,16 @@ const {
 async function buildCodingSessionDetailResponse(session: SessionRecord) {
   const threadState = await readSessionThread(session);
   let responseSession = threadState.session as SessionRecord;
-  let transcriptTotal = 0;
-
-  const sessionAttachments = store.listAttachments(threadState.session.id);
-  const transcriptEntries = collectTranscriptEntries(
-    threadState.thread,
-    threadState.session.id,
-    sessionAttachments,
-    codingAttachmentSummary,
-  );
-  transcriptTotal = transcriptEntries.length;
-  if (threadState.thread) {
-    const hasTranscript = transcriptTotal > 0;
-    if (threadState.session.hasTranscript !== hasTranscript) {
-      responseSession = (await coding.updateSession(threadState.session.id, {
-        hasTranscript,
-      })) ?? {
-        ...(threadState.session as SessionRecord),
-        hasTranscript,
-      };
-    }
+  const history = await buildCodingHistoryView(responseSession, threadState.thread);
+  const transcriptTotal = history.transcriptEntries.length;
+  const hasTranscript = transcriptTotal > 0;
+  if (threadState.session.hasTranscript !== hasTranscript) {
+    responseSession = (await coding.updateSession(threadState.session.id, {
+      hasTranscript,
+    })) ?? {
+      ...(threadState.session as SessionRecord),
+      hasTranscript,
+    };
   }
 
   return {
@@ -2244,8 +2044,8 @@ async function buildCodingSessionDetailResponse(session: SessionRecord) {
     liveEvents: store.getLiveEvents(responseSession.id),
     thread: toThreadSummary(threadState.thread),
     transcriptTotal,
-    commands: collectCommands(threadState.thread),
-    changes: collectFileChanges(threadState.thread),
+    commands: history.commands,
+    changes: history.changes,
     draftAttachments: store.listDraftAttachments(responseSession.id).map(codingAttachmentSummary),
   };
 }
@@ -2255,148 +2055,86 @@ async function buildCodingSessionTranscriptResponse(
   query: { before?: string; limit?: string } | undefined,
 ) {
   const threadState = await readSessionThread(session);
-  const transcriptEntries = collectTranscriptEntries(
-    threadState.thread,
-    threadState.session.id,
-    store.listAttachments(threadState.session.id),
-    codingAttachmentSummary,
-  );
+  const history = await buildCodingHistoryView(threadState.session as SessionRecord, threadState.thread);
 
   return pageTranscriptEntries(
-    transcriptEntries,
+    history.transcriptEntries,
     query?.before,
     normalizeTranscriptLimit(query?.limit),
   );
 }
 
-function describeChatConversation(record: ConversationRecord) {
-  const uiStatus = chatConversationUiStatus(record);
-  if (record.archivedAt) return 'Archived';
-  switch (uiStatus) {
-    case 'processing':
-      return 'Streaming chat turn';
-    case 'error':
-      return record.lastIssue ?? 'Last action failed';
-    default:
-      return 'Ready for the next prompt';
+async function buildLegacySessionDetailResponse(session: TurnRecord) {
+  const threadState = await readSessionThread(session);
+  let responseSession = threadState.session;
+  let transcriptTotal = 0;
+
+  if (isConversation(threadState.session)) {
+    await syncConversationHistoryFromThread(threadState.session, threadState.thread);
+    transcriptTotal = await chatHistory.countMessages(threadState.session.id);
+    const hasTranscript = transcriptTotal > 0;
+    if (threadState.session.hasTranscript !== hasTranscript) {
+      responseSession = (await store.updateConversation(threadState.session.id, {
+        hasTranscript,
+      })) ?? {
+        ...threadState.session,
+        hasTranscript,
+      };
+    }
+  } else {
+    const history = await buildCodingHistoryView(threadState.session as SessionRecord, threadState.thread);
+    transcriptTotal = history.transcriptEntries.length;
+    const hasTranscript = transcriptTotal > 0;
+    if (threadState.session.hasTranscript !== hasTranscript) {
+      responseSession = (await coding.updateSession(threadState.session.id, {
+        hasTranscript,
+      })) ?? {
+        ...threadState.session,
+        hasTranscript,
+      };
+    }
   }
-}
 
-function chatConversationRecoveryState(record: Pick<ConversationRecord, 'recoveryState' | 'status'>): ChatRecoveryState {
-  return record.recoveryState ?? (record.status === 'stale' ? 'stale' : 'ready');
-}
-
-function chatConversationRetryable(record: Pick<ConversationRecord, 'retryable' | 'status'>) {
-  return typeof record.retryable === 'boolean' ? record.retryable : record.status === 'error';
-}
-
-function chatConversationUiStatus(
-  record: Pick<ConversationRecord, 'activeTurnId' | 'status' | 'hasTranscript'>,
-): ChatUiStatus {
-  if (record.activeTurnId || record.status === 'running') {
-    return 'processing';
-  }
-  if (record.status === 'error') {
-    return 'error';
-  }
-  return record.hasTranscript ? 'completed' : 'new';
-}
-
-function interruptedChatConversation(record: Pick<ConversationRecord, 'activeTurnId' | 'status' | 'lastIssue'>) {
-  return Boolean(record.activeTurnId) || record.status === 'running' || record.status === 'error';
-}
-
-function unavailableChatConversationPatch(
-  record: Pick<ConversationRecord, 'activeTurnId' | 'status' | 'lastIssue'>,
-  reason = STALE_SESSION_MESSAGE,
-): Partial<ConversationRecord> {
-  const interrupted = interruptedChatConversation(record);
+  const codingHistoryView = isDeveloperSession(responseSession)
+    ? await buildCodingHistoryView(responseSession, threadState.thread)
+    : { commands: [] as SessionCommandEvent[], changes: [] as SessionFileChangeEvent[] };
   return {
-    activeTurnId: null,
-    status: interrupted ? 'error' : 'idle',
-    recoveryState: 'stale',
-    retryable: interrupted,
-    lastIssue: interrupted
-      ? (record.status === 'error' && record.lastIssue ? record.lastIssue : CHAT_INTERRUPTED_MESSAGE)
-      : reason,
-    networkEnabled: false,
-  };
-}
-
-function toApiChatConversation(record: ConversationRecord): ApiChatConversation {
-  return {
-    kind: 'chat-conversation',
-    id: record.id,
-    ownerUserId: record.ownerUserId,
-    ownerUsername: record.ownerUsername,
-    threadId: record.threadId,
-    activeTurnId: record.activeTurnId,
-    title: record.title,
-    autoTitle: record.autoTitle,
-    workspace: record.workspace,
-    archivedAt: record.archivedAt,
-    networkEnabled: record.networkEnabled,
-    status: record.status,
-    uiStatus: chatConversationUiStatus(record),
-    recoveryState: chatConversationRecoveryState(record),
-    retryable: chatConversationRetryable(record),
-    lastIssue: record.lastIssue,
-    hasTranscript: record.hasTranscript,
-    model: record.model,
-    reasoningEffort: record.reasoningEffort,
-    rolePresetId: normalizeChatRolePresetId(record.rolePresetId),
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-  };
-}
-
-function toApiChatConversationSummary(record: ConversationRecord): ApiChatConversationSummary {
-  return {
-    ...toApiChatConversation(record),
-    lastUpdate: describeChatConversation(record),
-  };
-}
-
-function buildChatBootstrapPayload(
-  currentUser: UserRecord,
-  conversations: ConversationRecord[],
-  rolePresets: ApiChatRolePreset[],
-  defaultRolePresetId: string | null,
-): ChatBootstrapPayload {
-  const defaultModel = currentDefaultModel();
-  return {
-    productName: 'remote-vibe-coding',
-    subtitle: 'Codex-first browser shell backed by the real Codex app-server protocol.',
-    currentUser,
-    availableModes: availableModesForUser(currentUser),
-    defaultMode: defaultModeForUser(currentUser),
-    availableModels: modelCatalog.list(),
-    rolePresets,
-    conversations: conversations.map(toApiChatConversationSummary),
-    defaults: {
-      model: defaultModel,
-      reasoningEffort: currentDefaultEffort(defaultModel),
-      rolePresetId: defaultRolePresetId,
-    },
-    attachments: {
-      enabled: true,
-      uploadOnly: true,
-    },
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-function buildChatConversationDetailResponse(
-  conversation: ConversationRecord,
-  thread: ReturnType<typeof toThreadSummary>,
-  transcriptTotal: number,
-): ChatConversationDetailResponse {
-  return {
-    conversation: toApiChatConversation(conversation),
-    thread,
+    session: responseSession,
+    approvals: isDeveloperSession(responseSession) ? store.getApprovals(responseSession.id) : [],
+    liveEvents: store.getLiveEvents(responseSession.id),
+    thread: toThreadSummary(threadState.thread),
     transcriptTotal,
-    draftAttachments: store.listDraftAttachments(conversation.id).map(chatAttachmentSummary),
+    commands: codingHistoryView.commands,
+    changes: codingHistoryView.changes,
+    draftAttachments: store.listDraftAttachments(responseSession.id).map(attachmentSummary),
   };
+}
+
+async function buildLegacySessionTranscriptResponse(
+  session: TurnRecord,
+  query: { before?: string; limit?: string } | undefined,
+) {
+  const threadState = await readSessionThread(session);
+  const limit = normalizeTranscriptLimit(query?.limit);
+
+  if (isConversation(threadState.session)) {
+    await syncConversationHistoryFromThread(threadState.session, threadState.thread);
+    const page = await chatHistory.pageMessages(threadState.session.id, {
+      before: query?.before ?? null,
+      limit,
+    });
+    return {
+      items: page.items.map(chatMessageToTranscriptEntry),
+      nextCursor: page.nextCursor,
+      total: page.total,
+    };
+  }
+
+  return pageTranscriptEntries(
+    (await buildCodingHistoryView(threadState.session as SessionRecord, threadState.thread)).transcriptEntries,
+    query?.before,
+    limit,
+  );
 }
 
 function userCanCreateSessionType(user: UserRecord, sessionType: SessionType) {
@@ -2517,7 +2255,7 @@ async function readSessionThread(session: TurnRecord) {
   let thread: CodexThread | null = null;
 
   try {
-    const response = await codex.readThread(session.threadId);
+    const response = await runtimeForRecord(session).readThread(session.threadId);
     if (isCodexThread(response.thread)) {
       thread = response.thread;
       const activeTurn = [...thread.turns].reverse().find((entry) => turnIsActive(entry.status)) ?? null;
@@ -2592,7 +2330,7 @@ async function readSessionThread(session: TurnRecord) {
       const latestSession = await getCurrentRecord(session.id);
       if (latestSession?.threadId === session.threadId) {
         if (isConversation(session)) {
-          const nextPatch = unavailableChatConversationPatch(session);
+          const nextPatch = unavailableChatConversationStatePatch(session);
           currentSession = (await updateRecord(session, nextPatch)) ?? {
             ...session,
             ...nextPatch,
@@ -2631,11 +2369,11 @@ async function maybeAutoTitleChatSession(session: TurnRecord, threadOverride: Co
   }
 
   try {
-    await loadChatSystemPromptText();
-    const rolePresetConfig = await loadChatRolePresetConfig();
+    await chatPromptConfig.loadSystemPromptText();
+    const rolePresetConfig = await chatPromptConfig.loadRolePresetConfig();
     let nextThread = threadOverride;
     if (!nextThread) {
-      const response = await codex.readThread(latestSession.threadId);
+      const response = await chatRuntime.readThread(latestSession.threadId);
       nextThread = isCodexThread(response.thread) ? response.thread : null;
     }
     const nextTitle = deriveChatTitleFromThread(nextThread, latestSession.rolePresetId, rolePresetConfig);
@@ -2663,7 +2401,7 @@ async function maybeAutoTitleCodingSession(session: SessionRecord, threadOverrid
   try {
     let nextThread = threadOverride;
     if (!nextThread) {
-      const response = await codex.readThread(latestSession.threadId);
+      const response = await runtimeForExecutor(latestSession.executor).readThread(latestSession.threadId);
       nextThread = isCodexThread(response.thread) ? response.thread : null;
     }
     const nextTitle = deriveCodingTitleFromThread(nextThread);
@@ -2700,9 +2438,9 @@ async function resolveConversationTurnPreface(
   conversation: ConversationRecord,
   recoveryPrefaceText: string | null,
 ) {
-  const systemPromptText = await loadChatSystemPromptText();
-  const rolePresetConfig = await loadChatRolePresetConfig();
-  const rolePromptText = chatRolePresetPromptText(conversation.rolePresetId, rolePresetConfig ?? undefined);
+  const systemPromptText = await chatPromptConfig.loadSystemPromptText();
+  const rolePresetConfig = await chatPromptConfig.loadRolePresetConfig();
+  const rolePromptText = chatPromptConfig.promptTextForRolePreset(conversation.rolePresetId, rolePresetConfig ?? undefined);
   return buildChatTurnPreface(recoveryPrefaceText, systemPromptText, rolePromptText);
 }
 
@@ -2733,7 +2471,8 @@ async function persistConversationUserTurn(
 }
 
 const restartSessionThread = createSessionRestartService({
-  codex,
+  chatRuntime,
+  runtimeForExecutor,
   store,
   ensureChatWorkspace: (ownerUsername, ownerUserId) => ensureUserWorkspace(
     ownerUsername,
@@ -2744,7 +2483,8 @@ const restartSessionThread = createSessionRestartService({
   updateRecord,
 });
 const { createForkedSession, createForkedConversation } = createSessionForkService({
-  codex,
+  chatRuntime,
+  runtimeForExecutor,
   ensureChatWorkspace: (ownerUsername, ownerUserId) => ensureUserWorkspace(
     ownerUsername,
     ownerUserId,
@@ -2761,7 +2501,8 @@ const { createForkedSession, createForkedConversation } = createSessionForkServi
 });
 
 const startTurnWithAutoRestart = createTurnStartService({
-  codex,
+  chatRuntime,
+  runtimeForExecutor,
   restartSessionThread,
   getCurrentRecord,
   prepareConversationRecoveryState,
@@ -2774,9 +2515,9 @@ const startTurnWithAutoRestart = createTurnStartService({
 });
 const { createMessage: createChatMessage, stopTurn: stopChatTurn } = createChatTurnService({
   store,
-  codex: {
+  runtime: {
     interruptTurn: async (threadId, turnId) => {
-      await codex.interruptTurn(threadId, turnId);
+      await chatRuntime.interruptTurn(threadId, turnId);
     },
   },
   startTurnWithAutoRestart: async (conversation, prompt, attachments) => {
@@ -2788,2232 +2529,254 @@ const { createMessage: createChatMessage, stopTurn: stopChatTurn } = createChatT
   },
   updateConversation: (conversation, patch) => updateRecord(conversation, patch) as Promise<ConversationRecord | null>,
   isThreadUnavailableError,
-  unavailableConversationPatch: unavailableChatConversationPatch,
+  unavailableConversationPatch: unavailableChatConversationStatePatch,
   errorMessage,
   staleSessionMessage: STALE_SESSION_MESSAGE,
 });
 
-codex.on('debug', (message) => {
-  app.log.info(message);
-});
-
-codex.on('notification', (message: JsonRpcNotification) => {
-  void handleNotification(message);
-});
-
-codex.on('serverRequest', (message: JsonRpcServerRequest) => {
-  void handleServerRequest(message);
-});
-
-codex.on('runtimeStopped', (message: string) => {
-  app.log.warn(message);
-  void Promise.all([
-    store.markAllStale(STALE_SESSION_MESSAGE),
-    chatHistory.markAllStale(STALE_SESSION_MESSAGE),
-    coding.markAllStale(STALE_SESSION_MESSAGE),
-  ]);
-});
-
-app.addHook('onRequest', async (request, reply) => {
-  const tokenFromQuery = typeof (request.query as { token?: unknown } | undefined)?.token === 'string'
-    ? ((request.query as { token?: string }).token ?? null)
-    : null;
-  const cookieToken = request.cookies[AUTH_COOKIE_NAME] ?? null;
-  const authorization = request.headers.authorization;
-  const bearerToken = typeof authorization === 'string' && authorization.startsWith('Bearer ')
-    ? authorization.slice('Bearer '.length).trim()
-    : null;
-
-  const decision = resolveRequestAuth(auth, {
-    url: request.url,
-    method: request.method,
-    queryToken: tokenFromQuery,
-    cookieToken,
-    bearerToken,
-    devBypassEnabled: DEV_DISABLE_AUTH,
+for (const { runtime: registeredRuntime } of runtimeRegistry.entries()) {
+  const handleServerRequest = createRuntimeServerRequestHandler({
+    runtime: registeredRuntime,
+    store,
+    coding,
+    findRecordByThreadId,
+    updateRecord,
+    approvalTitle,
+    approvalRisk,
+    blockedChatPermissionReason,
+    requestedPermissionsFromParams,
   });
 
-  if (decision.kind === 'authenticated') {
-    (request as AuthenticatedRequest).authUser = decision.user;
-
-    if (decision.cookieTokenToSet) {
-      reply.setCookie(AUTH_COOKIE_NAME, decision.cookieTokenToSet, {
-        path: '/',
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: cookieIsSecure(request),
-      });
-    }
-
-    if (decision.redirectTo) {
-      return reply.redirect(decision.redirectTo);
-    }
-
-    return;
-  }
-
-  if (decision.kind === 'allow-anonymous') {
-    return;
-  }
-
-  if (decision.kind === 'reject-api') {
-    reply.code(401).send({ error: 'Authentication required' });
-    return reply;
-  }
-
-  return reply.redirect('/login');
-});
-
-app.get('/login', async (_request, reply) => {
-  if (DEV_DISABLE_AUTH) {
-    return reply.redirect('/');
-  }
-  reply.type('text/html; charset=utf-8');
-  reply.header('Cache-Control', 'no-store');
-  return loginPageHtml();
-});
-
-app.post('/api/auth/login', async (request, reply) => {
-  const body = request.body as { username?: string; password?: string } | undefined;
-  const username = body?.username?.trim() ?? '';
-  const password = body?.password ?? '';
-  const user = auth.verifyCredentials(username, password);
-
-  if (!user) {
-    reply.code(401);
-    return { error: 'Invalid username or password' };
-  }
-
-  reply.setCookie(AUTH_COOKIE_NAME, user.token, {
-    path: '/',
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: cookieIsSecure(request),
-  });
-  return { ok: true, username: user.user.username };
-});
-
-app.post('/api/auth/logout', async (_request, reply) => {
-  reply.clearCookie(AUTH_COOKIE_NAME, {
-    path: '/',
-  });
-  return { ok: true };
-});
-
-app.get('/api/health', async () => ({
-  ok: true,
-  service: 'remote-vibe-coding-host',
-}));
-
-app.get('/api/bootstrap', async (request) => {
-  const currentUser = getRequestUser(request);
-  const workspaceStatePromise = userCanUseMode(currentUser, 'developer')
-    ? listUserWorkspaces(currentUser.username, currentUser.id)
-    : Promise.resolve({ root: userWorkspaceRoot(currentUser.username, currentUser.id), workspaces: [] });
-  const conversations = store.listConversationsForUser(currentUser.id);
-  const [workspaceState, sessions, approvals, cloudflareStatus] = await Promise.all([
-    workspaceStatePromise,
-    coding.listSessionsForUser(currentUser.id),
-    sessionApprovalsForUser(currentUser.id),
-    cloudflareStatusCache.get(),
-  ]);
-  return buildBootstrapPayload(
-    currentUser,
-    sessions,
-    conversations,
-    approvals,
-    cloudflareStatus,
-    workspaceState.root,
-    workspaceState.workspaces,
-    modelCatalog.list(),
-  );
-});
-
-app.get('/api/chat/bootstrap', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'chat')) {
-    reply.code(403);
-    return { error: 'Chat access required.' };
-  }
-
-  let conversations = await chatHistory.listConversationRecordsForUser(currentUser.id);
-  await repairPendingChatAutoTitles(conversations);
-  conversations = await chatHistory.listConversationRecordsForUser(currentUser.id);
-  const rolePresetConfig = await loadChatRolePresetConfig();
-  return buildChatBootstrapPayload(
-    currentUser,
-    conversations,
-    apiChatRolePresets(rolePresetConfig),
-    rolePresetConfig.defaultPresetId,
-  );
-});
-
-app.get('/api/chat/conversations/:conversationId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const threadState = await readSessionThread(conversation);
-  await syncConversationMirror(threadState.session as ConversationRecord);
-  await syncConversationHistoryFromThread(threadState.session as ConversationRecord, threadState.thread);
-  const transcriptTotal = await chatHistory.countMessages(conversationId);
-  const hasTranscript = transcriptTotal > 0;
-  const responseConversation = threadState.session.hasTranscript === hasTranscript
-    ? threadState.session as ConversationRecord
-    : (await updateRecord(threadState.session, {
-        hasTranscript,
-      }) as ConversationRecord | null) ?? {
-        ...(threadState.session as ConversationRecord),
-        hasTranscript,
-      };
-
-  return buildChatConversationDetailResponse(
-    responseConversation,
-    toThreadSummary(threadState.thread),
-    transcriptTotal,
-  );
-});
-
-app.get('/api/chat/conversations/:conversationId/transcript', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const threadState = await readSessionThread(conversation);
-  await syncConversationMirror(threadState.session as ConversationRecord);
-  await syncConversationHistoryFromThread(threadState.session as ConversationRecord, threadState.thread);
-  const transcriptTotal = await chatHistory.countMessages(conversationId);
-  const hasTranscript = transcriptTotal > 0;
-  const responseConversation = threadState.session.hasTranscript === hasTranscript
-    ? threadState.session as ConversationRecord
-    : (await updateRecord(threadState.session, {
-        hasTranscript,
-      }) as ConversationRecord | null) ?? {
-        ...(threadState.session as ConversationRecord),
-        hasTranscript,
-      };
-  const query = request.query as { before?: string; limit?: string } | undefined;
-  const limit = normalizeTranscriptLimit(query?.limit);
-  const page = await chatHistory.pageMessages(conversationId, {
-    before: query?.before ?? null,
-    limit,
-  });
-
-  const payload: ChatTranscriptPageResponse = {
-    items: page.items.map(chatMessageToApiTranscriptEntry),
-    nextCursor: page.nextCursor,
-    total: page.total,
-    conversation: toApiChatConversation(responseConversation),
-    liveEvents: compactChatLiveEvents(store.getLiveEvents(conversationId)),
-  };
-  return payload;
-});
-
-app.post('/api/chat/conversations/:conversationId/attachments', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const file = await request.file();
-  if (!file) {
-    reply.code(400);
-    return { error: 'Attachment file is required.' };
-  }
-
-  const filename = file.filename?.trim() || 'attachment';
-  const mimeType = file.mimetype || 'application/octet-stream';
-  const kind = attachmentKindFromUpload(filename, mimeType);
-  const buffer = await file.toBuffer();
-  if (buffer.length === 0) {
-    reply.code(400);
-    return { error: 'Attachment is empty.' };
-  }
-
-  const attachmentId = randomUUID();
-  const attachmentsDir = join(conversation.workspace, '.rvc-chat', 'attachments');
-  await mkdir(attachmentsDir, { recursive: true });
-
-  const storedFilename = sanitizeAttachmentFilename(
-    filename,
-    kind === 'image'
-      ? 'attachment'
-      : kind === 'pdf'
-        ? 'attachment.pdf'
-        : 'attachment-file',
-  );
-  const storagePath = join(attachmentsDir, `${attachmentId}-${storedFilename}`);
-  await writeFile(storagePath, buffer);
-
-  const now = new Date().toISOString();
-  const attachment: SessionAttachmentRecord = {
-    id: attachmentId,
-    ownerKind: 'conversation',
-    ownerId: conversation.id,
-    sessionId: conversation.id,
-    ownerUserId: conversation.ownerUserId,
-    ownerUsername: conversation.ownerUsername,
-    kind,
-    filename: storedFilename,
-    mimeType,
-    sizeBytes: buffer.length,
-    storagePath,
-    extractedText: await extractAttachmentText(kind, storedFilename, mimeType, buffer),
-    consumedAt: null,
-    createdAt: now,
-  };
-
-  await store.addAttachment(attachment);
-  reply.code(201);
-  return {
-    attachment: chatAttachmentSummary(attachment),
-  };
-});
-
-app.get('/api/chat/conversations/:conversationId/attachments/:attachmentId/content', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId, attachmentId } = request.params as { conversationId: string; attachmentId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const attachment = store.getAttachment(conversationId, attachmentId);
-  if (!attachment) {
-    reply.code(404);
-    return { error: 'Attachment not found' };
-  }
-
-  const buffer = await readFile(attachment.storagePath);
-  reply.type(attachment.mimeType);
-  reply.header('Cache-Control', 'private, max-age=60');
-  reply.header('Content-Disposition', `inline; filename="${attachment.filename.replace(/"/g, '')}"`);
-  return buffer;
-});
-
-app.delete('/api/chat/conversations/:conversationId/attachments/:attachmentId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId, attachmentId } = request.params as { conversationId: string; attachmentId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const attachment = store.getAttachment(conversationId, attachmentId);
-  if (!attachment) {
-    reply.code(404);
-    return { error: 'Attachment not found' };
-  }
-
-  if (attachment.consumedAt) {
-    reply.code(409);
-    return { error: 'This attachment is already part of a sent message.' };
-  }
-
-  await store.removeAttachment(conversationId, attachmentId);
-  await unlink(attachment.storagePath).catch(() => {});
-  return { ok: true };
-});
-
-app.post('/api/chat/conversations', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'chat')) {
-    reply.code(403);
-    return { error: 'Chat access required.' };
-  }
-
-  const body = (request.body ?? {}) as CreateChatConversationRequest;
-  try {
-    const conversation = await createChatConversation(currentUser, body);
-    reply.code(201);
-    return {
-      conversation: toApiChatConversation(conversation),
-    };
-  } catch (error) {
-    if (error instanceof ChatConversationServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.patch('/api/chat/conversations/:conversationId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const body = (request.body ?? {}) as UpdateChatConversationRequest;
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  try {
-    const nextConversation = await renameConversation(conversation, body);
-    return {
-      conversation: toApiChatConversation(nextConversation),
-    };
-  } catch (error) {
-    if (error instanceof ChatConversationServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.patch('/api/chat/conversations/:conversationId/preferences', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const body = (request.body ?? {}) as UpdateChatConversationPreferencesRequest;
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  try {
-    const nextConversation = await updateConversationPreferences(conversation, body);
-    return {
-      conversation: toApiChatConversation(nextConversation),
-    };
-  } catch (error) {
-    if (error instanceof ChatConversationServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.post('/api/chat/conversations/:conversationId/archive', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const nextConversation = await archiveConversation(conversation);
-  return {
-    conversation: toApiChatConversation(nextConversation),
-  };
-});
-
-app.post('/api/chat/conversations/:conversationId/restore', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const nextConversation = await restoreConversation(conversation);
-  return {
-    conversation: toApiChatConversation(nextConversation),
-  };
-});
-
-app.post('/api/chat/conversations/:conversationId/fork', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  try {
-    const nextConversation = await createForkedConversation(currentUser, conversation);
-    reply.code(201);
-    return {
-      conversation: toApiChatConversation(nextConversation),
-    };
-  } catch (error) {
-    reply.code(500);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.delete('/api/chat/conversations/:conversationId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  const attachments = store.listAttachments(conversationId);
-  await store.deleteConversation(conversationId);
-  await chatHistory.deleteConversation(conversationId);
-  await deleteStoredAttachments(attachments);
-  return { ok: true };
-});
-
-app.post('/api/chat/conversations/:conversationId/messages', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const body = (request.body ?? {}) as CreateChatMessageRequest;
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  try {
-    const result = await createChatMessage(conversation, body);
-    return {
-      turn: result.turn,
-      conversation: toApiChatConversation(result.conversation),
-    };
-  } catch (error) {
-    if (error instanceof ChatTurnServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.post('/api/chat/conversations/:conversationId/stop', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { conversationId } = request.params as { conversationId: string };
-  const conversation = await getOwnedConversationOrReply(currentUser.id, conversationId, reply);
-  if (!conversation) {
-    return { error: 'Conversation not found' };
-  }
-
-  try {
-    const nextConversation = await stopChatTurn(conversation);
-    return {
-      conversation: toApiChatConversation(nextConversation),
-    };
-  } catch (error) {
-    if (error instanceof ChatTurnServiceError) {
-      reply.code(error.statusCode);
-      return error.conversation
-        ? { error: error.message, conversation: toApiChatConversation(error.conversation) }
-        : { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.get('/api/coding/bootstrap', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  return buildCodingBootstrapResponse(currentUser);
-});
-
-app.get('/api/coding/workspaces', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
-  return {
-    workspaceRoot: workspaceState.root,
-    workspaces: workspaceState.workspaces.map(toCodingWorkspaceSummary),
-  };
-});
-
-app.post('/api/coding/workspaces', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  const body = (request.body ?? {}) as CreateCodingWorkspaceRequest;
-  try {
-    const result = await createCodingWorkspace(currentUser, body);
-    reply.code(201);
-    return {
-      workspace: toCodingWorkspaceSummary(result.workspace),
-      workspaceRoot: result.workspaceState.root,
-      workspaces: result.workspaceState.workspaces.map(toCodingWorkspaceSummary),
-    };
-  } catch (error) {
-    if (error instanceof CodingWorkspaceServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.patch('/api/coding/workspaces/:workspaceId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  const { workspaceId } = request.params as { workspaceId: string };
-  const workspace = await getOwnedCodingWorkspaceOrReply(currentUser.id, workspaceId, reply);
-  if (!workspace) {
-    return { error: 'Workspace not found.' };
-  }
-
-  const body = (request.body ?? {}) as UpdateCodingWorkspaceRequest;
-  try {
-    const result = await updateCodingWorkspace(currentUser, workspace, body);
-    return {
-      workspace: toCodingWorkspaceSummary(result.workspace),
-      workspaceRoot: result.workspaceState.root,
-      workspaces: result.workspaceState.workspaces.map(toCodingWorkspaceSummary),
-    };
-  } catch (error) {
-    if (error instanceof CodingWorkspaceServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.post('/api/coding/workspaces/reorder', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  const body = (request.body ?? {}) as ReorderCodingWorkspacesRequest;
-  try {
-    const result = await reorderWorkspaceList(currentUser, body);
-    return {
-      workspaceRoot: result.workspaceRoot,
-      workspaces: result.workspaces.map(toCodingWorkspaceSummary),
-    };
-  } catch (error) {
-    if (error instanceof CodingWorkspaceServiceError) {
-      reply.code(error.statusCode);
-      return { error: error.message };
-    }
-    throw error;
-  }
-});
-
-app.post('/api/coding/workspaces/:workspaceId/sessions', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  const { workspaceId } = request.params as { workspaceId: string };
-  const workspace = await getOwnedCodingWorkspaceOrReply(currentUser.id, workspaceId, reply);
-  if (!workspace) {
-    return { error: 'Workspace not found.' };
-  }
-
-  const body = (request.body ?? {}) as CreateCodingWorkspaceSessionRequest;
-  try {
-    const session = await createDeveloperSession(currentUser, workspace, body);
-    reply.code(201);
-    return { session };
-  } catch (error) {
-    const message = errorMessage(error);
-    reply.code(message.includes('permission') ? 403 : 400);
-    return { error: message };
-  }
-});
-
-app.get('/api/coding/sessions/:sessionId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  return buildCodingSessionDetailResponse(session);
-});
-
-app.get('/api/coding/sessions/:sessionId/transcript', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  return buildCodingSessionTranscriptResponse(
-    session,
-    request.query as { before?: string; limit?: string } | undefined,
-  );
-});
-
-app.post('/api/coding/sessions/:sessionId/attachments', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const file = await request.file();
-  if (!file) {
-    reply.code(400);
-    return { error: 'Attachment file is required.' };
-  }
-
-  const filename = file.filename?.trim() || 'attachment';
-  const mimeType = file.mimetype || 'application/octet-stream';
-  const kind = attachmentKindFromUpload(filename, mimeType);
-  const buffer = await file.toBuffer();
-  if (buffer.length === 0) {
-    reply.code(400);
-    return { error: 'Attachment is empty.' };
-  }
-
-  const attachmentId = randomUUID();
-  const attachmentsDir = join(session.workspace, '.rvc-attachments');
-  await mkdir(attachmentsDir, { recursive: true });
-
-  const storedFilename = sanitizeAttachmentFilename(
-    filename,
-    kind === 'image'
-      ? 'attachment'
-      : kind === 'pdf'
-        ? 'attachment.pdf'
-        : 'attachment-file',
-  );
-  const storagePath = join(attachmentsDir, `${attachmentId}-${storedFilename}`);
-  await writeFile(storagePath, buffer);
-
-  const now = new Date().toISOString();
-  const attachment: SessionAttachmentRecord = {
-    id: attachmentId,
-    ownerKind: 'session',
-    ownerId: session.id,
-    sessionId: session.id,
-    ownerUserId: session.ownerUserId,
-    ownerUsername: session.ownerUsername,
-    kind,
-    filename: storedFilename,
-    mimeType,
-    sizeBytes: buffer.length,
-    storagePath,
-    extractedText: await extractAttachmentText(kind, storedFilename, mimeType, buffer),
-    consumedAt: null,
-    createdAt: now,
-  };
-
-  await store.addAttachment(attachment);
-  reply.code(201);
-  return {
-    attachment: codingAttachmentSummary(attachment),
-  };
-});
-
-app.get('/api/coding/sessions/:sessionId/attachments/:attachmentId/content', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const attachment = store.getAttachment(sessionId, attachmentId);
-  if (!attachment) {
-    reply.code(404);
-    return { error: 'Attachment not found' };
-  }
-
-  const buffer = await readFile(attachment.storagePath);
-  reply.type(attachment.mimeType);
-  reply.header('Cache-Control', 'private, max-age=60');
-  reply.header('Content-Disposition', `inline; filename="${attachment.filename.replace(/"/g, '')}"`);
-  return buffer;
-});
-
-app.delete('/api/coding/sessions/:sessionId/attachments/:attachmentId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const attachment = store.getAttachment(sessionId, attachmentId);
-  if (!attachment) {
-    reply.code(404);
-    return { error: 'Attachment not found' };
-  }
-
-  if (attachment.consumedAt) {
-    reply.code(409);
-    return { error: 'This attachment is already part of a sent turn.' };
-  }
-
-  await store.removeAttachment(sessionId, attachmentId);
-  await deleteStoredAttachments([attachment]);
-  return { ok: true };
-});
-
-app.patch('/api/coding/sessions/:sessionId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = (request.body ?? {}) as UpdateSessionRequest;
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const titleProvided = Object.prototype.hasOwnProperty.call(body, 'title');
-  const workspaceProvided = Object.prototype.hasOwnProperty.call(body, 'workspaceName');
-  const securityProvided = Object.prototype.hasOwnProperty.call(body, 'securityProfile');
-  const approvalModeProvided = Object.prototype.hasOwnProperty.call(body, 'approvalMode');
-  const title = titleProvided ? trimOptional(body.title) : session.title;
-
-  if (titleProvided && !title) {
-    reply.code(400);
-    return { error: 'Session title is required' };
-  }
-
-  if ((workspaceProvided || securityProvided) && session.activeTurnId) {
-    reply.code(409);
-    return { error: 'Stop the active turn before editing this session.' };
-  }
-
-  let workspace = session.workspace;
-  let workspaceId = session.workspaceId;
-  if (workspaceProvided) {
-    const workspaceName = normalizeWorkspaceFolderName(body.workspaceName);
-    if (!workspaceName) {
-      reply.code(400);
-      return { error: 'Workspace is required.' };
-    }
-
-    try {
-      const workspaceRecord = await ensureUserWorkspace(currentUser.username, currentUser.id, workspaceName);
-      workspace = workspaceRecord.path;
-      workspaceId = workspaceRecord.id;
-    } catch (error) {
-      reply.code(400);
-      return { error: errorMessage(error) };
-    }
-  }
-
-  let securityProfile = session.securityProfile;
-  if (securityProvided) {
-    securityProfile = normalizeSecurityProfile(body.securityProfile);
-    if (securityProfile === 'read-only') {
-      securityProfile = 'repo-write';
-    }
-    if (securityProfile === 'full-host' && !currentUser.canUseFullHost) {
-      reply.code(403);
-      return { error: 'You do not have permission to use full-host sessions.' };
-    }
-  }
-
-  const approvalMode = approvalModeProvided
-    ? normalizeApprovalMode(body.approvalMode)
-    : session.approvalMode;
-  const restartRequired = workspace !== session.workspace || securityProfile !== session.securityProfile;
-
-  let nextSession = (await updateRecord(session, {
-    title: title ?? session.title,
-    autoTitle: titleProvided ? false : session.autoTitle,
-    workspace,
-    workspaceId,
-    securityProfile,
-    approvalMode,
-    fullHostEnabled: securityProfile === 'full-host',
-  })) as SessionRecord | null ?? session;
-
-  if (restartRequired) {
-    nextSession = await restartSessionThread(
-      nextSession,
-      'Session settings changed. Started a fresh thread for this session.',
-    ) as SessionRecord;
-  }
-
-  return { session: nextSession };
-});
-
-app.patch('/api/coding/sessions/:sessionId/preferences', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = (request.body ?? {}) as UpdateSessionPreferencesRequest;
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const requestedModel = trimOptional(body.model) ?? session.model ?? currentDefaultModel();
-  const modelOption = modelCatalog.findByModel(requestedModel);
-  if (!modelOption) {
-    reply.code(400);
-    return { error: 'Unknown model.' };
-  }
-
-  const requestedEffort = normalizeReasoningEffort(body.reasoningEffort);
-  const reasoningEffort = requestedEffort && modelOption.supportedReasoningEfforts.includes(requestedEffort)
-    ? requestedEffort
-    : preferredReasoningEffortForModel(modelOption);
-
-  const nextSession = (await updateRecord(session, {
-    model: modelOption.model,
-    reasoningEffort,
-    approvalMode: normalizeApprovalMode(body.approvalMode ?? session.approvalMode),
-  })) as SessionRecord | null ?? session;
-
-  return { session: nextSession };
-});
-
-app.post('/api/coding/sessions/:sessionId/restart', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  return { session: await restartSessionThread(session) };
-});
-
-app.post('/api/coding/sessions/:sessionId/fork', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  try {
-    const nextSession = await createForkedSession(currentUser, session);
-    reply.code(201);
-    return { session: nextSession };
-  } catch (error) {
-    reply.code(500);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.post('/api/coding/sessions/:sessionId/archive', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  if (session.archivedAt) {
-    return { session };
-  }
-
-  store.clearApprovals(sessionId);
-  const nextSession = (await updateRecord(session, {
-    archivedAt: new Date().toISOString(),
-    activeTurnId: null,
-    status: 'idle',
-    networkEnabled: false,
-    lastIssue: null,
-  })) as SessionRecord | null ?? session;
-
-  return { session: nextSession };
-});
-
-app.post('/api/coding/sessions/:sessionId/restore', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  if (!session.archivedAt) {
-    return { session };
-  }
-
-  const nextSession = (await updateRecord(session, {
-    archivedAt: null,
-    status: 'idle',
-    lastIssue: null,
-  })) as SessionRecord | null ?? session;
-
-  return { session: nextSession };
-});
-
-app.delete('/api/coding/sessions/:sessionId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const attachments = store.listAttachments(sessionId);
-  await coding.deleteSession(sessionId);
-  await deleteStoredAttachments(attachments);
-  return { ok: true };
-});
-
-app.post('/api/coding/sessions/:sessionId/turns', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = request.body as CreateTurnRequest;
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const prompt = body.prompt?.trim() ?? '';
-  const attachmentIds = Array.isArray(body.attachmentIds)
-    ? [...new Set(body.attachmentIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
-    : [];
-  const attachments = attachmentIds.map((attachmentId) => store.getAttachment(sessionId, attachmentId));
-
-  if (!prompt && attachmentIds.length === 0) {
-    reply.code(400);
-    return { error: 'Prompt or attachment is required' };
-  }
-
-  if (attachments.some((attachment) => !attachment || attachment.consumedAt)) {
-    reply.code(400);
-    return { error: 'One or more attachments are missing or already used.' };
-  }
-
-  try {
-    const result = await startTurnWithAutoRestart(
-      session,
-      prompt || null,
-      attachments.filter((attachment): attachment is SessionAttachmentRecord => Boolean(attachment)),
-    );
-    return { turn: result.turn, session: result.session };
-  } catch (error) {
-    const message = errorMessage(error);
-    await updateRecord(session, isConversation(session)
-      ? {
-          activeTurnId: null,
-          status: 'error',
-          recoveryState: 'ready',
-          retryable: true,
-          lastIssue: message,
-        }
-      : {
-          activeTurnId: null,
-          status: 'error',
-          lastIssue: message,
-        });
-    reply.code(500);
-    return { error: message };
-  }
-});
-
-app.post('/api/coding/sessions/:sessionId/stop', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  if (!session.activeTurnId) {
-    reply.code(409);
-    return { error: 'This session does not have an active turn to stop.' };
-  }
-
-  try {
-    await codex.interruptTurn(session.threadId, session.activeTurnId);
-    store.addLiveEvent(session.id, {
-      id: randomUUID(),
-      method: 'turn/interrupted',
-      summary: 'Stopped the active turn.',
-      createdAt: new Date().toISOString(),
-    });
-    const nextSession = (await updateRecord(session, {
-      activeTurnId: null,
-      status: 'idle',
-      lastIssue: 'Stopped by user.',
-    })) as SessionRecord | null ?? session;
-    return { session: nextSession };
-  } catch (error) {
-    if (isThreadUnavailableError(error)) {
-      const nextSession = (await updateRecord(session, {
-        activeTurnId: null,
-        status: 'stale',
-        lastIssue: STALE_SESSION_MESSAGE,
-        networkEnabled: false,
-      })) as SessionRecord | null ?? session;
-      reply.code(409);
-      return { error: STALE_SESSION_MESSAGE, session: nextSession };
-    }
-
-    const message = errorMessage(error);
-    await updateRecord(session, {
-      activeTurnId: null,
-      status: 'error',
-      lastIssue: message,
-    });
-    reply.code(500);
-    return { error: message };
-  }
-});
-
-app.post('/api/coding/sessions/:sessionId/approvals/:approvalId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId, approvalId } = request.params as { sessionId: string; approvalId: string };
-  const body = request.body as ResolveApprovalRequest;
-  const session = await getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const approval = store.getApprovals(sessionId).find((entry) => entry.id === approvalId);
-  if (!approval) {
-    reply.code(404);
-    return { error: 'Approval not found' };
-  }
-
-  const scope = body.scope === 'session' ? 'session' : 'once';
-  const accepted = body.decision !== 'decline';
-
-  if (approval.method === 'item/commandExecution/requestApproval') {
-    await codex.respond(approval.rpcRequestId, {
-      decision: accepted ? (scope === 'session' ? 'acceptForSession' : 'accept') : 'decline',
-    });
-  } else if (approval.method === 'item/fileChange/requestApproval') {
-    await codex.respond(approval.rpcRequestId, {
-      decision: accepted ? (scope === 'session' ? 'acceptForSession' : 'accept') : 'decline',
-    });
-  } else if (approval.method === 'item/permissions/requestApproval') {
-    const params = approval.payload as { permissions?: unknown };
-    await codex.respond(approval.rpcRequestId, {
-      permissions: accepted ? (params.permissions ?? {}) : {},
-      scope: scope === 'session' ? 'session' : 'turn',
-    });
-    if (accepted) {
-      await coding.updateSession(sessionId, {
-        networkEnabled: true,
-      });
-    }
-  } else {
-    await codex.respond(approval.rpcRequestId, {
-      decision: accepted ? 'accept' : 'cancel',
-    });
-  }
-
-  store.removeApproval(sessionId, approvalId);
-  await coding.updateSession(sessionId, {
-    status: store.getApprovals(sessionId).length > 0 ? 'needs-approval' : 'running',
-    lastIssue: null,
-  });
-  return { ok: true };
-});
-
-app.get('/api/workspaces', async (request) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    return {
-      workspaceRoot: userWorkspaceRoot(currentUser.username, currentUser.id),
-      workspaces: [],
-    };
-  }
-  const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
-  return {
-    workspaceRoot: workspaceState.root,
-    workspaces: workspaceState.workspaces,
-  };
-});
-
-app.post('/api/workspaces', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-  const body = (request.body ?? {}) as CreateWorkspaceRequest;
-  const workspaceName = normalizeWorkspaceFolderName(body.name);
-  if (!workspaceName) {
-    reply.code(400);
-    return { error: 'Workspace name is required.' };
-  }
-
-  try {
-    const workspace = await ensureUserWorkspace(currentUser.username, currentUser.id, workspaceName);
-    const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
-    return {
-      workspace: {
-        id: workspace.id,
-        name: workspace.name,
-        path: workspace.path,
-        visible: workspace.visible,
-        sortOrder: workspace.sortOrder,
-      },
-      workspaceRoot: workspaceState.root,
-      workspaces: workspaceState.workspaces,
-    };
-  } catch (error) {
-    reply.code(400);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.patch('/api/workspaces/:workspaceId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!userCanUseMode(currentUser, 'developer')) {
-    reply.code(403);
-    return { error: 'Developer access required.' };
-  }
-
-  const { workspaceId } = request.params as { workspaceId: string };
-  const workspace = await coding.getWorkspaceForUser(workspaceId, currentUser.id);
-  if (!workspace) {
-    reply.code(404);
-    return { error: 'Workspace not found.' };
-  }
-
-  const body = (request.body ?? {}) as UpdateWorkspaceRequest;
-  const patch: Partial<typeof workspace> = {};
-
-  if (Object.prototype.hasOwnProperty.call(body, 'visible')) {
-    patch.visible = Boolean(body.visible);
-  }
-  if (Object.prototype.hasOwnProperty.call(body, 'sortOrder')) {
-    if (typeof body.sortOrder !== 'number' || !Number.isFinite(body.sortOrder)) {
-      reply.code(400);
-      return { error: 'Workspace sort order must be a number.' };
-    }
-    patch.sortOrder = Math.max(0, Math.trunc(body.sortOrder));
-  }
-
-  const nextWorkspace = await coding.updateWorkspace(workspace.id, patch);
-  if (!nextWorkspace) {
-    reply.code(404);
-    return { error: 'Workspace not found.' };
-  }
-
-  const workspaceState = await listUserWorkspaces(currentUser.username, currentUser.id);
-  return {
-    workspace: {
-      id: nextWorkspace.id,
-      name: nextWorkspace.name,
-      path: nextWorkspace.path,
-      visible: nextWorkspace.visible,
-      sortOrder: nextWorkspace.sortOrder,
-    },
-    workspaceRoot: workspaceState.root,
-    workspaces: workspaceState.workspaces,
-  };
-});
-
-app.get('/api/admin/users', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  return {
-    users: adminUserService.listUsers(),
-  };
-});
-
-app.get('/api/admin/chat/role-presets', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  const config = await loadChatRolePresetConfig();
-  return chatRolePresetListResponse(config);
-});
-
-app.post('/api/admin/chat/role-presets', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  const body = (request.body ?? {}) as CreateChatRolePresetRequest;
-  const label = trimOptional(body.label);
-  const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
-  if (!label) {
-    reply.code(400);
-    return { error: 'Preset label is required.' };
-  }
-  if (!prompt) {
-    reply.code(400);
-    return { error: 'Preset prompt is required.' };
-  }
-
-  const config = await loadChatRolePresetConfig();
-  const nextPreset: ChatRolePresetConfigEntry = {
-    id: randomUUID(),
-    label,
-    description: trimOptional(body.description),
-    promptText: prompt,
-  };
-  const nextConfig = await saveChatRolePresetConfig({
-    defaultPresetId: body.isDefault ? nextPreset.id : config.defaultPresetId,
-    presets: [...config.presets, nextPreset],
-  });
-  reply.code(201);
-  return chatRolePresetListResponse(nextConfig);
-});
-
-app.patch('/api/admin/chat/role-presets/:presetId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  const { presetId } = request.params as { presetId: string };
-  const body = (request.body ?? {}) as UpdateChatRolePresetRequest;
-  const config = await loadChatRolePresetConfig();
-  const existingPreset = config.presets.find((preset) => preset.id === presetId);
-  if (!existingPreset) {
-    reply.code(404);
-    return { error: 'Preset not found.' };
-  }
-
-  const nextLabel = Object.prototype.hasOwnProperty.call(body, 'label')
-    ? trimOptional(body.label)
-    : existingPreset.label;
-  const nextPrompt = Object.prototype.hasOwnProperty.call(body, 'prompt')
-    ? (typeof body.prompt === 'string' ? body.prompt.trim() : '')
-    : existingPreset.promptText;
-  if (!nextLabel) {
-    reply.code(400);
-    return { error: 'Preset label is required.' };
-  }
-  if (!nextPrompt) {
-    reply.code(400);
-    return { error: 'Preset prompt is required.' };
-  }
-
-  const nextConfig = await saveChatRolePresetConfig({
-    defaultPresetId: body.isDefault === true
-      ? presetId
-      : body.isDefault === false && config.defaultPresetId === presetId
-        ? null
-        : config.defaultPresetId,
-    presets: config.presets.map((preset) => (
-      preset.id === presetId
-        ? {
-            ...preset,
-            label: nextLabel,
-            description: Object.prototype.hasOwnProperty.call(body, 'description')
-              ? trimOptional(body.description)
-              : preset.description,
-            promptText: nextPrompt,
-          }
-        : preset
-    )),
-  });
-  return chatRolePresetListResponse(nextConfig);
-});
-
-app.delete('/api/admin/chat/role-presets/:presetId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  const { presetId } = request.params as { presetId: string };
-  const config = await loadChatRolePresetConfig();
-  if (!config.presets.some((preset) => preset.id === presetId)) {
-    reply.code(404);
-    return { error: 'Preset not found.' };
-  }
-
-  const nextConfig = await saveChatRolePresetConfig({
-    defaultPresetId: config.defaultPresetId === presetId ? null : config.defaultPresetId,
-    presets: config.presets.filter((preset) => preset.id !== presetId),
-  });
-  return chatRolePresetListResponse(nextConfig);
-});
-
-app.post('/api/admin/users', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  try {
-    const body = (request.body ?? {}) as CreateUserRequest;
-    const result = await adminUserService.createUser(body);
-    reply.code(201);
-    return result;
-  } catch (error) {
-    reply.code(400);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.patch('/api/admin/users/:userId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  try {
-    const { userId } = request.params as { userId: string };
-    const body = (request.body ?? {}) as UpdateUserRequest;
-    const result = await adminUserService.updateUser(userId, body, currentUser.id);
-
-    if (result.shouldRefreshCookie) {
-      reply.setCookie(AUTH_COOKIE_NAME, result.user.token, {
-        path: '/',
-        httpOnly: true,
-        sameSite: 'lax',
-        secure: cookieIsSecure(request),
-      });
-    }
-
-    return result;
-  } catch (error) {
-    reply.code(400);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.delete('/api/admin/users/:userId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  if (!currentUser.isAdmin) {
-    reply.code(403);
-    return { error: 'Admin access required' };
-  }
-
-  try {
-    const { userId } = request.params as { userId: string };
-    return await adminUserService.deleteUser(userId, currentUser.id);
-  } catch (error) {
-    reply.code(error instanceof AdminUserServiceError ? error.statusCode : 400);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.get('/api/cloudflare/status', async () => ({
-  cloudflare: await cloudflareStatusCache.get({ preferFresh: true }),
-}));
-
-app.post('/api/cloudflare/connect', async (_request, reply) => {
-  try {
-    cloudflareStatusCache.clear();
-    const status = await cloudflare.connect();
-    cloudflareStatusCache.prime(status);
-    return {
-      cloudflare: status,
-    };
-  } catch (error) {
-    cloudflareStatusCache.clear();
-    reply.code(500);
-    return {
-      error: errorMessage(error) || 'Failed to connect Cloudflare tunnel',
-    };
-  }
-});
-
-app.post('/api/cloudflare/disconnect', async (_request, reply) => {
-  try {
-    cloudflareStatusCache.clear();
-    const status = await cloudflare.disconnect();
-    cloudflareStatusCache.prime(status);
-    return {
-      cloudflare: status,
-    };
-  } catch (error) {
-    cloudflareStatusCache.clear();
-    reply.code(500);
-    return {
-      error: errorMessage(error) || 'Failed to disconnect Cloudflare tunnel',
-    };
-  }
-});
-
-app.get('/api/sessions/:sessionId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const threadState = await readSessionThread(session);
-  let responseSession = threadState.session;
-  let transcriptTotal = 0;
-
-  if (isConversation(threadState.session)) {
-    await syncConversationHistoryFromThread(threadState.session, threadState.thread);
-    transcriptTotal = await chatHistory.countMessages(threadState.session.id);
-    const hasTranscript = transcriptTotal > 0;
-    if (threadState.session.hasTranscript !== hasTranscript) {
-      responseSession = (await store.updateConversation(threadState.session.id, {
-        hasTranscript,
-      })) ?? {
-        ...threadState.session,
-        hasTranscript,
-      };
-    }
-  } else {
-    const sessionAttachments = store.listAttachments(threadState.session.id);
-    const transcriptEntries = collectTranscriptEntries(threadState.thread, threadState.session.id, sessionAttachments);
-    transcriptTotal = transcriptEntries.length;
-    if (threadState.thread) {
-      const hasTranscript = transcriptTotal > 0;
-      if (threadState.session.hasTranscript !== hasTranscript) {
-        responseSession = (await coding.updateSession(threadState.session.id, {
-          hasTranscript,
-        })) ?? {
-          ...threadState.session,
-          hasTranscript,
-        };
-      }
-    }
-  }
-
-  return {
-    session: responseSession,
-    approvals: isDeveloperSession(responseSession) ? store.getApprovals(responseSession.id) : [],
-    liveEvents: store.getLiveEvents(responseSession.id),
-    thread: toThreadSummary(threadState.thread),
-    transcriptTotal,
-    commands: collectCommands(threadState.thread),
-    changes: collectFileChanges(threadState.thread),
-    draftAttachments: store.listDraftAttachments(responseSession.id).map(attachmentSummary),
-  };
-});
-
-app.get('/api/sessions/:sessionId/transcript', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const threadState = await readSessionThread(session);
-  const query = request.query as { before?: string; limit?: string } | undefined;
-  const limit = normalizeTranscriptLimit(query?.limit);
-
-  if (isConversation(threadState.session)) {
-    await syncConversationHistoryFromThread(threadState.session, threadState.thread);
-    const page = await chatHistory.pageMessages(threadState.session.id, {
-      before: query?.before ?? null,
-      limit,
-    });
-    return {
-      items: page.items.map(chatMessageToTranscriptEntry),
-      nextCursor: page.nextCursor,
-      total: page.total,
-    };
-  }
-
-  const transcriptEntries = collectTranscriptEntries(
-    threadState.thread,
-    threadState.session.id,
-    store.listAttachments(threadState.session.id),
-  );
-
-  return pageTranscriptEntries(
-    transcriptEntries,
-    query?.before,
-    limit,
-  );
-});
-
-app.post('/api/sessions/:sessionId/attachments', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const file = await request.file();
-  if (!file) {
-    reply.code(400);
-    return { error: 'Attachment file is required.' };
-  }
-
-  const filename = file.filename?.trim() || 'attachment';
-  const mimeType = file.mimetype || 'application/octet-stream';
-  const kind = attachmentKindFromUpload(filename, mimeType);
-
-  const buffer = await file.toBuffer();
-  if (buffer.length === 0) {
-    reply.code(400);
-    return { error: 'Attachment is empty.' };
-  }
-
-  const attachmentId = randomUUID();
-  const attachmentsDir = join(session.workspace, '.rvc-attachments');
-  await mkdir(attachmentsDir, { recursive: true });
-
-  const storedFilename = sanitizeAttachmentFilename(
-    filename,
-    kind === 'image'
-      ? 'attachment'
-      : kind === 'pdf'
-        ? 'attachment.pdf'
-        : 'attachment-file',
-  );
-  const storagePath = join(attachmentsDir, `${attachmentId}-${storedFilename}`);
-  await writeFile(storagePath, buffer);
-
-  const now = new Date().toISOString();
-  const attachment: SessionAttachmentRecord = {
-    id: attachmentId,
-    ownerKind: isConversation(session) ? 'conversation' : 'session',
-    ownerId: session.id,
-    sessionId: session.id,
-    ownerUserId: session.ownerUserId,
-    ownerUsername: session.ownerUsername,
-    kind,
-    filename: storedFilename,
-    mimeType,
-    sizeBytes: buffer.length,
-    storagePath,
-    extractedText: await extractAttachmentText(kind, storedFilename, mimeType, buffer),
-    consumedAt: null,
-    createdAt: now,
-  };
-
-  await store.addAttachment(attachment);
-  reply.code(201);
-  return {
-    attachment: attachmentSummary(attachment),
-  };
-});
-
-app.get('/api/sessions/:sessionId/attachments/:attachmentId/content', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const attachment = store.getAttachment(sessionId, attachmentId);
-  if (!attachment) {
-    reply.code(404);
-    return { error: 'Attachment not found' };
-  }
-
-  const buffer = await readFile(attachment.storagePath);
-  reply.type(attachment.mimeType);
-  reply.header('Cache-Control', 'private, max-age=60');
-  reply.header('Content-Disposition', `inline; filename="${attachment.filename.replace(/"/g, '')}"`);
-  return buffer;
-});
-
-app.delete('/api/sessions/:sessionId/attachments/:attachmentId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId, attachmentId } = request.params as { sessionId: string; attachmentId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const attachment = store.getAttachment(sessionId, attachmentId);
-  if (!attachment) {
-    reply.code(404);
-    return { error: 'Attachment not found' };
-  }
-
-  if (attachment.consumedAt) {
-    reply.code(409);
-    return { error: 'This attachment is already part of a sent turn.' };
-  }
-
-  await store.removeAttachment(sessionId, attachmentId);
-  await unlink(attachment.storagePath).catch(() => {});
-  return { ok: true };
-});
-
-app.post('/api/sessions', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const body = (request.body ?? {}) as CreateSessionRequest;
-  const sessionType = normalizeSessionType(body.sessionType);
-  const requestedTitle = trimOptional(body.title);
-
-  if (!userCanCreateSessionType(currentUser, sessionType)) {
-    reply.code(403);
-    return { error: `You do not have permission to create ${sessionType} sessions.` };
-  }
-
-  const sessionId = randomUUID();
-  const model = trimOptional(body.model) ?? currentDefaultModel();
-  const reasoningEffort = normalizeReasoningEffort(body.reasoningEffort) ?? currentDefaultEffort(model);
-  const requestedWorkspaceName = normalizeWorkspaceFolderName(body.workspaceName);
-  const workspaceName = sessionType === 'chat'
-    ? defaultChatWorkspaceName()
-    : requestedWorkspaceName;
-  if (!workspaceName) {
-    reply.code(400);
-    return { error: 'Workspace is required.' };
-  }
-
-  let workspaceInfo: Awaited<ReturnType<typeof ensureUserWorkspace>>;
-  let securityProfile: SecurityProfile;
-  const approvalMode = sessionType === 'chat' ? 'less-approval' : normalizeApprovalMode(body.approvalMode);
-
-  try {
-    if (body.workspaceId && sessionType === 'code') {
-      const workspace = await coding.getWorkspaceForUser(body.workspaceId, currentUser.id);
-      if (!workspace) {
-        reply.code(404);
-        return { error: 'Workspace not found.' };
-      }
-      workspaceInfo = {
-        root: userWorkspaceRoot(currentUser.username, currentUser.id),
-        id: workspace.id,
-        name: workspace.name,
-        path: workspace.path,
-        visible: workspace.visible,
-        sortOrder: workspace.sortOrder,
-      };
-    } else {
-      workspaceInfo = await ensureUserWorkspace(
-        currentUser.username,
-        currentUser.id,
-        workspaceName,
-      );
-    }
-  } catch (error) {
-    reply.code(400);
-    return { error: errorMessage(error) };
-  }
-
-  if (sessionType === 'chat') {
-    securityProfile = 'repo-write';
-  } else {
-    securityProfile = normalizeSecurityProfile(body.securityProfile);
-    if (securityProfile === 'read-only') {
-      securityProfile = 'repo-write';
-    }
-    if (securityProfile === 'full-host' && !currentUser.canUseFullHost) {
-      reply.code(403);
-      return { error: 'You do not have permission to create full-host sessions.' };
-    }
-  }
-
-  const fullHostEnabled = securityProfile === 'full-host';
-  const threadResponse = await codex.startThread({
-    cwd: workspaceInfo.path,
-    securityProfile,
-    model,
-  });
-
-  const now = new Date().toISOString();
-  if (sessionType === 'chat') {
-    const conversation: ConversationRecord = {
-      id: sessionId,
-      ownerUserId: currentUser.id,
-      ownerUsername: currentUser.username,
-      sessionType: 'chat',
-      threadId: threadResponse.thread.id,
-      activeTurnId: null,
-      title: requestedTitle || defaultChatTitle(),
-      autoTitle: !requestedTitle,
-      workspace: workspaceInfo.path,
-      archivedAt: null,
-      securityProfile: 'repo-write',
-      approvalMode: 'less-approval',
-      networkEnabled: false,
-      fullHostEnabled: false,
-      status: 'idle',
-      recoveryState: 'ready',
-      retryable: false,
-      lastIssue: null,
-      hasTranscript: false,
-      model,
-      reasoningEffort,
-      rolePresetId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    await store.upsertConversation(conversation);
-    await chatHistory.ensureConversation(conversation);
-    reply.code(201);
-    return { session: conversation, conversation };
-  }
-
-  const session: SessionRecord = {
-    id: sessionId,
-    ownerUserId: currentUser.id,
-    ownerUsername: currentUser.username,
-    sessionType: 'code',
-    workspaceId: workspaceInfo.id,
-    threadId: threadResponse.thread.id,
-    activeTurnId: null,
-    title: requestedTitle || basename(workspaceInfo.path),
-    autoTitle: false,
-    workspace: workspaceInfo.path,
-    archivedAt: null,
-    securityProfile,
-    approvalMode,
-    networkEnabled: false,
-    fullHostEnabled,
-    status: 'idle',
-    lastIssue: null,
-    hasTranscript: false,
-    model,
-    reasoningEffort,
-    createdAt: now,
-    updatedAt: now,
-  };
-
-  await coding.upsertSession(session);
-  reply.code(201);
-  return { session };
-});
-
-app.post('/api/sessions/:sessionId/restart', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const nextSession = await restartSessionThread(session);
-  return { session: nextSession };
-});
-
-app.post('/api/sessions/:sessionId/fork', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-  try {
-    const nextSession = isDeveloperSession(session)
-      ? await createForkedSession(currentUser, session)
-      : await createForkedConversation(currentUser, session);
-    reply.code(201);
-    return { session: nextSession };
-  } catch (error) {
-    reply.code(500);
-    return { error: errorMessage(error) };
-  }
-});
-
-app.post('/api/sessions/:sessionId/rename', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = (request.body ?? {}) as UpdateSessionRequest;
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const title = body.title?.trim();
-  if (!title) {
-    reply.code(400);
-    return { error: 'Session title is required' };
-  }
-
-  const nextSession = (await updateRecord(session, {
-    title,
-    autoTitle: false,
-  })) ?? session;
-
-  return { session: nextSession };
-});
-
-app.patch('/api/sessions/:sessionId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = (request.body ?? {}) as UpdateSessionRequest;
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const titleProvided = Object.prototype.hasOwnProperty.call(body, 'title');
-  const workspaceProvided = Object.prototype.hasOwnProperty.call(body, 'workspaceName');
-  const securityProvided = Object.prototype.hasOwnProperty.call(body, 'securityProfile');
-  const approvalModeProvided = Object.prototype.hasOwnProperty.call(body, 'approvalMode');
-
-  const title = titleProvided ? trimOptional(body.title) : session.title;
-  if (titleProvided && !title) {
-    reply.code(400);
-    return { error: 'Session title is required' };
-  }
-
-  if ((workspaceProvided || securityProvided) && session.activeTurnId) {
-    reply.code(409);
-    return { error: 'Stop the active turn before editing this session.' };
-  }
-
-  let workspace = session.workspace;
-  let workspaceId = isDeveloperSession(session) ? session.workspaceId : undefined;
-  if (workspaceProvided && isDeveloperSession(session)) {
-    const workspaceName = normalizeWorkspaceFolderName(body.workspaceName);
-    if (!workspaceName) {
-      reply.code(400);
-      return { error: 'Workspace is required.' };
-    }
-
-    try {
-      const workspaceRecord = await ensureUserWorkspace(currentUser.username, currentUser.id, workspaceName);
-      workspace = workspaceRecord.path;
-      workspaceId = workspaceRecord.id;
-    } catch (error) {
-      reply.code(400);
-      return { error: errorMessage(error) };
-    }
-  }
-
-  let securityProfile = session.securityProfile;
-  if (session.sessionType === 'chat') {
-    securityProfile = 'repo-write';
-  } else if (securityProvided) {
-    securityProfile = normalizeSecurityProfile(body.securityProfile);
-    if (securityProfile === 'read-only') {
-      securityProfile = 'repo-write';
-    }
-    if (securityProfile === 'full-host' && !currentUser.canUseFullHost) {
-      reply.code(403);
-      return { error: 'You do not have permission to use full-host sessions.' };
-    }
-  }
-
-  const approvalMode = approvalModeProvided
-    ? normalizeApprovalMode(body.approvalMode)
-    : session.approvalMode;
-  const restartRequired = workspace !== session.workspace || securityProfile !== session.securityProfile;
-
-  let nextSession = (await updateRecord(session, {
-    title: title ?? session.title,
-    autoTitle: titleProvided ? false : session.autoTitle,
-    workspace,
-    securityProfile,
-    approvalMode: isDeveloperSession(session) ? approvalMode : session.approvalMode,
-    fullHostEnabled: isDeveloperSession(session) ? securityProfile === 'full-host' : false,
-    ...(isDeveloperSession(session) && workspaceId ? { workspaceId } : {}),
-  })) ?? session;
-
-  if (restartRequired) {
-    nextSession = await restartSessionThread(
-      nextSession,
-      'Session settings changed. Started a fresh thread for this session.',
-    );
-  }
-
-  return { session: nextSession };
-});
-
-app.patch('/api/sessions/:sessionId/preferences', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = (request.body ?? {}) as UpdateSessionPreferencesRequest;
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const requestedModel = trimOptional(body.model) ?? session.model ?? currentDefaultModel();
-  const modelOption = modelCatalog.findByModel(requestedModel);
-  if (!modelOption) {
-    reply.code(400);
-    return { error: 'Unknown model.' };
-  }
-
-  const requestedEffort = normalizeReasoningEffort(body.reasoningEffort);
-  const reasoningEffort = requestedEffort && modelOption.supportedReasoningEfforts.includes(requestedEffort)
-    ? requestedEffort
-    : preferredReasoningEffortForModel(modelOption);
-  const approvalMode = session.sessionType === 'code'
-    ? normalizeApprovalMode(body.approvalMode ?? session.approvalMode)
-    : session.approvalMode;
-
-  const nextSession = (await updateRecord(session, {
-    model: modelOption.model,
-    reasoningEffort,
-    approvalMode: isDeveloperSession(session) ? approvalMode : session.approvalMode,
-  })) ?? session;
-
-  return { session: nextSession };
-});
-
-app.post('/api/sessions/:sessionId/archive', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  if (session.archivedAt) {
-    return { session };
-  }
-
-  if (isDeveloperSession(session)) {
-    store.clearApprovals(sessionId);
-  }
-  const nextSession = (await updateRecord(session, {
-    archivedAt: new Date().toISOString(),
-    activeTurnId: null,
-    status: 'idle',
-    networkEnabled: false,
-    lastIssue: null,
-  })) ?? session;
-
-  return { session: nextSession };
-});
-
-app.post('/api/sessions/:sessionId/restore', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  if (!session.archivedAt) {
-    return { session };
-  }
-
-  const nextSession = (await updateRecord(session, {
-    archivedAt: null,
-    status: 'idle',
-    lastIssue: null,
-  })) ?? session;
-
-  return { session: nextSession };
-});
-
-app.delete('/api/sessions/:sessionId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const attachments = store.listAttachments(sessionId);
-
-  if (isConversation(session)) {
-    await store.deleteConversation(sessionId);
-    await chatHistory.deleteConversation(sessionId);
-  } else {
-    await coding.deleteSession(sessionId);
-  }
-  await deleteStoredAttachments(attachments);
-  return { ok: true };
-});
-
-app.post('/api/sessions/:sessionId/turns', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const body = request.body as CreateTurnRequest;
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  const prompt = body.prompt?.trim() ?? '';
-  const attachmentIds = Array.isArray(body.attachmentIds)
-    ? [...new Set(body.attachmentIds.filter((value): value is string => typeof value === 'string' && value.trim().length > 0))]
-    : [];
-  const attachments = attachmentIds.map((attachmentId) => store.getAttachment(sessionId, attachmentId));
-
-  if (!prompt && attachmentIds.length === 0) {
-    reply.code(400);
-    return { error: 'Prompt or attachment is required' };
-  }
-
-  if (attachments.some((attachment) => !attachment || attachment.consumedAt)) {
-    reply.code(400);
-    return { error: 'One or more attachments are missing or already used.' };
-  }
-
-  try {
-    const result = await startTurnWithAutoRestart(
-      session,
-      prompt || null,
-      attachments.filter((attachment): attachment is SessionAttachmentRecord => Boolean(attachment)),
-    );
-    return { turn: result.turn, session: result.session };
-  } catch (error) {
-    const message = errorMessage(error);
-    await updateRecord(session, {
-      activeTurnId: null,
-      status: 'error',
-      lastIssue: message,
-    });
-    reply.code(500);
-    return { error: message };
-  }
-});
-
-app.post('/api/sessions/:sessionId/stop', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId } = request.params as { sessionId: string };
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-
-  if (!session.activeTurnId) {
-    reply.code(409);
-    return { error: 'This session does not have an active turn to stop.' };
-  }
-
-  try {
-    await codex.interruptTurn(session.threadId, session.activeTurnId);
-    store.addLiveEvent(session.id, {
-      id: randomUUID(),
-      method: 'turn/interrupted',
-      summary: 'Stopped the active turn.',
-      createdAt: new Date().toISOString(),
-    });
-    const nextSession = (await updateRecord(session, {
-      activeTurnId: null,
-      status: 'idle',
-      ...(isConversation(session)
-        ? {
-            recoveryState: 'ready' as const,
-            retryable: false,
-          }
-        : {}),
-      lastIssue: 'Stopped by user.',
-    })) ?? session;
-    return { session: nextSession };
-  } catch (error) {
-    if (isThreadUnavailableError(error)) {
-      const nextSession = (await updateRecord(session, isConversation(session)
-        ? unavailableChatConversationPatch(session)
-        : {
-            activeTurnId: null,
-            status: 'stale',
-            lastIssue: STALE_SESSION_MESSAGE,
-            networkEnabled: false,
-          })) ?? session;
-      reply.code(409);
-      return { error: STALE_SESSION_MESSAGE, session: nextSession };
-    }
-
-    const message = errorMessage(error);
-    await updateRecord(session, isConversation(session)
-      ? {
-          activeTurnId: null,
-          status: 'error',
-          recoveryState: 'ready',
-          retryable: true,
-          lastIssue: message,
-        }
-      : {
-          activeTurnId: null,
-          status: 'error',
-          lastIssue: message,
-        });
-    reply.code(500);
-    return { error: message };
-  }
-});
-
-app.post('/api/sessions/:sessionId/approvals/:approvalId', async (request, reply) => {
-  const currentUser = getRequestUser(request);
-  const { sessionId, approvalId } = request.params as { sessionId: string; approvalId: string };
-  const body = request.body as ResolveApprovalRequest;
-  const session = await getOwnedRecordOrReply(currentUser.id, sessionId, reply);
-  if (!session) {
-    return { error: 'Session not found' };
-  }
-  if (!isDeveloperSession(session)) {
-    reply.code(404);
-    return { error: 'Approval not found' };
-  }
-
-  const approval = store.getApprovals(sessionId).find((entry) => entry.id === approvalId);
-  if (!approval) {
-    reply.code(404);
-    return { error: 'Approval not found' };
-  }
-
-  const scope = body.scope === 'session' ? 'session' : 'once';
-  const accepted = body.decision !== 'decline';
-
-  if (approval.method === 'item/commandExecution/requestApproval') {
-    await codex.respond(approval.rpcRequestId, {
-      decision: accepted ? (scope === 'session' ? 'acceptForSession' : 'accept') : 'decline',
-    });
-  } else if (approval.method === 'item/fileChange/requestApproval') {
-    await codex.respond(approval.rpcRequestId, {
-      decision: accepted ? (scope === 'session' ? 'acceptForSession' : 'accept') : 'decline',
-    });
-  } else if (approval.method === 'item/permissions/requestApproval') {
-    const params = approval.payload as { permissions?: unknown };
-    await codex.respond(approval.rpcRequestId, {
-      permissions: accepted ? (params.permissions ?? {}) : {},
-      scope: scope === 'session' ? 'session' : 'turn',
-    });
-    if (accepted) {
-      await coding.updateSession(sessionId, {
-        networkEnabled: true,
-      });
-    }
-  } else {
-    await codex.respond(approval.rpcRequestId, {
-      decision: accepted ? 'accept' : 'cancel',
-    });
-  }
-
-  store.removeApproval(sessionId, approvalId);
-  await coding.updateSession(sessionId, {
-    status: store.getApprovals(sessionId).length > 0 ? 'needs-approval' : 'running',
-    lastIssue: null,
-  });
-  return { ok: true };
-});
-
-const hasBuiltWeb = await stat(WEB_DIST_DIR)
-  .then((info) => info.isDirectory())
-  .catch(() => false);
-
-if (hasBuiltWeb) {
-  await app.register(fastifyStatic, {
-    root: WEB_DIST_DIR,
-    prefix: '/',
-    setHeaders: (response, pathName) => {
-      if (pathName.endsWith('.html')) {
-        response.setHeader('Cache-Control', 'no-store');
-      }
+  bindRuntimeEvents({
+    log: app.log,
+    runtime: registeredRuntime,
+    handleNotification,
+    handleServerRequest,
+    markAllStale: async () => {
+      await Promise.all([
+        store.markAllStale(STALE_SESSION_MESSAGE),
+        chatHistory.markAllStale(STALE_SESSION_MESSAGE),
+        coding.markAllStale(STALE_SESSION_MESSAGE),
+      ]);
     },
   });
 }
 
-app.setNotFoundHandler(async (request, reply) => {
-  if (request.url.startsWith('/api/')) {
-    reply.code(404);
-    return { error: 'Not found' };
-  }
+registerRequestAuthHook(app, {
+  auth,
+  authCookieName: AUTH_COOKIE_NAME,
+  devBypassEnabled: DEV_DISABLE_AUTH,
+  cookieIsSecure,
+});
 
-  if (hasBuiltWeb) {
-    reply.header('Cache-Control', 'no-store');
-    return reply.sendFile('index.html');
-  }
+registerCoreRoutes(app, {
+  devDisableAuth: DEV_DISABLE_AUTH,
+  renderLoginPage: loginPageHtml,
+  authCookieName: AUTH_COOKIE_NAME,
+  cookieIsSecure,
+  verifyCredentials: (username, password) => auth.verifyCredentials(username, password),
+  getRequestUser,
+  buildBootstrapResponse: buildAppBootstrapResponse,
+  getCloudflareStatus: () => cloudflareStatusCache.get({ preferFresh: true }),
+  connectCloudflare: connectCloudflareAndRefreshStatus,
+  disconnectCloudflare: disconnectCloudflareAndRefreshStatus,
+  errorMessage,
+});
 
-  reply.code(404);
-  return {
-    error: 'Web client is not built yet. Run `npm run build` or use `npm run dev:web` for local development.',
-  };
+registerChatRoutes(app, {
+  getRequestUser,
+  userCanUseMode,
+  listConversationRecordsForUser: (userId) => chatHistory.listConversationRecordsForUser(userId),
+  repairPendingChatAutoTitles,
+  loadChatRolePresetConfig: () => chatPromptConfig.loadRolePresetConfig(),
+  apiRolePresets: (config) => chatPromptConfig.apiRolePresets(config),
+  buildChatBootstrapResponse,
+  getOwnedConversationOrReply,
+  readSessionThread: (session) => readSessionThread(session),
+  syncConversationMirror,
+  syncConversationHistoryFromThread,
+  countMessages: (conversationId) => chatHistory.countMessages(conversationId),
+  updateConversation: (conversation, patch) => updateRecord(conversation, patch) as Promise<ConversationRecord | null>,
+  buildChatConversationDetailPayload,
+  toThreadSummary,
+  normalizeTranscriptLimit,
+  pageMessages: (conversationId, options) => chatHistory.pageMessages(conversationId, options),
+  chatMessageToApiTranscriptEntry,
+  compactChatLiveEvents,
+  getLiveEvents: (conversationId) => store.getLiveEvents(conversationId),
+  attachmentKindFromUpload,
+  sanitizeAttachmentFilename,
+  extractAttachmentText,
+  addAttachment: (attachment) => store.addAttachment(attachment),
+  chatAttachmentSummary,
+  getAttachment: (conversationId, attachmentId) => store.getAttachment(conversationId, attachmentId),
+  removeAttachment: (conversationId, attachmentId) => store.removeAttachment(conversationId, attachmentId),
+  createChatConversation,
+  renameConversation,
+  updateConversationPreferences,
+  archiveConversation,
+  restoreConversation,
+  createForkedConversation,
+  errorMessage,
+  listAttachments: (conversationId) => store.listAttachments(conversationId),
+  deleteConversationState: (conversationId) => store.deleteConversation(conversationId),
+  deleteConversationHistory: (conversationId) => chatHistory.deleteConversation(conversationId),
+  deleteStoredAttachments,
+  createChatMessage,
+  stopChatTurn,
+  toApiChatConversationRecord,
+});
+
+registerCodingRoutes(app, {
+  getRequestUser,
+  userCanUseMode,
+  buildCodingBootstrapResponse,
+  listUserWorkspaces,
+  toCodingWorkspaceSummary,
+  createCodingWorkspace,
+  getOwnedCodingWorkspaceOrReply,
+  updateCodingWorkspace,
+  reorderWorkspaceList,
+  createDeveloperSession,
+  errorMessage,
+  getOwnedCodingSessionOrReply,
+  buildCodingSessionDetailResponse,
+  buildCodingSessionTranscriptResponse,
+  attachmentKindFromUpload,
+  sanitizeAttachmentFilename,
+  extractAttachmentText,
+  addAttachment: (attachment) => store.addAttachment(attachment),
+  codingAttachmentSummary,
+  getAttachment: (sessionId, attachmentId) => store.getAttachment(sessionId, attachmentId),
+  removeAttachment: (sessionId, attachmentId) => store.removeAttachment(sessionId, attachmentId),
+  deleteStoredAttachments,
+  trimOptional,
+  normalizeWorkspaceFolderName,
+  ensureUserWorkspace,
+  normalizeSecurityProfile,
+  normalizeApprovalMode,
+  isExecutorSupported: (executor) => runtimeRegistry.get(executor) !== null,
+  normalizeExecutor: normalizeAgentExecutor,
+  updateCodingSession: (sessionId, patch) => coding.updateSession(sessionId, patch),
+  currentDefaultModel,
+  findModelOption: (model, executor) => modelCatalog.findByModel(model, executor),
+  normalizeReasoningEffort,
+  preferredReasoningEffortForModel,
+  restartSessionThread: async (session, reason) => (
+    await restartSessionThread(session, reason)
+  ) as SessionRecord,
+  createForkedSession,
+  listAttachments: (sessionId) => store.listAttachments(sessionId),
+  deleteCodingSession: async (sessionId) => {
+    await codingHistory.deleteSession(sessionId);
+    await coding.deleteSession(sessionId);
+  },
+  startTurnWithAutoRestart: async (session, prompt, attachments) => {
+    const result = await startTurnWithAutoRestart(session, prompt, attachments);
+    return {
+      turn: result.turn,
+      session: result.session as SessionRecord,
+    };
+  },
+  isThreadUnavailableError,
+  staleSessionMessage: STALE_SESSION_MESSAGE,
+  interruptTurn: (session, threadId, turnId) => runtimeForExecutor(session.executor).interruptTurn(threadId, turnId),
+  addLiveEvent: (sessionId, event) => store.addLiveEvent(sessionId, event),
+  getApprovals: (sessionId) => store.getApprovals(sessionId),
+  respondToRuntime: async (session, rpcRequestId, payload) => {
+    await runtimeForExecutor(session.executor).respond(rpcRequestId, payload);
+  },
+  removeApproval: (sessionId, approvalId) => store.removeApproval(sessionId, approvalId),
+});
+
+registerWorkspaceRoutes(app, {
+  getRequestUser,
+  userCanUseMode,
+  userWorkspaceRoot,
+  listUserWorkspaces,
+  normalizeWorkspaceFolderName,
+  ensureUserWorkspace,
+  errorMessage,
+  getOwnedWorkspace: (workspaceId, userId) => coding.getWorkspaceForUser(workspaceId, userId),
+  updateWorkspace: (workspaceId, patch) => coding.updateWorkspace(workspaceId, patch),
+});
+
+registerAdminRoutes(app, {
+  getRequestUser,
+  trimOptional,
+  errorMessage,
+  cookieIsSecure,
+  chatPromptConfig,
+  adminUserService,
+});
+
+registerSessionRoutes(app, {
+  getRequestUser,
+  getOwnedRecordOrReply,
+  buildSessionDetailResponse: buildLegacySessionDetailResponse,
+  buildSessionTranscriptResponse: buildLegacySessionTranscriptResponse,
+  attachmentKindFromUpload,
+  sanitizeAttachmentFilename,
+  extractAttachmentText,
+  addAttachment: (attachment) => store.addAttachment(attachment),
+  attachmentSummary,
+  getAttachment: (sessionId, attachmentId) => store.getAttachment(sessionId, attachmentId),
+  removeAttachment: (sessionId, attachmentId) => store.removeAttachment(sessionId, attachmentId),
+  normalizeSessionType,
+  trimOptional,
+  userCanCreateSessionType,
+  normalizeWorkspaceFolderName,
+  ensureUserWorkspace,
+  getOwnedWorkspace: (workspaceId, userId) => coding.getWorkspaceForUser(workspaceId, userId),
+  errorMessage,
+  createChatConversation,
+  createDeveloperSession,
+  restartSessionThread,
+  createForkedSession,
+  createForkedConversation,
+  updateRecord,
+  normalizeSecurityProfile,
+  normalizeApprovalMode,
+  updateConversationPreferences,
+  renameConversation,
+  archiveConversation,
+  restoreConversation,
+  clearApprovals: (sessionId) => store.clearApprovals(sessionId),
+  deleteConversationState: (conversationId) => store.deleteConversation(conversationId),
+  deleteConversationHistory: (conversationId) => chatHistory.deleteConversation(conversationId),
+  deleteCodingSession: async (sessionId) => {
+    await codingHistory.deleteSession(sessionId);
+    await coding.deleteSession(sessionId);
+  },
+  deleteStoredAttachments,
+  listAttachments: (sessionId) => store.listAttachments(sessionId),
+  createChatMessage,
+  stopChatTurn,
+  startTurnWithAutoRestart: async (session, prompt, attachments) => {
+    const result = await startTurnWithAutoRestart(session, prompt, attachments);
+    return {
+      turn: result.turn,
+      session: result.session as SessionRecord,
+    };
+  },
+  interruptTurn: (session, threadId, turnId) => runtimeForExecutor(session.executor).interruptTurn(threadId, turnId),
+  addLiveEvent: (sessionId, event) => store.addLiveEvent(sessionId, event),
+  isThreadUnavailableError,
+  staleSessionMessage: STALE_SESSION_MESSAGE,
+  getApprovals: (sessionId) => store.getApprovals(sessionId),
+  respondToRuntime: async (session, rpcRequestId, payload) => {
+    await runtimeForExecutor(session.executor).respond(rpcRequestId, payload);
+  },
+  removeApproval: (sessionId, approvalId) => store.removeApproval(sessionId, approvalId),
+  updateCodingSession: (sessionId, patch) => coding.updateSession(sessionId, patch),
+  currentDefaultModel,
+  findModelOption: (model, executor) => modelCatalog.findByModel(model, executor),
+  normalizeReasoningEffort,
+  preferredReasoningEffortForModel,
+});
+
+await registerWebClientServing(app, {
+  webDistDir: WEB_DIST_DIR,
 });
 
 const shutdown = async () => {

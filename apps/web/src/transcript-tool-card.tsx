@@ -9,6 +9,7 @@ interface TranscriptToolCardProps {
   badgeLabel: string;
   language: Language;
   noInlineDiffLabel: string;
+  onSelectFileChange?: ((change: SessionFileChange) => void) | undefined;
 }
 
 interface DiffLine {
@@ -140,14 +141,31 @@ function hasStructuredFileChanges(entry: SessionTranscriptEntry): entry is Sessi
   return Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0;
 }
 
-function renderFileChange(change: SessionFileChange, index: number, language: Language, noInlineDiffLabel: string) {
+function renderFileChange(
+  change: SessionFileChange,
+  index: number,
+  language: Language,
+  noInlineDiffLabel: string,
+  onSelectFileChange?: (change: SessionFileChange) => void,
+) {
   const tone = changeTone(change.kind);
   const diffLines = change.diff ? parseUnifiedDiff(change.diff) : [];
 
   return (
     <section key={`${change.path}-${index}`} className={`timeline-diff-file timeline-diff-file-${tone}`}>
       <header className="timeline-diff-file-header">
-        <code className="timeline-diff-path" title={change.path}>{change.path}</code>
+        {onSelectFileChange ? (
+          <button
+            type="button"
+            className="timeline-diff-path-button"
+            onClick={() => onSelectFileChange(change)}
+            title={change.path}
+          >
+            <code className="timeline-diff-path">{change.path}</code>
+          </button>
+        ) : (
+          <code className="timeline-diff-path" title={change.path}>{change.path}</code>
+        )}
         <span className={`timeline-diff-kind timeline-diff-kind-${tone}`}>{changeKindLabel(change.kind, language)}</span>
       </header>
 
@@ -168,7 +186,22 @@ function renderFileChange(change: SessionFileChange, index: number, language: La
   );
 }
 
-export function TranscriptToolCard({ entry, badgeLabel, language, noInlineDiffLabel }: TranscriptToolCardProps) {
+interface FileChangeListProps {
+  fileChanges: SessionFileChange[];
+  language: Language;
+  noInlineDiffLabel: string;
+  onSelectFileChange?: ((change: SessionFileChange) => void) | undefined;
+}
+
+export function FileChangeList({ fileChanges, language, noInlineDiffLabel, onSelectFileChange }: FileChangeListProps) {
+  return (
+    <div className="timeline-tool-output timeline-tool-files">
+      {fileChanges.map((change, index) => renderFileChange(change, index, language, noInlineDiffLabel, onSelectFileChange))}
+    </div>
+  );
+}
+
+export function TranscriptToolCard({ entry, badgeLabel, language, noInlineDiffLabel, onSelectFileChange }: TranscriptToolCardProps) {
   return (
     <details className="timeline-tool-card">
       <summary className="timeline-tool-summary">
@@ -180,9 +213,12 @@ export function TranscriptToolCard({ entry, badgeLabel, language, noInlineDiffLa
       </summary>
 
       {entry.label === 'files' && hasStructuredFileChanges(entry) ? (
-        <div className="timeline-tool-output timeline-tool-files">
-          {entry.fileChanges.map((change, index) => renderFileChange(change, index, language, noInlineDiffLabel))}
-        </div>
+        <FileChangeList
+          fileChanges={entry.fileChanges}
+          language={language}
+          noInlineDiffLabel={noInlineDiffLabel}
+          onSelectFileChange={onSelectFileChange}
+        />
       ) : entry.body ? (
         <pre className="event-body timeline-tool-output">{entry.body}</pre>
       ) : null}

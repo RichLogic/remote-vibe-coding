@@ -38,7 +38,7 @@ function buildChatSession(): ConversationRecord {
     workspace: '/tmp/chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'idle',
@@ -60,6 +60,7 @@ function buildCodeSession(overrides: Partial<SessionRecord> = {}): SessionRecord
     ownerUserId: overrides.ownerUserId ?? 'owner-1',
     ownerUsername: overrides.ownerUsername ?? 'owner',
     sessionType: 'code',
+    executor: overrides.executor ?? 'codex',
     workspaceId: overrides.workspaceId ?? 'workspace-1',
     threadId: overrides.threadId ?? 'thread-code',
     activeTurnId: overrides.activeTurnId ?? null,
@@ -68,7 +69,7 @@ function buildCodeSession(overrides: Partial<SessionRecord> = {}): SessionRecord
     workspace: overrides.workspace ?? '/tmp/code',
     archivedAt: overrides.archivedAt ?? null,
     securityProfile: overrides.securityProfile ?? 'repo-write',
-    approvalMode: overrides.approvalMode ?? 'less-approval',
+    approvalMode: overrides.approvalMode ?? 'detailed',
     networkEnabled: overrides.networkEnabled ?? false,
     fullHostEnabled: overrides.fullHostEnabled ?? false,
     status: overrides.status ?? 'idle',
@@ -88,13 +89,22 @@ function createHarness() {
   const updates: Array<{ recordId: string; patch: Partial<TurnRecord> }> = [];
   const consumed: Array<{ sessionId: string; attachmentIds: string[] }> = [];
   const persistedMessages: Array<{ sessionId: string; prompt: string | null; turnId: string; recoveryNeeded: boolean }> = [];
-  const codexCalls: Array<{ threadId: string; input: CodexThreadInput[]; options?: { model?: string | null; effort?: SessionRecord['reasoningEffort'] | null } }> = [];
+  const codexCalls: Array<{
+    threadId: string;
+    input: CodexThreadInput[];
+    options?: {
+      model?: string | null;
+      effort?: SessionRecord['reasoningEffort'] | null;
+      approvalMode?: SessionRecord['approvalMode'];
+      securityProfile?: SessionRecord['securityProfile'];
+    };
+  }> = [];
   const currentRecords = new Map<string, TurnRecord>();
   let startTurnCallCount = 0;
   let throwThreadUnavailableOnce = false;
 
   const startTurnWithAutoRestart = createTurnStartService({
-    codex: {
+    chatRuntime: {
       async startTurn(threadId, input, options) {
         codexCalls.push({
           threadId,
@@ -108,6 +118,20 @@ function createHarness() {
         return { turn: { id: `turn-${startTurnCallCount}`, status: 'running' } };
       },
     },
+    runtimeForExecutor: () => ({
+      async startTurn(threadId, input, options) {
+        codexCalls.push({
+          threadId,
+          input,
+          ...(options ? { options } : {}),
+        });
+        startTurnCallCount += 1;
+        if (throwThreadUnavailableOnce && startTurnCallCount === 1) {
+          throw new Error('thread not loaded');
+        }
+        return { turn: { id: `turn-${startTurnCallCount}`, status: 'running' } };
+      },
+    }),
     async restartSessionThread(session, summary) {
       restartCalls.push({
         sessionId: session.id,

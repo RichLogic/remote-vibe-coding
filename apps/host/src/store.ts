@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { readFile, rename, writeFile } from 'node:fs/promises';
 
+import { DEFAULT_APPROVAL_MODE, normalizeApprovalMode } from './approval-mode.js';
 import { ensureDataDir, SESSIONS_BACKUP_FILE, SESSIONS_FILE } from './config.js';
+import { DEFAULT_AGENT_EXECUTOR } from './executor.js';
 import type {
   ApprovalMode,
   BaseTurnRecord,
@@ -171,6 +173,8 @@ export class SessionStore {
       for (const session of parsed.sessions ?? []) {
         this.sessions.set(session.id, {
           ...session,
+          executor: session.executor ?? DEFAULT_AGENT_EXECUTOR,
+          approvalMode: normalizeApprovalMode(session.approvalMode),
           hasTranscript: typeof session.hasTranscript === 'boolean'
             ? session.hasTranscript
             : session.createdAt !== session.updatedAt,
@@ -179,6 +183,7 @@ export class SessionStore {
       for (const conversation of parsed.conversations ?? []) {
         this.conversations.set(conversation.id, {
           ...conversation,
+          approvalMode: normalizeApprovalMode(conversation.approvalMode),
           rolePresetId: conversation.rolePresetId ?? null,
           recoveryState: conversation.recoveryState ?? defaultConversationRecoveryState(conversation.status),
           retryable: typeof conversation.retryable === 'boolean'
@@ -212,7 +217,7 @@ export class SessionStore {
           ...record,
           sessionType: 'chat',
           securityProfile: 'repo-write',
-          approvalMode: 'less-approval',
+          approvalMode: DEFAULT_APPROVAL_MODE,
           fullHostEnabled: false,
           rolePresetId: null,
           recoveryState: defaultConversationRecoveryState(record.status),
@@ -231,6 +236,7 @@ export class SessionStore {
         const session: SessionRecord = {
           ...record,
           sessionType: 'code',
+          executor: DEFAULT_AGENT_EXECUTOR,
           workspaceId,
         };
         this.sessions.set(session.id, session);
@@ -277,8 +283,8 @@ export class SessionStore {
         ? 'repo-write'
         : legacy.securityProfile ?? 'repo-write',
       approvalMode: legacy.sessionType === 'chat'
-        ? 'less-approval'
-        : legacy.approvalMode ?? 'less-approval',
+        ? DEFAULT_APPROVAL_MODE
+        : normalizeApprovalMode(legacy.approvalMode),
       networkEnabled: Boolean(legacy.networkEnabled),
       fullHostEnabled: legacy.sessionType === 'chat' ? false : Boolean(legacy.fullHostEnabled),
       status: normalizedStatus,

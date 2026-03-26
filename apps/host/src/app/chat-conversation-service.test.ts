@@ -36,7 +36,7 @@ function buildConversation(overrides?: Partial<ConversationRecord>): Conversatio
     workspace: '/tmp/chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'idle',
@@ -74,7 +74,7 @@ function createHarness() {
   const models = [buildModel('gpt-5-default'), buildModel('gpt-5-codex')];
 
   const options: ChatConversationServiceOptions = {
-    codex: {
+    runtime: {
       async startThread(options: { cwd: string; securityProfile: string; model?: string | null }) {
         threadStarts.push(options);
         return { thread: { id: 'thread-new' } };

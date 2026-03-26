@@ -1,7 +1,9 @@
 import type {
+  AgentExecutor,
   ApprovalMode,
   CreateSessionRequest,
   CreateTurnRequest,
+  ExecutorModelCatalog,
   ModelOption,
   PendingApproval,
   ReasoningEffort,
@@ -52,10 +54,36 @@ export interface ReorderCodingWorkspacesRequest {
 
 export interface CreateCodingWorkspaceSessionRequest {
   title?: string;
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   securityProfile?: SecurityProfile;
   approvalMode?: ApprovalMode;
+}
+
+export interface CodingWorkspaceFileEntry {
+  path: string;
+  name: string;
+  kind: 'directory' | 'file';
+  sizeBytes: number | null;
+}
+
+export interface CodingWorkspaceDirectoryResponse {
+  workspaceId: string;
+  path: string;
+  entries: CodingWorkspaceFileEntry[];
+}
+
+export interface CodingWorkspaceFileResponse {
+  workspaceId: string;
+  path: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  previewable: boolean;
+  truncated: boolean;
+  content: string | null;
+  downloadUrl: string;
 }
 
 export interface CodingBootstrapResponse {
@@ -66,8 +94,11 @@ export interface CodingBootstrapResponse {
   workspaces: CodingWorkspaceSummary[];
   sessions: CodingSessionSummary[];
   approvals: PendingApproval[];
+  availableExecutors: AgentExecutor[];
   availableModels: ModelOption[];
+  availableModelsByExecutor: ExecutorModelCatalog;
   defaults: {
+    executor: AgentExecutor;
     model: string;
     reasoningEffort: ReasoningEffort;
   };

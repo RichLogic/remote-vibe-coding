@@ -1,13 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { isAbsolute, relative, resolve } from 'node:path';
 
-import type { JsonRpcServerRequest } from '../codex-app-server.js';
 import type { ConversationRecord, PendingApproval, SessionEvent, SessionRecord } from '../types.js';
+import type { AgentRuntimeServerRequest, RuntimeApprovalResponder } from './agent-runtime.js';
 
 type TurnRecord = ConversationRecord | SessionRecord;
-
-interface CodexResponder {
-  respond(id: number | string, result: unknown): Promise<unknown>;
-}
 
 interface ApprovalStore {
   addApproval(approval: PendingApproval): void;
@@ -18,8 +15,8 @@ interface CodingSessionRepository {
   updateSession(sessionId: string, patch: Partial<SessionRecord>): Promise<unknown>;
 }
 
-interface CreateCodexServerRequestHandlerOptions {
-  codex: CodexResponder;
+interface CreateRuntimeServerRequestHandlerOptions {
+  runtime: RuntimeApprovalResponder;
   store: ApprovalStore;
   coding: CodingSessionRepository;
   findRecordByThreadId: (threadId: string) => Promise<TurnRecord | null>;
@@ -47,33 +44,120 @@ function isConversation(record: TurnRecord): record is ConversationRecord {
   return record.sessionType === 'chat';
 }
 
-export function createCodexServerRequestHandler(options: CreateCodexServerRequestHandlerOptions) {
+function isTruthyPermissionValue(value: unknown) {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    return value !== '' && value !== '0' && value.toLowerCase() !== 'false';
+  }
+  return value != null;
+}
+
+function isNetworkOnlyPermissionRequest(permissions: Record<string, unknown>) {
+  const entries = Object.entries(permissions);
+  if (entries.length === 0) {
+    return false;
+  }
+
+  return entries.every(([key, value]) => (
+    (key === 'web' || key === 'network' || key === 'internet')
+    && isTruthyPermissionValue(value)
+  ));
+}
+
+function collectRequestedPaths(value: unknown, result: string[] = []) {
+  if (!value || typeof value !== 'object') {
+    return result;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectRequestedPaths(entry, result);
+    }
+    return result;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (typeof record.path === 'string') {
+    result.push(record.path);
+  }
+
+  if (Array.isArray(record.paths)) {
+    for (const entry of record.paths) {
+      if (typeof entry === 'string') {
+        result.push(entry);
+      } else {
+        collectRequestedPaths(entry, result);
+      }
+    }
+  }
+
+  if (Array.isArray(record.changes)) {
+    for (const entry of record.changes) {
+      collectRequestedPaths(entry, result);
+    }
+  }
+
+  for (const [key, entry] of Object.entries(record)) {
+    if (key === 'path' || key === 'paths' || key === 'changes') {
+      continue;
+    }
+    collectRequestedPaths(entry, result);
+  }
+
+  return result;
+}
+
+function isWorkspacePath(workspace: string, filePath: string) {
+  const trimmedPath = filePath.trim();
+  if (!trimmedPath) {
+    return false;
+  }
+
+  const normalizedWorkspace = resolve(workspace);
+  const normalizedPath = isAbsolute(trimmedPath)
+    ? resolve(trimmedPath)
+    : resolve(normalizedWorkspace, trimmedPath);
+  const relativePath = relative(normalizedWorkspace, normalizedPath);
+  return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+}
+
+function isWorkspaceScopedFileChangeRequest(params: unknown, workspace: string) {
+  const requestedPaths = collectRequestedPaths(params);
+  return requestedPaths.length > 0 && requestedPaths.every((filePath) => isWorkspacePath(workspace, filePath));
+}
+
+export function createRuntimeServerRequestHandler(options: CreateRuntimeServerRequestHandlerOptions) {
   const randomId = options.randomId ?? (() => randomUUID());
   const now = options.now ?? (() => new Date().toISOString());
 
-  return async function handleServerRequest(message: JsonRpcServerRequest) {
+  return async function handleServerRequest(message: AgentRuntimeServerRequest) {
     const threadId = extractThreadId(message.params);
     if (!threadId) {
-      await options.codex.respond(message.id, { decision: 'cancel' });
+      await options.runtime.respond(message.id, { decision: 'cancel' });
       return;
     }
 
     const session = await options.findRecordByThreadId(threadId);
     if (!session) {
-      await options.codex.respond(message.id, { decision: 'cancel' });
+      await options.runtime.respond(message.id, { decision: 'cancel' });
       return;
     }
 
     if (isConversation(session)) {
       if (message.method === 'item/fileChange/requestApproval') {
-        await options.codex.respond(message.id, { decision: 'accept' });
+        await options.runtime.respond(message.id, { decision: 'accept' });
         return;
       }
 
       if (message.method === 'item/permissions/requestApproval') {
         const blockedReason = options.blockedChatPermissionReason(message.params);
         if (!blockedReason) {
-          await options.codex.respond(message.id, {
+          await options.runtime.respond(message.id, {
             permissions: options.requestedPermissionsFromParams(message.params),
             scope: 'turn',
           });
@@ -90,7 +174,7 @@ export function createCodexServerRequestHandler(options: CreateCodexServerReques
           return;
         }
 
-        await options.codex.respond(message.id, {
+        await options.runtime.respond(message.id, {
           permissions: {},
           scope: 'turn',
         });
@@ -104,9 +188,9 @@ export function createCodexServerRequestHandler(options: CreateCodexServerReques
       }
 
       if (message.method === 'item/commandExecution/requestApproval') {
-        await options.codex.respond(message.id, { decision: 'decline' });
+        await options.runtime.respond(message.id, { decision: 'decline' });
       } else {
-        await options.codex.respond(message.id, { decision: 'cancel' });
+        await options.runtime.respond(message.id, { decision: 'cancel' });
       }
 
       options.store.addLiveEvent(session.id, {
@@ -118,6 +202,49 @@ export function createCodexServerRequestHandler(options: CreateCodexServerReques
       return;
     }
 
+    if (session.approvalMode !== 'detailed') {
+      if (message.method === 'item/commandExecution/requestApproval') {
+        await options.runtime.respond(message.id, { decision: 'accept' });
+        return;
+      }
+
+      if (message.method === 'item/fileChange/requestApproval') {
+        if (
+          session.approvalMode === 'full-auto'
+          || isWorkspaceScopedFileChangeRequest(message.params, session.workspace)
+        ) {
+          await options.runtime.respond(message.id, { decision: 'accept' });
+          return;
+        }
+      }
+
+      if (message.method === 'item/permissions/requestApproval') {
+        const permissions = options.requestedPermissionsFromParams(message.params);
+        const networkOnlyPermissionRequest = isNetworkOnlyPermissionRequest(permissions);
+        if (
+          session.approvalMode === 'full-auto'
+          || networkOnlyPermissionRequest
+        ) {
+          await options.runtime.respond(message.id, {
+            permissions,
+            scope: 'turn',
+          });
+          if (networkOnlyPermissionRequest) {
+            await options.coding.updateSession(session.id, {
+              networkEnabled: true,
+              lastIssue: null,
+            });
+          }
+          return;
+        }
+      }
+
+      if (session.approvalMode === 'full-auto') {
+        await options.runtime.respond(message.id, { decision: 'accept' });
+        return;
+      }
+    }
+
     const createdAt = now();
     const approval: PendingApproval = {
       id: String(message.id),
@@ -127,7 +254,7 @@ export function createCodexServerRequestHandler(options: CreateCodexServerReques
       title: options.approvalTitle(message.method),
       risk: options.approvalRisk(message.method, (message.params ?? {}) as Record<string, unknown>),
       scopeOptions: ['once', 'session'],
-      source: 'codex',
+      source: isConversation(session) ? 'codex' : session.executor,
       payload: message.params ?? {},
       createdAt,
     };
@@ -142,3 +269,5 @@ export function createCodexServerRequestHandler(options: CreateCodexServerReques
     await options.coding.updateSession(session.id, { status: 'needs-approval', lastIssue: null });
   };
 }
+
+export const createCodexServerRequestHandler = createRuntimeServerRequestHandler;

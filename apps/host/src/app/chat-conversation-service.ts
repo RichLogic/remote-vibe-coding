@@ -1,24 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
+import { DEFAULT_APPROVAL_MODE } from '../approval-mode.js';
 import type {
   ConversationRecord,
   ModelOption,
   ReasoningEffort,
-  SessionRecord,
   UserRecord,
 } from '../types.js';
-
-interface StartThreadPort {
-  startThread(options: {
-    cwd: string;
-    securityProfile: SessionRecord['securityProfile'];
-    model?: string | null;
-  }): Promise<{
-    thread: {
-      id: string;
-    };
-  }>;
-}
+import type { RuntimeThreadStarter } from './agent-runtime.js';
 
 interface ChatRolePresetConfig {
   defaultPresetId: string | null;
@@ -55,7 +44,7 @@ interface UpdateChatConversationPreferencesInput {
 }
 
 interface CreateChatConversationServiceOptions {
-  codex: StartThreadPort;
+  runtime: RuntimeThreadStarter;
   ensureChatWorkspace: (ownerUsername: string, ownerUserId: string) => Promise<{ path: string }>;
   persistConversation: (conversation: ConversationRecord) => Promise<unknown>;
   ensureConversationHistory: (conversation: ConversationRecord) => Promise<unknown>;
@@ -106,7 +95,7 @@ export function createChatConversationService(options: CreateChatConversationSer
       throw new ChatConversationServiceError(message, 400);
     }
 
-    const threadResponse = await options.codex.startThread({
+    const threadResponse = await options.runtime.startThread({
       cwd: workspaceInfo.path,
       securityProfile: 'repo-write',
       model,
@@ -124,7 +113,7 @@ export function createChatConversationService(options: CreateChatConversationSer
       workspace: workspaceInfo.path,
       archivedAt: null,
       securityProfile: 'repo-write',
-      approvalMode: 'less-approval',
+      approvalMode: DEFAULT_APPROVAL_MODE,
       networkEnabled: false,
       fullHostEnabled: false,
       status: 'idle',

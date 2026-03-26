@@ -20,7 +20,7 @@ function buildChatSession(): ConversationRecord {
     workspace: '/tmp/chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'idle',
@@ -36,12 +36,13 @@ function buildChatSession(): ConversationRecord {
   };
 }
 
-function buildCodeSession(): SessionRecord {
+function buildCodeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
     id: 'code-1',
     ownerUserId: 'owner-1',
     ownerUsername: 'owner',
     sessionType: 'code',
+    executor: 'codex',
     workspaceId: 'workspace-1',
     threadId: 'thread-code',
     activeTurnId: null,
@@ -50,7 +51,7 @@ function buildCodeSession(): SessionRecord {
     workspace: '/tmp/code',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'idle',
@@ -60,6 +61,7 @@ function buildCodeSession(): SessionRecord {
     reasoningEffort: 'high',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -71,7 +73,7 @@ function createHarness(session: TurnRecord | null) {
   const codingUpdates: Array<{ sessionId: string; patch: Partial<SessionRecord> }> = [];
 
   const handler = createCodexServerRequestHandler({
-    codex: {
+    runtime: {
       async respond(id, result) {
         responses.push({ id, result });
       },
@@ -192,4 +194,112 @@ test('Codex server request handler stores coding approvals and marks the session
     patch: { status: 'needs-approval', lastIssue: null },
   }]);
   assert.equal(harness.liveEvents[0]?.event.summary, 'title:item/commandExecution/requestApproval');
+});
+
+test('Codex server request handler auto-accepts command approvals in less-interruption mode', async () => {
+  const harness = createHarness(buildCodeSession({ approvalMode: 'less-interruption' }));
+  await harness.handler({
+    id: 'rpc-6',
+    method: 'item/commandExecution/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      command: 'npm test',
+    },
+  } satisfies JsonRpcServerRequest);
+
+  assert.deepEqual(harness.responses, [{ id: 'rpc-6', result: { decision: 'accept' } }]);
+  assert.deepEqual(harness.approvals, []);
+  assert.deepEqual(harness.codingUpdates, []);
+});
+
+test('Codex server request handler auto-accepts in-workspace file changes in less-interruption mode', async () => {
+  const harness = createHarness(buildCodeSession({ approvalMode: 'less-interruption' }));
+  await harness.handler({
+    id: 'rpc-7',
+    method: 'item/fileChange/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      changes: [{ path: 'src/index.ts' }],
+    },
+  } satisfies JsonRpcServerRequest);
+
+  assert.deepEqual(harness.responses, [{ id: 'rpc-7', result: { decision: 'accept' } }]);
+  assert.deepEqual(harness.approvals, []);
+});
+
+test('Codex server request handler still requires approval for out-of-workspace file changes in less-interruption mode', async () => {
+  const harness = createHarness(buildCodeSession({ approvalMode: 'less-interruption' }));
+  await harness.handler({
+    id: 'rpc-8',
+    method: 'item/fileChange/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      changes: [{ path: '../secrets.txt' }],
+    },
+  } satisfies JsonRpcServerRequest);
+
+  assert.equal(harness.responses.length, 0);
+  assert.equal(harness.approvals.length, 1);
+  assert.equal(harness.codingUpdates[0]?.patch.status, 'needs-approval');
+});
+
+test('Codex server request handler auto-grants network permissions in less-interruption mode', async () => {
+  const harness = createHarness(buildCodeSession({ approvalMode: 'less-interruption' }));
+  await harness.handler({
+    id: 'rpc-9',
+    method: 'item/permissions/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      permissions: { web: true },
+    },
+  } satisfies JsonRpcServerRequest);
+
+  assert.deepEqual(harness.responses, [{ id: 'rpc-9', result: { permissions: { web: true }, scope: 'turn' } }]);
+  assert.deepEqual(harness.codingUpdates, [{
+    sessionId: 'code-1',
+    patch: { networkEnabled: true, lastIssue: null },
+  }]);
+  assert.deepEqual(harness.approvals, []);
+});
+
+test('Codex server request handler keeps non-network permission approvals in less-interruption mode', async () => {
+  const harness = createHarness(buildCodeSession({ approvalMode: 'less-interruption' }));
+  await harness.handler({
+    id: 'rpc-10',
+    method: 'item/permissions/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      permissions: { fs: true },
+    },
+  } satisfies JsonRpcServerRequest);
+
+  assert.equal(harness.responses.length, 0);
+  assert.equal(harness.approvals.length, 1);
+});
+
+test('Codex server request handler auto-accepts every approval in full-auto mode', async () => {
+  const harness = createHarness(buildCodeSession({ approvalMode: 'full-auto' }));
+  await harness.handler({
+    id: 'rpc-11',
+    method: 'item/fileChange/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      changes: [{ path: '../secrets.txt' }],
+    },
+  } satisfies JsonRpcServerRequest);
+
+  await harness.handler({
+    id: 'rpc-12',
+    method: 'item/permissions/requestApproval',
+    params: {
+      threadId: 'thread-code',
+      permissions: { fs: true },
+    },
+  } satisfies JsonRpcServerRequest);
+
+  assert.deepEqual(harness.responses, [
+    { id: 'rpc-11', result: { decision: 'accept' } },
+    { id: 'rpc-12', result: { permissions: { fs: true }, scope: 'turn' } },
+  ]);
+  assert.deepEqual(harness.approvals, []);
 });

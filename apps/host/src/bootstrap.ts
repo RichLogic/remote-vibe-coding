@@ -5,13 +5,14 @@ import type {
   CodingWorkspaceSummary,
 } from './coding/types.js';
 import type {
+  AgentExecutor,
   AppMode,
   BaseTurnRecord,
   BootstrapPayload,
   CloudflareStatus,
   ConversationRecord,
   ConversationSummary,
-  ModelOption,
+  ExecutorModelCatalog,
   PendingApproval,
   UserRecord,
   WorkspaceSummary,
@@ -76,8 +77,11 @@ export function buildBootstrapPayload(
   cloudflare: CloudflareStatus,
   workspaceRoot: string,
   workspaces: WorkspaceSummary[],
-  availableModels: ModelOption[],
+  availableExecutors: AgentExecutor[],
+  defaultExecutor: AgentExecutor,
+  availableModelsByExecutor: ExecutorModelCatalog,
 ): BootstrapPayload {
+  const availableModels = availableModelsByExecutor[defaultExecutor] ?? [];
   const approvalCounts = new Map<string, number>();
   for (const approval of approvals) {
     approvalCounts.set(
@@ -95,7 +99,8 @@ export function buildBootstrapPayload(
     productName: 'remote-vibe-coding',
     subtitle: 'Codex-first browser shell backed by the real Codex app-server protocol.',
     defaults: {
-      executor: 'codex',
+      executor: defaultExecutor,
+      availableExecutors,
       transcriptMode: 'app-server',
       defaultSecurityProfile: 'repo-write',
       networkEnabledByDefault: false,
@@ -112,6 +117,7 @@ export function buildBootstrapPayload(
     workspaceRoot,
     workspaces,
     availableModels,
+    availableModelsByExecutor,
     sessions: summaries,
     conversations: conversationSummaries,
     approvals,
@@ -125,8 +131,11 @@ export function buildCodingBootstrapPayload(
   approvals: PendingApproval[],
   workspaceRoot: string,
   workspaces: WorkspaceSummary[],
-  availableModels: ModelOption[],
+  availableExecutors: AgentExecutor[],
+  defaultExecutor: AgentExecutor,
+  availableModelsByExecutor: ExecutorModelCatalog,
 ): CodingBootstrapPayload {
+  const availableModels = availableModelsByExecutor[defaultExecutor] ?? [];
   const approvalCounts = new Map<string, number>();
   for (const approval of approvals) {
     approvalCounts.set(
@@ -147,8 +156,11 @@ export function buildCodingBootstrapPayload(
       toSessionSummary(session, approvalCounts.get(session.id) ?? 0)
     )),
     approvals,
+    availableExecutors,
     availableModels,
+    availableModelsByExecutor,
     defaults: {
+      executor: defaultExecutor,
       model: availableModels.find((entry) => entry.isDefault)?.model ?? availableModels[0]?.model ?? 'gpt-5-codex',
       reasoningEffort: availableModels.find((entry) => entry.isDefault)?.defaultReasoningEffort
         ?? availableModels[0]?.defaultReasoningEffort

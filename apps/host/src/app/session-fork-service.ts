@@ -1,21 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
-import type { ConversationRecord, SessionRecord, UserRecord } from '../types.js';
-
-interface StartThreadPort {
-  startThread(options: {
-    cwd: string;
-    securityProfile: SessionRecord['securityProfile'];
-    model?: string | null;
-  }): Promise<{
-    thread: {
-      id: string;
-    };
-  }>;
-}
+import { DEFAULT_APPROVAL_MODE } from '../approval-mode.js';
+import type { AgentExecutor, ConversationRecord, SessionRecord, UserRecord } from '../types.js';
+import type { RuntimeThreadStarter } from './agent-runtime.js';
 
 interface CreateSessionForkServiceOptions {
-  codex: StartThreadPort;
+  chatRuntime: RuntimeThreadStarter;
+  runtimeForExecutor: (executor: AgentExecutor) => RuntimeThreadStarter;
   ensureChatWorkspace: (ownerUsername: string, ownerUserId: string) => Promise<{ path: string }>;
   persistForkedSession: (session: SessionRecord) => Promise<unknown>;
   persistForkedConversation: (conversation: ConversationRecord) => Promise<unknown>;
@@ -34,7 +25,7 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
     const nextModel = sourceSession.model ?? options.currentDefaultModel();
     const nextReasoningEffort = sourceSession.reasoningEffort ?? options.currentDefaultEffort(nextModel);
     const nextTitle = options.nextForkedSessionTitle(sourceSession.title);
-    const threadResponse = await options.codex.startThread({
+    const threadResponse = await options.runtimeForExecutor(sourceSession.executor).startThread({
       cwd: sourceSession.workspace,
       securityProfile: sourceSession.securityProfile,
       model: nextModel,
@@ -45,6 +36,7 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
       ownerUserId: currentUser.id,
       ownerUsername: currentUser.username,
       sessionType: 'code',
+      executor: sourceSession.executor,
       workspaceId: sourceSession.workspaceId,
       threadId: threadResponse.thread.id,
       activeTurnId: null,
@@ -74,7 +66,7 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
     const nextReasoningEffort = sourceConversation.reasoningEffort ?? options.currentDefaultEffort(nextModel);
     const nextTitle = options.nextForkedSessionTitle(sourceConversation.title);
     const workspaceInfo = await options.ensureChatWorkspace(currentUser.username, currentUser.id);
-    const threadResponse = await options.codex.startThread({
+    const threadResponse = await options.chatRuntime.startThread({
       cwd: workspaceInfo.path,
       securityProfile: 'repo-write',
       model: nextModel,
@@ -92,7 +84,7 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
       workspace: workspaceInfo.path,
       archivedAt: null,
       securityProfile: 'repo-write',
-      approvalMode: 'less-approval',
+      approvalMode: DEFAULT_APPROVAL_MODE,
       networkEnabled: false,
       fullHostEnabled: false,
       status: 'idle',

@@ -41,6 +41,27 @@
   color: var(--ink);
 }
 
+.timeline-diff-path-button {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  text-align: left;
+}
+
+.timeline-diff-path-button:hover,
+.timeline-diff-path-button:focus-visible {
+  transform: none;
+  box-shadow: none;
+}
+
+.timeline-diff-path-button:hover .timeline-diff-path,
+.timeline-diff-path-button:focus-visible .timeline-diff-path {
+  text-decoration: underline;
+}
+
 .timeline-diff-kind {
   flex-shrink: 0;
   border-radius: 999px;

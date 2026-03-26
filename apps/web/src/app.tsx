@@ -2,7 +2,7 @@ import { Children, Fragment, isValidElement, useEffect, useLayoutEffect, useRef,
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-import { TranscriptToolCard } from './transcript-tool-card';
+import { FileChangeList, TranscriptToolCard } from './transcript-tool-card';
 import {
   createAdminUser,
   deleteAdminUser,
@@ -30,10 +30,13 @@ import {
   uploadChatAttachment,
 } from './chat/api';
 import {
+  codingWorkspaceFileContentHref,
   createCodingWorkspace,
   createCodingWorkspaceSession,
   deleteCodingAttachment,
   deleteCodingSession,
+  fetchCodingWorkspaceFile,
+  fetchCodingWorkspaceTree,
   fetchCodingSessionDetail,
   fetchCodingSessionTranscript,
   forkCodingSession,
@@ -55,12 +58,15 @@ import type {
   ChatTranscriptPageResponse,
 } from './chat/types';
 import type {
+  CodingWorkspaceFileEntry,
+  CodingWorkspaceFileResponse,
   CodingSessionRecord as SessionRecord,
   CodingSessionSummary as SessionSummary,
   UpdateCodingSessionRequest as UpdateSessionRequest,
 } from './coding/types';
 import type {
   AdminUserRecord,
+  AgentExecutor,
   ApprovalMode,
   AppMode,
   BootstrapPayload,
@@ -72,6 +78,7 @@ import type {
   SessionAttachmentSummary,
   SessionDetailResponse,
   SessionEvent,
+  SessionFileChange,
   SessionTranscriptEntry,
   SessionType,
   SecurityProfile,
@@ -85,6 +92,8 @@ type ThemeMode = 'white' | 'warm' | 'night';
 type UserModalMode = 'create' | 'edit';
 type WorkspaceModalMode = 'create';
 type WorkspaceDropPosition = 'before' | 'after';
+type DeveloperSubview = 'sessions' | 'files';
+type DeveloperInspectorTab = 'preview' | 'diff';
 type SessionConfirmAction = { kind: 'delete'; session: SessionDetailResponse['session'] } | null;
 type UiSessionState = 'normal' | 'new' | 'pending' | 'completed' | 'error' | 'processing' | 'stale';
 type NotificationSessionState = Exclude<UiSessionState, 'normal'>;
@@ -115,6 +124,12 @@ interface SelectOption {
 interface WorkspaceDropIndicator {
   workspaceId: string;
   position: WorkspaceDropPosition;
+}
+
+interface FileTreeDirectoryState {
+  entries: CodingWorkspaceFileEntry[];
+  loading: boolean;
+  error: string | null;
 }
 
 interface NotificationSessionSnapshot {
@@ -213,6 +228,8 @@ const COPY = {
     themeWhite: 'white',
     themeWarm: 'warm',
     themeNight: 'night',
+    filesNav: 'files',
+    refresh: 'Refresh',
     languageEnglish: 'English',
     languageChinese: '中文',
     languageButtonComment: 'Switch the interface language.',
@@ -342,6 +359,7 @@ const COPY = {
     codeSession: 'Code',
     chatSession: 'Chat',
     workspace: 'Workspace',
+    browseWorkspace: 'Browse workspace',
     workspaceRequired: 'Choose a workspace.',
     titleRequired: 'Title is required when creating a new workspace.',
     workspaceSelect: 'Choose workspace',
@@ -349,6 +367,7 @@ const COPY = {
     title: 'Title',
     optionalSessionTitle: 'Optional session title',
     securityProfile: 'Security profile',
+    executorLabel: 'Executor',
     approvalModeLabel: 'MODE',
     model: 'Model',
     thinking: 'Thinking',
@@ -373,6 +392,8 @@ const COPY = {
     detailedMode: 'Detailed',
     lessInterruptiveMode: 'Less interruption',
     allPermissionsMode: 'Full auto',
+    codexExecutor: 'Codex',
+    claudeCodeExecutor: 'Claude Code',
     noRolePreset: 'None',
     chatSessionHint: 'Chat sessions can edit files inside the shared chat workspace.',
     chatAutoTitleHint: 'The title will be generated automatically after your first message.',
@@ -437,6 +458,19 @@ const COPY = {
     rolePresetLabel: 'Preset role',
     threadLabel: 'Thread',
     info: 'Info',
+    filesTitle: 'Files',
+    loadingFiles: 'Loading files…',
+    loadingFile: 'Loading file…',
+    selectFileHint: 'Choose a file from the sidebar to preview it.',
+    emptyWorkspaceFiles: 'No files found in this workspace.',
+    emptyDirectory: 'This folder is empty.',
+    binaryFile: 'This file cannot be previewed inline.',
+    downloadFile: 'Download',
+    filePreviewTruncated: 'Preview shows the first 256 KB.',
+    previewTab: 'Preview',
+    diffTab: 'Diff',
+    hideInspector: 'Hide',
+    noDiffSelected: 'No diff selected yet.',
     sessionInfoTitle: 'Session info',
     archived: 'Archived',
     active: 'active',
@@ -473,6 +507,8 @@ const COPY = {
     themeWhite: 'white',
     themeWarm: 'warm',
     themeNight: 'night',
+    filesNav: 'files',
+    refresh: '刷新',
     languageEnglish: 'English',
     languageChinese: '中文',
     languageButtonComment: '切换界面语言。',
@@ -602,6 +638,7 @@ const COPY = {
     codeSession: '代码',
     chatSession: '聊天',
     workspace: '工作目录',
+    browseWorkspace: '切换 workspace',
     workspaceRequired: '请选择 workspace。',
     titleRequired: '使用标题名新建 workspace 时，标题是必填项。',
     workspaceSelect: '选择 workspace',
@@ -609,6 +646,7 @@ const COPY = {
     title: '标题',
     optionalSessionTitle: '可选的会话标题',
     securityProfile: '安全档位',
+    executorLabel: '执行器',
     approvalModeLabel: 'MODE',
     model: '模型',
     thinking: '思考强度',
@@ -633,6 +671,8 @@ const COPY = {
     detailedMode: '详细',
     lessInterruptiveMode: '少打扰',
     allPermissionsMode: '全自动',
+    codexExecutor: 'Codex',
+    claudeCodeExecutor: 'Claude Code',
     noRolePreset: '无',
     chatSessionHint: '聊天会话可以修改共享 Chat workspace 里的文件。',
     chatAutoTitleHint: '发出第一条消息后，会自动生成标题。',
@@ -697,6 +737,19 @@ const COPY = {
     rolePresetLabel: '预设角色',
     threadLabel: '线程',
     info: '信息',
+    filesTitle: '文件',
+    loadingFiles: '正在加载文件…',
+    loadingFile: '正在加载文件…',
+    selectFileHint: '从侧边栏选择一个文件查看内容。',
+    emptyWorkspaceFiles: '这个 workspace 里还没有可显示的文件。',
+    emptyDirectory: '这个文件夹是空的。',
+    binaryFile: '这个文件暂不支持直接预览。',
+    downloadFile: '下载',
+    filePreviewTruncated: '预览仅显示前 256 KB。',
+    previewTab: '预览',
+    diffTab: '改动',
+    hideInspector: '隐藏',
+    noDiffSelected: '还没有选中的改动。',
     sessionInfoTitle: '会话信息',
     archived: '归档',
     active: '活跃',
@@ -1132,6 +1185,22 @@ function modeOptionLabel(language: Language, mode: ModeOption) {
   return copy.detailedMode;
 }
 
+function executorOptionLabel(language: Language, executor: AgentExecutor) {
+  const copy = COPY[language];
+  return executor === 'claude-code' ? copy.claudeCodeExecutor : copy.codexExecutor;
+}
+
+function codingModelsForExecutor(
+  bootstrap: BootstrapPayload | null | undefined,
+  executor: AgentExecutor,
+): ModelOption[] {
+  if (!bootstrap) {
+    return [];
+  }
+  const executorModels = bootstrap.availableModelsByExecutor[executor];
+  return executorModels?.length ? executorModels : bootstrap.availableModels;
+}
+
 function preferredReasoningEffort(option: Pick<ModelOption, 'defaultReasoningEffort' | 'supportedReasoningEfforts'> | null | undefined) {
   if (!option) return 'xhigh' as const;
   const preferredEfforts: ReasoningEffort[] = ['xhigh', 'high', 'medium', 'low', 'minimal', 'none'];
@@ -1231,6 +1300,120 @@ function formatAttachmentSize(sizeBytes: number) {
   if (sizeBytes < 1024) return `${sizeBytes} B`;
   if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function codingFileTreeKey(workspaceId: string, path: string) {
+  return `${workspaceId}:${path}`;
+}
+
+function inferredFileLanguage(path: string) {
+  const extension = path.split('.').pop()?.toLowerCase() ?? '';
+  return extension || 'text';
+}
+
+function filePreviewCodeClassName(path: string) {
+  return `language-${inferredFileLanguage(path)}`;
+}
+
+function relativeFileLabel(path: string) {
+  return path || '/';
+}
+
+function filePreviewExtension(path: string) {
+  const filename = path.split('/').pop() ?? path;
+  const lastDot = filename.lastIndexOf('.');
+  return lastDot >= 0 ? filename.slice(lastDot).toLowerCase() : '';
+}
+
+function isImageFilePreview(file: CodingWorkspaceFileResponse) {
+  return file.mimeType.startsWith('image/');
+}
+
+function isMarkdownFilePreview(file: CodingWorkspaceFileResponse) {
+  const extension = filePreviewExtension(file.path);
+  return file.previewable && (file.mimeType.includes('markdown') || extension === '.md' || extension === '.mdx');
+}
+
+function isCsvFilePreview(file: CodingWorkspaceFileResponse) {
+  return file.previewable && (file.mimeType.includes('csv') || filePreviewExtension(file.path) === '.csv');
+}
+
+function isPdfFilePreview(file: CodingWorkspaceFileResponse) {
+  return file.mimeType === 'application/pdf';
+}
+
+function stripUtf8Bom(value: string) {
+  return value.charCodeAt(0) === 0xfeff ? value.slice(1) : value;
+}
+
+function parseCsvPreview(content: string) {
+  const source = stripUtf8Bom(content);
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index] ?? '';
+
+    if (inQuotes) {
+      if (character === '"') {
+        if (source[index + 1] === '"') {
+          cell += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += character;
+      }
+      continue;
+    }
+
+    if (character === '"') {
+      inQuotes = true;
+      continue;
+    }
+
+    if (character === ',') {
+      row.push(cell);
+      cell = '';
+      continue;
+    }
+
+    if (character === '\r' || character === '\n') {
+      if (character === '\r' && source[index + 1] === '\n') {
+        index += 1;
+      }
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+
+    cell += character;
+  }
+
+  row.push(cell);
+  if (row.length > 1 || row[0] !== '' || rows.length > 0) {
+    rows.push(row);
+  }
+
+  while (rows.length > 0 && rows[rows.length - 1]?.every((value) => value === '')) {
+    rows.pop();
+  }
+
+  return rows;
+}
+
+function attachmentHref(attachment: SessionAttachmentSummary) {
+  if (attachment.kind === 'image') {
+    return attachment.url;
+  }
+  return attachment.url.includes('?')
+    ? `${attachment.url}&download=1`
+    : `${attachment.url}?download=1`;
 }
 
 function composerDraftKey(mode: AppMode, sessionId: string | null) {
@@ -1875,6 +2058,21 @@ function CheckIcon() {
   );
 }
 
+function RefreshIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M15.6 9.8a5.6 5.6 0 1 1-1.6-3.9M12.8 4.1h2.9V7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function CodingIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -1886,6 +2084,64 @@ function CodingIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function FilesIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M3.8 6.4a1.9 1.9 0 0 1 1.9-1.9h2.4l1.1 1.4h5.1a1.9 1.9 0 0 1 1.9 1.9v5.8a1.9 1.9 0 0 1-1.9 1.9H5.7a1.9 1.9 0 0 1-1.9-1.9Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M7 10h6M7 12.8h3.4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function FolderIcon({ open = false }: { open?: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      {open ? (
+        <path
+          d="M3.8 7.1a1.7 1.7 0 0 1 1.7-1.7h2.3l1.1 1.3h5.6a1.7 1.7 0 0 1 1.6 2.1l-1 4.4a1.7 1.7 0 0 1-1.6 1.3H5.3a1.7 1.7 0 0 1-1.7-1.7z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ) : (
+        <path
+          d="M3.8 6.4a1.9 1.9 0 0 1 1.9-1.9h2.4l1.1 1.4h5.1a1.9 1.9 0 0 1 1.9 1.9v5.8a1.9 1.9 0 0 1-1.9 1.9H5.7a1.9 1.9 0 0 1-1.9-1.9Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      )}
+    </svg>
+  );
+}
+
+function FileIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M6 3.9h5.4l2.7 2.7v8a1.6 1.6 0 0 1-1.6 1.6H6a1.6 1.6 0 0 1-1.6-1.6V5.5A1.6 1.6 0 0 1 6 3.9Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M11.4 3.9v2.7h2.7M7.2 10h4.8M7.2 12.7h3.6" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -1981,12 +2237,30 @@ export function App() {
     const stored = window.localStorage.getItem('rvc-mode');
     return stored === 'chat' || stored === 'developer' ? stored : 'developer';
   });
+  const [developerSubview, setDeveloperSubview] = useState<DeveloperSubview>('sessions');
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
   const [chatBootstrap, setChatBootstrap] = useState<ChatBootstrapPayload | null>(null);
   const [detail, setDetail] = useState<SessionDetailResponse | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
+  const [selectedFileWorkspaceId, setSelectedFileWorkspaceId] = useState<string | null>(null);
   const [expandedWorkspaceIds, setExpandedWorkspaceIds] = useState<string[]>([]);
+  const [expandedFileTreePaths, setExpandedFileTreePaths] = useState<Record<string, string[]>>({});
+  const [selectedFilePaths, setSelectedFilePaths] = useState<Record<string, string | null>>({});
+  const [fileTreeDirectories, setFileTreeDirectories] = useState<Record<string, FileTreeDirectoryState>>({});
+  const [filePreviewCache, setFilePreviewCache] = useState<Record<string, CodingWorkspaceFileResponse>>({});
+  const [filePreviewLoadingKey, setFilePreviewLoadingKey] = useState<string | null>(null);
+  const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
+  const [fileBrowserTab, setFileBrowserTab] = useState<DeveloperInspectorTab>('preview');
+  const [developerInspectorOpen, setDeveloperInspectorOpen] = useState(false);
+  const [developerInspectorWorkspaceId, setDeveloperInspectorWorkspaceId] = useState<string | null>(null);
+  const [developerInspectorFilePath, setDeveloperInspectorFilePath] = useState<string | null>(null);
+  const [developerInspectorTab, setDeveloperInspectorTab] = useState<DeveloperInspectorTab>('preview');
+  const [developerInspectorDiffChange, setDeveloperInspectorDiffChange] = useState<SessionFileChange | null>(null);
+  const [developerInspectorLoadingKey, setDeveloperInspectorLoadingKey] = useState<string | null>(null);
+  const [developerInspectorError, setDeveloperInspectorError] = useState<string | null>(null);
+  const [developerInspectorSourceToken, setDeveloperInspectorSourceToken] = useState<string | null>(null);
+  const [developerInspectorDismissedToken, setDeveloperInspectorDismissedToken] = useState<string | null>(null);
   const [sessionMenuSessionId, setSessionMenuSessionId] = useState<string | null>(null);
   const [pendingSessionRailAction, setPendingSessionRailAction] = useState<{ kind: 'edit' | 'info'; sessionId: string } | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
@@ -2026,6 +2300,7 @@ export function App() {
   const [editTitle, setEditTitle] = useState('');
   const [editWorkspaceName, setEditWorkspaceName] = useState('');
   const [editSecurityProfile, setEditSecurityProfile] = useState<'repo-write' | 'full-host'>('repo-write');
+  const [draftCodingExecutorState, setDraftCodingExecutorState] = useState<AgentExecutor>('codex');
   const [sessionApprovalMode, setSessionApprovalMode] = useState<ApprovalMode>('detailed');
   const [sessionModel, setSessionModel] = useState('');
   const [sessionEffort, setSessionEffort] = useState<ReasoningEffort>('xhigh');
@@ -2073,11 +2348,24 @@ export function App() {
   const bootstrapWorkspaces = normalizedWorkspaces(bootstrap);
   const bootstrapSessions = normalizedDeveloperSessions(bootstrap);
   const bootstrapConversations = normalizedChatConversations(chatBootstrap);
+  const availableCodingExecutors: AgentExecutor[] = bootstrap?.defaults.availableExecutors.length
+    ? bootstrap.defaults.availableExecutors
+    : (bootstrap?.defaults.executor ? [bootstrap.defaults.executor] : ['codex']);
+  const draftCodingExecutor: AgentExecutor = availableCodingExecutors.includes(draftCodingExecutorState)
+    ? draftCodingExecutorState
+    : (bootstrap?.defaults.executor ?? availableCodingExecutors[0] ?? 'codex');
+  const currentCodingExecutor: AgentExecutor = detail?.session.sessionType === 'code'
+    ? detail.session.executor
+    : draftCodingExecutor;
+  const currentSessionExecutor: AgentExecutor | null = detail?.session.sessionType === 'code'
+    ? detail.session.executor
+    : null;
+  const availableCodingModels = codingModelsForExecutor(bootstrap, currentCodingExecutor);
   const availableModels = activeMode === 'chat'
     ? (chatBootstrap?.availableModels.length
         ? chatBootstrap.availableModels
         : (bootstrap?.availableModels.length ? bootstrap.availableModels : []))
-    : (bootstrap?.availableModels.length ? bootstrap.availableModels : []);
+    : availableCodingModels;
   const availableChatRolePresets = chatBootstrap?.rolePresets ?? [];
   const canManageChatRolePresets = Boolean(bootstrap?.currentUser.isAdmin && derivedAvailableModes(bootstrap).includes('chat'));
   const currentSessionModelOption = availableModels.find((entry) => entry.model === sessionModel)
@@ -2815,6 +3103,112 @@ export function App() {
   }, [bootstrap, activeMode, selectedWorkspaceId, selectedSessionId, optimisticSessions, optimisticWorkspaces]);
 
   useEffect(() => {
+    if (activeMode !== 'developer') {
+      if (developerSubview !== 'sessions') {
+        setDeveloperSubview('sessions');
+      }
+      if (selectedFileWorkspaceId !== null) {
+        setSelectedFileWorkspaceId(null);
+      }
+      return;
+    }
+
+    const availableFileWorkspaces = (() => {
+      const allDeveloperWorkspaces = [
+        ...optimisticWorkspaces,
+        ...bootstrapWorkspaces,
+      ];
+      const visible = visibleDeveloperWorkspaces(allDeveloperWorkspaces);
+      return visible.length > 0 ? visible : selectableDeveloperWorkspaces(allDeveloperWorkspaces);
+    })();
+    const workspaceIds = new Set(availableFileWorkspaces.map((workspace) => workspace.id));
+    if (selectedFileWorkspaceId && workspaceIds.has(selectedFileWorkspaceId)) {
+      return;
+    }
+
+    const fallbackWorkspaceId = selectedWorkspaceId && workspaceIds.has(selectedWorkspaceId)
+      ? selectedWorkspaceId
+      : availableFileWorkspaces[0]?.id ?? null;
+    if (selectedFileWorkspaceId !== fallbackWorkspaceId) {
+      setSelectedFileWorkspaceId(fallbackWorkspaceId);
+    }
+  }, [activeMode, bootstrapWorkspaces, developerSubview, optimisticWorkspaces, selectedFileWorkspaceId, selectedWorkspaceId]);
+
+  useEffect(() => {
+    const filesViewActive = activeMode === 'developer' && developerSubview === 'files';
+    if (!filesViewActive || !selectedFileWorkspaceId) {
+      return;
+    }
+
+    void loadWorkspaceFileTree(selectedFileWorkspaceId, '', true);
+  }, [activeMode, developerSubview, selectedFileWorkspaceId]);
+
+  useEffect(() => {
+    const filesViewActive = activeMode === 'developer' && developerSubview === 'files';
+    const nextSelectedFilePath = selectedFileWorkspaceId ? (selectedFilePaths[selectedFileWorkspaceId] ?? null) : null;
+    if (!filesViewActive || !selectedFileWorkspaceId || !nextSelectedFilePath) {
+      setFilePreviewError(null);
+      return;
+    }
+
+    void loadWorkspaceFilePreview(selectedFileWorkspaceId, nextSelectedFilePath);
+  }, [activeMode, developerSubview, selectedFilePaths, selectedFileWorkspaceId]);
+
+  useEffect(() => {
+    setDeveloperInspectorOpen(false);
+    setDeveloperInspectorWorkspaceId(null);
+    setDeveloperInspectorFilePath(null);
+    setDeveloperInspectorTab('preview');
+    setDeveloperInspectorDiffChange(null);
+    setDeveloperInspectorLoadingKey(null);
+    setDeveloperInspectorError(null);
+    setDeveloperInspectorSourceToken(null);
+    setDeveloperInspectorDismissedToken(null);
+  }, [activeMode, developerSubview, selectedSessionId]);
+
+  useEffect(() => {
+    const filesViewActive = activeMode === 'developer' && developerSubview === 'files';
+    const latestFileChangeEntry = !filesViewActive && detail?.session.sessionType === 'code'
+      ? [...transcriptItems].reverse().find((entry) => entry.kind === 'tool' && entry.label === 'files' && Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0) ?? null
+      : null;
+    const latestFileChange = latestFileChangeEntry?.fileChanges?.[0] ?? null;
+    const latestFileChangeToken = detail?.session.sessionType === 'code' && latestFileChangeEntry && latestFileChange
+      ? `${detail.session.id}:${latestFileChangeEntry.id}:${latestFileChange.path}`
+      : null;
+
+    if (
+      activeMode !== 'developer'
+      || developerSubview !== 'sessions'
+      || detail?.session.sessionType !== 'code'
+      || !latestFileChange
+      || !latestFileChangeToken
+      || developerInspectorDismissedToken === latestFileChangeToken
+    ) {
+      return;
+    }
+
+    if (developerInspectorOpen && developerInspectorSourceToken === latestFileChangeToken) {
+      return;
+    }
+
+    openDeveloperInspector({
+      workspaceId: detail.session.workspaceId,
+      path: latestFileChange.path,
+      tab: 'diff',
+      diffChange: latestFileChange,
+      sourceToken: latestFileChangeToken,
+    });
+  }, [
+    activeMode,
+    developerSubview,
+    detail?.session,
+    transcriptItems,
+    developerInspectorDismissedToken,
+    developerInspectorOpen,
+    developerInspectorSourceToken,
+  ]);
+
+  useEffect(() => {
     if (!bootstrap) return;
 
     const visibleWorkspaceIds = new Set(visibleDeveloperWorkspaces([
@@ -2896,6 +3290,12 @@ export function App() {
       return sameOrderedStrings(current, nextExpandedIds) ? current : nextExpandedIds;
     });
   }, [activeMode, bootstrapWorkspaces, dragWorkspaceId, expandedWorkspaceIds.length, optimisticWorkspaces, workspaceDropIndicator, workspaceEditMode]);
+
+  useEffect(() => {
+    if (draftCodingExecutorState !== draftCodingExecutor) {
+      setDraftCodingExecutorState(draftCodingExecutor);
+    }
+  }, [draftCodingExecutor, draftCodingExecutorState]);
 
   useEffect(() => {
     if (!detail?.session) return;
@@ -3013,6 +3413,7 @@ export function App() {
   const activeApproval = pendingApprovals[0] ?? null;
   const developerModeEnabled = availableModes.includes('developer');
   const chatModeEnabled = availableModes.includes('chat');
+  const developerFilesView = activeMode === 'developer' && developerSubview === 'files';
   const currentRailHidden = activeMode === 'developer' ? developerRailHidden : chatRailHidden;
   const primaryNavWidth = 64;
   const networkLabel = networkState === 'ok'
@@ -3041,12 +3442,40 @@ export function App() {
   const developerWorkspaceOptions = selectableDeveloperWorkspaces(allWorkspaces);
   const editableWorkspaces = sortWorkspaceSummaries(developerWorkspaceOptions);
   const visibleWorkspaces = visibleDeveloperWorkspaces(allWorkspaces);
+  const fileWorkspaceOptions = visibleWorkspaces.length > 0 ? visibleWorkspaces : developerWorkspaceOptions;
   const editableVisibleWorkspaces = editableWorkspaces.filter((workspace) => workspace.visible);
   const editableHiddenWorkspaces = editableWorkspaces.filter((workspace) => !workspace.visible);
   const railVisibleWorkspaces = workspaceEditMode ? editableVisibleWorkspaces : visibleWorkspaces;
   const visibleWorkspaceIds = new Set(visibleWorkspaces.map((workspace) => workspace.id));
   const visibleWorkspaceSessions = allSessions.filter((session) => visibleWorkspaceIds.has(session.workspaceId));
   const selectedWorkspace = developerWorkspaceOptions.find((workspace) => workspace.id === selectedWorkspaceId) ?? null;
+  const selectedFileWorkspace = fileWorkspaceOptions.find((workspace) => workspace.id === selectedFileWorkspaceId) ?? null;
+  const selectedFilePath = selectedFileWorkspaceId ? (selectedFilePaths[selectedFileWorkspaceId] ?? null) : null;
+  const selectedFileRootTreeKey = selectedFileWorkspaceId ? codingFileTreeKey(selectedFileWorkspaceId, '') : null;
+  const selectedFilePreviewKey = selectedFileWorkspaceId && selectedFilePath
+    ? codingFileTreeKey(selectedFileWorkspaceId, selectedFilePath)
+    : null;
+  const selectedFilePreview = selectedFilePreviewKey ? (filePreviewCache[selectedFilePreviewKey] ?? null) : null;
+  const selectedFileRootTreeState = selectedFileWorkspaceId ? currentFileTreeState(selectedFileWorkspaceId, '') : null;
+  const selectedFileDiffEntry = detail?.session.sessionType === 'code'
+    && selectedFilePath
+    && selectedFileWorkspaceId === detail.session.workspaceId
+    ? [...transcriptItems].reverse().find((entry) => entry.kind === 'tool'
+      && entry.label === 'files'
+      && Array.isArray(entry.fileChanges)
+      && entry.fileChanges.some((change) => change.path === selectedFilePath)) ?? null
+    : null;
+  const selectedFileDiffChange = selectedFileDiffEntry?.fileChanges?.find((change) => change.path === selectedFilePath) ?? null;
+  const developerInspectorWorkspace = developerWorkspaceOptions.find((workspace) => workspace.id === developerInspectorWorkspaceId) ?? null;
+  const developerInspectorPreviewKey = developerInspectorWorkspaceId && developerInspectorFilePath
+    ? codingFileTreeKey(developerInspectorWorkspaceId, developerInspectorFilePath)
+    : null;
+  const developerInspectorPreview = developerInspectorPreviewKey
+    ? (filePreviewCache[developerInspectorPreviewKey] ?? null)
+    : null;
+  const hasSelectedFileRootTreeState = selectedFileRootTreeKey
+    ? Object.prototype.hasOwnProperty.call(fileTreeDirectories, selectedFileRootTreeKey)
+    : false;
   const visibleDeveloperSessions = visibleWorkspaceSessions;
   const railItems = activeMode === 'developer' ? visibleDeveloperSessions : sortedConversations;
   const sessionActivityItems = detail
@@ -3055,6 +3484,13 @@ export function App() {
       language,
     )
     : [];
+  const latestTranscriptFileChangeEntry = !developerFilesView && detail?.session.sessionType === 'code'
+    ? [...transcriptItems].reverse().find((entry) => entry.kind === 'tool' && entry.label === 'files' && Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0) ?? null
+    : null;
+  const latestTranscriptFileChange = latestTranscriptFileChangeEntry?.fileChanges?.[0] ?? null;
+  const latestTranscriptFileChangeToken = detail?.session.sessionType === 'code' && latestTranscriptFileChangeEntry && latestTranscriptFileChange
+    ? `${detail.session.id}:${latestTranscriptFileChangeEntry.id}:${latestTranscriptFileChange.path}`
+    : null;
   const detailSessionState = deriveDetailSessionState(detail?.session ?? null, {
     activeApproval,
     chatCompletionMarkers,
@@ -3089,6 +3525,10 @@ export function App() {
       ? `${workspaceNameForSession(detail.session, allWorkspaces, bootstrap?.workspaceRoot)} · ${detail.session.title}`
       : detail.session.title
     : copy.selectOrCreate;
+  const showDeveloperInspector = activeMode === 'developer'
+    && !developerFilesView
+    && developerInspectorOpen
+    && Boolean(developerInspectorWorkspaceId && developerInspectorFilePath);
   const codingAnswerLabelEntryIds = new Set<string>();
   if (!sessionIsChat) {
     let hasAssistantReplyInCurrentTurn = false;
@@ -3108,6 +3548,22 @@ export function App() {
       }
     }
   }
+
+  useEffect(() => {
+    if (activeMode !== 'developer' || developerSubview !== 'files') {
+      return;
+    }
+
+    setFileBrowserTab('preview');
+  }, [activeMode, developerSubview, selectedFileWorkspaceId, selectedFilePath]);
+
+  useEffect(() => {
+    if (fileBrowserTab !== 'diff' || selectedFileDiffChange) {
+      return;
+    }
+
+    setFileBrowserTab('preview');
+  }, [fileBrowserTab, selectedFileDiffChange]);
 
   useEffect(() => {
     if (activityTickerOwnerRef.current !== activityTickerOwnerKey) {
@@ -3149,7 +3605,7 @@ export function App() {
     && editTitle.trim(),
   );
   const railEyebrow = activeMode === 'developer'
-    ? (language === 'zh' ? '工作区' : 'Workspace')
+    ? (developerFilesView ? copy.filesTitle : (language === 'zh' ? '工作区' : 'Workspace'))
     : `${language === 'zh' ? '对话' : 'Conversations'} (${railItems.length})`;
   const railEmptyLabel = activeMode === 'developer'
     ? (language === 'zh' ? '暂时还没有会话。' : 'No sessions yet.')
@@ -3158,6 +3614,10 @@ export function App() {
   const modelSelectOptions: SelectOption[] = availableModels.map((option) => ({
     value: option.model,
     label: option.displayName,
+  }));
+  const executorSelectOptions: SelectOption[] = availableCodingExecutors.map((executor) => ({
+    value: executor,
+    label: executorOptionLabel(language, executor),
   }));
   const effortSelectOptions: SelectOption[] = currentSessionEfforts.map((effort) => ({
     value: effort,
@@ -3183,12 +3643,214 @@ export function App() {
       label: workspace.name,
     }))),
   ];
+  const fileWorkspaceSelectOptions: SelectOption[] = fileWorkspaceOptions.map((workspace) => ({
+    value: workspace.id,
+    label: workspace.name,
+  }));
   const securityProfileSelectOptions: SelectOption[] = [
     { value: 'repo-write', label: copy.repoWriteProfile },
     ...(bootstrap?.currentUser.canUseFullHost
       ? [{ value: 'full-host', label: copy.fullHostProfile }]
       : []),
   ];
+
+  function preferredFileWorkspaceId() {
+    if (selectedWorkspaceId && fileWorkspaceOptions.some((workspace) => workspace.id === selectedWorkspaceId)) {
+      return selectedWorkspaceId;
+    }
+    return fileWorkspaceOptions[0]?.id ?? null;
+  }
+
+  function currentFileTreeState(workspaceId: string, path = '') {
+    return fileTreeDirectories[codingFileTreeKey(workspaceId, path)] ?? {
+      entries: [],
+      loading: false,
+      error: null,
+    };
+  }
+
+  async function loadWorkspaceFileTree(workspaceId: string, path = '', force = false) {
+    const cacheKey = codingFileTreeKey(workspaceId, path);
+    const cached = fileTreeDirectories[cacheKey];
+    if (!force && cached && (cached.loading || cached.entries.length > 0)) {
+      return;
+    }
+
+    setFileTreeDirectories((current) => ({
+      ...current,
+      [cacheKey]: {
+        entries: current[cacheKey]?.entries ?? [],
+        loading: true,
+        error: null,
+      },
+    }));
+
+    try {
+      const response = await fetchCodingWorkspaceTree(workspaceId, path);
+      setFileTreeDirectories((current) => ({
+        ...current,
+        [cacheKey]: {
+          entries: response.entries,
+          loading: false,
+          error: null,
+        },
+      }));
+    } catch (loadError) {
+      const message = loadError instanceof Error ? loadError.message : copy.unknownError;
+      setFileTreeDirectories((current) => ({
+        ...current,
+        [cacheKey]: {
+          entries: current[cacheKey]?.entries ?? [],
+          loading: false,
+          error: message,
+        },
+      }));
+    }
+  }
+
+  async function loadWorkspaceFilePreview(workspaceId: string, path: string, force = false) {
+    const cacheKey = codingFileTreeKey(workspaceId, path);
+    if (!force && filePreviewCache[cacheKey]) {
+      setFilePreviewError(null);
+      return;
+    }
+
+    setFilePreviewLoadingKey(cacheKey);
+    setFilePreviewError(null);
+    try {
+      const response = await fetchCodingWorkspaceFile(workspaceId, path);
+      setFilePreviewCache((current) => ({
+        ...current,
+        [cacheKey]: response,
+      }));
+    } catch (loadError) {
+      setFilePreviewError(loadError instanceof Error ? loadError.message : copy.unknownError);
+    } finally {
+      setFilePreviewLoadingKey((current) => current === cacheKey ? null : current);
+    }
+  }
+
+  async function loadDeveloperInspectorPreview(workspaceId: string, path: string, force = false) {
+    const cacheKey = codingFileTreeKey(workspaceId, path);
+    if (!force && filePreviewCache[cacheKey]) {
+      setDeveloperInspectorError(null);
+      return;
+    }
+
+    setDeveloperInspectorLoadingKey(cacheKey);
+    setDeveloperInspectorError(null);
+    try {
+      const response = await fetchCodingWorkspaceFile(workspaceId, path);
+      setFilePreviewCache((current) => ({
+        ...current,
+        [cacheKey]: response,
+      }));
+    } catch (loadError) {
+      setDeveloperInspectorError(loadError instanceof Error ? loadError.message : copy.unknownError);
+    } finally {
+      setDeveloperInspectorLoadingKey((current) => current === cacheKey ? null : current);
+    }
+  }
+
+  async function refreshFileBrowser() {
+    if (!selectedFileWorkspaceId) {
+      return;
+    }
+
+    const expandedPaths = expandedFileTreePaths[selectedFileWorkspaceId] ?? [];
+    await Promise.all([
+      loadWorkspaceFileTree(selectedFileWorkspaceId, '', true),
+      ...expandedPaths.map((path) => loadWorkspaceFileTree(selectedFileWorkspaceId, path, true)),
+    ]);
+
+    const nextSelectedFilePath = selectedFilePaths[selectedFileWorkspaceId] ?? null;
+    if (nextSelectedFilePath) {
+      await loadWorkspaceFilePreview(selectedFileWorkspaceId, nextSelectedFilePath, true);
+    }
+  }
+
+  function handleDeveloperSubviewClick(nextSubview: DeveloperSubview) {
+    if (!developerModeEnabled) {
+      return;
+    }
+
+    closePrimaryDialogs();
+
+    setActiveMode('developer');
+    setDeveloperSubview(nextSubview);
+    setDeveloperRailHidden(false);
+    if (nextSubview === 'files') {
+      setSelectedFileWorkspaceId(preferredFileWorkspaceId());
+    }
+  }
+
+  function handleFileWorkspaceChange(nextWorkspaceId: string) {
+    setSelectedFileWorkspaceId(nextWorkspaceId);
+    setFilePreviewError(null);
+  }
+
+  function toggleFileTreeDirectory(workspaceId: string, path: string) {
+    setExpandedFileTreePaths((current) => {
+      const expandedPaths = current[workspaceId] ?? [];
+      const nextExpandedPaths = expandedPaths.includes(path)
+        ? expandedPaths.filter((entry) => entry !== path)
+        : [...expandedPaths, path];
+      return {
+        ...current,
+        [workspaceId]: nextExpandedPaths,
+      };
+    });
+
+    const directoryState = currentFileTreeState(workspaceId, path);
+    if (directoryState.entries.length === 0 && !directoryState.loading && !directoryState.error) {
+      void loadWorkspaceFileTree(workspaceId, path);
+    }
+  }
+
+  function handleFileTreeSelect(workspaceId: string, path: string) {
+    setFilePreviewError(null);
+    setSelectedFilePaths((current) => ({
+      ...current,
+      [workspaceId]: path,
+    }));
+  }
+
+  function openDeveloperInspector(input: {
+    workspaceId: string;
+    path: string;
+    tab?: DeveloperInspectorTab;
+    diffChange?: SessionFileChange | null;
+    sourceToken?: string | null;
+  }) {
+    setDeveloperInspectorWorkspaceId(input.workspaceId);
+    setDeveloperInspectorFilePath(input.path);
+    setDeveloperInspectorTab(input.tab ?? 'preview');
+    setDeveloperInspectorDiffChange(input.diffChange ?? null);
+    setDeveloperInspectorOpen(true);
+    setDeveloperInspectorError(null);
+    setDeveloperInspectorSourceToken(input.sourceToken ?? null);
+    setDeveloperInspectorDismissedToken(null);
+    void loadDeveloperInspectorPreview(input.workspaceId, input.path);
+  }
+
+  function hideDeveloperInspector() {
+    setDeveloperInspectorOpen(false);
+    setDeveloperInspectorDismissedToken(latestTranscriptFileChangeToken);
+  }
+
+  function handleTranscriptFileChangeSelect(change: SessionFileChange) {
+    if (detail?.session.sessionType !== 'code') {
+      return;
+    }
+
+    openDeveloperInspector({
+      workspaceId: detail.session.workspaceId,
+      path: change.path,
+      tab: 'diff',
+      diffChange: change,
+      sourceToken: latestTranscriptFileChangeToken,
+    });
+  }
 
   async function refreshCurrentSelection(sessionId = selectedSessionId) {
     const nextBootstrap = await refreshBootstrapState();
@@ -3418,8 +4080,9 @@ export function App() {
     try {
       optimisticId = `${OPTIMISTIC_SESSION_PREFIX}${Date.now()}`;
       const now = new Date().toISOString();
-      const defaultModel = bootstrap.availableModels.find((entry) => entry.isDefault)
-        ?? bootstrap.availableModels[0]
+      const executorModels = codingModelsForExecutor(bootstrap, draftCodingExecutor);
+      const defaultModel = executorModels.find((entry) => entry.isDefault)
+        ?? executorModels[0]
         ?? null;
       const optimisticTitle = nextCodingSessionTitle(allSessions, workspace.id);
       setExpandedWorkspaceIds((current) => mergeWorkspaceIds(current, workspace.id));
@@ -3428,6 +4091,7 @@ export function App() {
         ownerUserId: bootstrap.currentUser.id,
         ownerUsername: bootstrap.currentUser.username,
         sessionType: 'code',
+        executor: draftCodingExecutor,
         workspaceId: workspace.id,
         threadId: optimisticId,
         activeTurnId: null,
@@ -3455,6 +4119,7 @@ export function App() {
       setSessionMenuSessionId(null);
 
       const session = await createCodingWorkspaceSession(workspace.id, {
+        executor: draftCodingExecutor,
         securityProfile: 'repo-write',
       });
       setOptimisticSessions((current) => current.filter((entry) => entry.id !== optimisticId));
@@ -3853,18 +4518,30 @@ export function App() {
     }
   }
 
-  async function handleSessionPreferencesChange(nextModel: string, nextEffort: ReasoningEffort, nextApprovalMode: ApprovalMode) {
+  async function handleSessionPreferencesChange(
+    nextModel: string,
+    nextEffort: ReasoningEffort,
+    nextApprovalMode: ApprovalMode,
+    nextExecutor?: AgentExecutor,
+  ) {
     if (!selectedSessionId || !detail) return;
     setBusy('update-session-preferences');
     const previousBootstrap = bootstrap;
     const previousChatBootstrap = chatBootstrap;
     const previousDetail = detail;
+    const previousDraftExecutor = draftCodingExecutorState;
     const previousModel = detail.session.model ?? currentSessionModelOption?.model ?? '';
     const previousEffort = detail.session.reasoningEffort ?? preferredReasoningEffort(currentSessionModelOption);
     const previousApprovalMode = detail.session.approvalMode;
+    const targetExecutor = detail.session.sessionType === 'code'
+      ? (nextExecutor ?? detail.session.executor)
+      : undefined;
     const now = new Date().toISOString();
     const optimisticSession = {
       ...detail.session,
+      ...(detail.session.sessionType === 'code' && targetExecutor
+        ? { executor: targetExecutor }
+        : {}),
       model: nextModel,
       reasoningEffort: nextEffort,
       approvalMode: detail.session.sessionType === 'code' ? nextApprovalMode : detail.session.approvalMode,
@@ -3994,16 +4671,23 @@ export function App() {
           }
         : current
     ));
+    if (targetExecutor) {
+      setDraftCodingExecutorState(targetExecutor);
+    }
     try {
-      const nextSession = await updateCodingSessionPreferences(selectedSessionId, {
-        model: nextModel,
-        reasoningEffort: nextEffort,
-        ...(detail?.session.sessionType === 'code'
-          ? {
-              approvalMode: nextApprovalMode,
-            }
-          : {}),
-      });
+      const nextPreferences = detail.session.sessionType === 'code'
+        ? {
+            executor: targetExecutor ?? detail.session.executor,
+            model: nextModel,
+            reasoningEffort: nextEffort,
+            approvalMode: nextApprovalMode,
+          }
+        : {
+            model: nextModel,
+            reasoningEffort: nextEffort,
+          };
+      const nextSession = await updateCodingSessionPreferences(selectedSessionId, nextPreferences);
+      setDraftCodingExecutorState(nextSession.executor);
       setBootstrap((current) => (
         current
           ? {
@@ -4029,6 +4713,7 @@ export function App() {
       setBootstrap(previousBootstrap);
       setChatBootstrap(previousChatBootstrap);
       setDetail(previousDetail);
+      setDraftCodingExecutorState(previousDraftExecutor);
       setSessionModel(previousModel);
       setSessionEffort(previousEffort);
       setSessionApprovalMode(previousApprovalMode);
@@ -4036,6 +4721,28 @@ export function App() {
     } finally {
       setBusy(null);
     }
+  }
+
+  function handleSessionExecutorChange(nextExecutorValue: string) {
+    if (!detail || detail.session.sessionType !== 'code' || sessionHasActiveTurn) return;
+    const nextExecutor = nextExecutorValue === 'claude-code' ? 'claude-code' : 'codex';
+    if (nextExecutor === detail.session.executor) return;
+
+    const executorModels = codingModelsForExecutor(bootstrap, nextExecutor);
+    const nextModelOption = executorModels.find((entry) => entry.model === sessionModel)
+      ?? executorModels.find((entry) => entry.model === detail.session.model)
+      ?? executorModels.find((entry) => entry.isDefault)
+      ?? executorModels[0]
+      ?? null;
+    if (!nextModelOption) return;
+
+    const nextEffort = nextModelOption.supportedReasoningEfforts.includes(sessionEffort)
+      ? sessionEffort
+      : preferredReasoningEffort(nextModelOption);
+
+    setSessionModel(nextModelOption.model);
+    setSessionEffort(nextEffort);
+    void handleSessionPreferencesChange(nextModelOption.model, nextEffort, sessionApprovalMode, nextExecutor);
   }
 
   function handleSessionModelChange(nextModel: string) {
@@ -5216,6 +5923,362 @@ export function App() {
     );
   }
 
+  function renderFileTreeEntries(workspaceId: string, entries: CodingWorkspaceFileEntry[], depth = 0): ReactNode[] {
+    const expandedPaths = new Set(expandedFileTreePaths[workspaceId] ?? []);
+
+    return entries.map((entry) => {
+      const directory = entry.kind === 'directory';
+      const expanded = directory && expandedPaths.has(entry.path);
+      const selected = !directory && selectedFilePaths[workspaceId] === entry.path;
+      const childState = directory ? currentFileTreeState(workspaceId, entry.path) : null;
+      const childStateKey = directory ? codingFileTreeKey(workspaceId, entry.path) : null;
+      const hasChildState = childStateKey
+        ? Object.prototype.hasOwnProperty.call(fileTreeDirectories, childStateKey)
+        : false;
+
+      return (
+        <li key={entry.path} className="file-tree-node">
+          <button
+            type="button"
+            className={`file-tree-button ${selected ? 'file-tree-button-active' : ''} ${directory ? 'file-tree-button-directory' : ''}`}
+            style={{ paddingInlineStart: `${12 + (depth * 14)}px` } as CSSProperties}
+            onClick={() => {
+              if (directory) {
+                toggleFileTreeDirectory(workspaceId, entry.path);
+                return;
+              }
+              handleFileTreeSelect(workspaceId, entry.path);
+            }}
+            title={entry.path}
+          >
+            <span className="file-tree-button-leading" aria-hidden="true">
+              {directory ? (
+                <span className={`file-tree-caret ${expanded ? 'file-tree-caret-open' : ''}`}>
+                  <ChevronIcon open={expanded} />
+                </span>
+              ) : (
+                <span className="file-tree-caret file-tree-caret-placeholder" />
+              )}
+              <span className="file-tree-icon">
+                {directory ? <FolderIcon open={expanded} /> : <FileIcon />}
+              </span>
+            </span>
+            <span className="file-tree-copy">
+              <span className="file-tree-label">{entry.name}</span>
+              {!directory && typeof entry.sizeBytes === 'number' ? (
+                <span className="file-tree-meta">{formatAttachmentSize(entry.sizeBytes)}</span>
+              ) : null}
+            </span>
+          </button>
+          {directory && expanded ? (
+            <div className="file-tree-children">
+              {!hasChildState || childState?.loading ? (
+                <div className="file-tree-inline-state">{copy.loadingFiles}</div>
+              ) : childState?.error ? (
+                <div className="file-tree-inline-state file-tree-inline-state-error">{childState.error}</div>
+              ) : childState && childState.entries.length > 0 ? (
+                <ul className="file-tree-list">
+                  {renderFileTreeEntries(workspaceId, childState.entries, depth + 1)}
+                </ul>
+              ) : (
+                <div className="file-tree-inline-state">{copy.emptyDirectory}</div>
+              )}
+            </div>
+          ) : null}
+        </li>
+      );
+    });
+  }
+
+  function renderFilePreviewPane() {
+    if (!selectedFileWorkspace) {
+      return (
+        <div className="file-preview-empty">
+          <strong>{copy.filesTitle}</strong>
+          <p>{noWorkspaceLabel}</p>
+        </div>
+      );
+    }
+
+    if (!selectedFilePath) {
+      return (
+        <div className="file-preview-empty">
+          <strong>{copy.filesTitle}</strong>
+          <p>{copy.selectFileHint}</p>
+        </div>
+      );
+    }
+
+    if (filePreviewError) {
+      return (
+        <div className="file-preview-empty file-preview-empty-error">
+          <strong>{copy.filesTitle}</strong>
+          <p>{filePreviewError}</p>
+        </div>
+      );
+    }
+
+    if (!selectedFilePreview) {
+      return (
+        <div className="file-preview-empty">
+          <strong>{copy.loadingFile}</strong>
+        </div>
+      );
+    }
+
+    return renderResolvedFilePreviewContent(selectedFilePreview, selectedFileWorkspace.id);
+  }
+
+  function renderResolvedFilePreviewContent(preview: CodingWorkspaceFileResponse, workspaceId: string) {
+    const downloadHref = preview.downloadUrl
+      ? `${(import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')}${preview.downloadUrl}`
+      : codingWorkspaceFileContentHref(workspaceId, preview.path, true);
+    const inlineHref = codingWorkspaceFileContentHref(workspaceId, preview.path, false);
+    const imagePreview = isImageFilePreview(preview);
+    const markdownPreview = isMarkdownFilePreview(preview);
+    const pdfPreview = isPdfFilePreview(preview);
+    const csvPreview = isCsvFilePreview(preview);
+    const textPreview = !imagePreview && !pdfPreview && preview.previewable;
+    const csvRows = csvPreview ? parseCsvPreview(preview.content ?? '') : [];
+    const csvHeader = csvRows[0] ?? [];
+    const csvBodyRows = csvRows.slice(1);
+
+    return (
+      <div className="file-preview-pane">
+        <div className="file-preview-toolbar">
+          <div className="file-preview-meta">
+            <strong>{relativeFileLabel(preview.path)}</strong>
+            <span>{formatAttachmentSize(preview.sizeBytes)}</span>
+            <span>{preview.mimeType}</span>
+          </div>
+          <a className="button-secondary file-preview-download" href={downloadHref} download={preview.name}>
+            {copy.downloadFile}
+          </a>
+        </div>
+        {preview.truncated && textPreview ? (
+          <p className="file-preview-note">{copy.filePreviewTruncated}</p>
+        ) : null}
+        {imagePreview ? (
+          <div className="file-preview-rich-surface file-preview-image-wrap">
+            <img
+              src={inlineHref}
+              alt={preview.name}
+              className="file-preview-image"
+            />
+          </div>
+        ) : markdownPreview ? (
+          <div className="file-preview-rich-surface file-preview-markdown markdown-body">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                pre: ({ children }) => (
+                  <MarkdownCodeBlock language={language}>
+                    {children}
+                  </MarkdownCodeBlock>
+                ),
+              }}
+            >
+              {preview.content ?? ''}
+            </ReactMarkdown>
+          </div>
+        ) : pdfPreview ? (
+          <div className="file-preview-rich-surface file-preview-pdf-wrap">
+            <iframe
+              title={preview.name}
+              src={inlineHref}
+              className="file-preview-pdf-frame"
+            />
+          </div>
+        ) : csvPreview ? (
+          <div className="file-preview-rich-surface file-preview-table-wrap">
+            <table className="file-preview-table">
+              {csvHeader.length > 0 ? (
+                <thead>
+                  <tr>
+                    {csvHeader.map((cell, index) => (
+                      <th key={`header-${index}`}>{cell}</th>
+                    ))}
+                  </tr>
+                </thead>
+              ) : null}
+              {csvBodyRows.length > 0 ? (
+                <tbody>
+                  {csvBodyRows.map((row, rowIndex) => (
+                    <tr key={`row-${rowIndex}`}>
+                      {row.map((cell, cellIndex) => (
+                        <td key={`row-${rowIndex}-cell-${cellIndex}`}>{cell}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              ) : null}
+            </table>
+          </div>
+        ) : preview.previewable ? (
+          <div className="file-preview-code">
+            <MarkdownCodeBlock language={language}>
+              <code className={filePreviewCodeClassName(preview.path)}>
+                {preview.content ?? ''}
+              </code>
+            </MarkdownCodeBlock>
+          </div>
+        ) : (
+          <div className="file-preview-empty">
+            <strong>{preview.name}</strong>
+            <p>{copy.binaryFile}</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderFileBrowserPane() {
+    const selectedFileName = selectedFilePreview?.name
+      ?? selectedFilePath?.split('/').pop()
+      ?? copy.filesTitle;
+    const selectedFileLabel = selectedFilePath
+      ? relativeFileLabel(selectedFilePath)
+      : selectedFileWorkspace?.name ?? copy.selectFileHint;
+
+    return (
+      <section className="panel transcript file-browser-panel">
+        <div className="panel-header panel-header-file-browser">
+          <div className="session-title-row">
+            <div className="file-preview-title-block">
+              <h2>{selectedFileName}</h2>
+              <p className="file-preview-title-path">{selectedFileLabel}</p>
+            </div>
+            {selectedFilePath ? (
+              <div className="inspector-header-actions">
+                <div className="inspector-tabs" role="tablist" aria-label={copy.filesTitle}>
+                  <button
+                    type="button"
+                    className={`button-secondary inspector-tab-button ${fileBrowserTab === 'preview' ? 'inspector-tab-button-active' : ''}`}
+                    onClick={() => setFileBrowserTab('preview')}
+                  >
+                    {copy.previewTab}
+                  </button>
+                  <button
+                    type="button"
+                    className={`button-secondary inspector-tab-button ${fileBrowserTab === 'diff' ? 'inspector-tab-button-active' : ''}`}
+                    onClick={() => setFileBrowserTab('diff')}
+                    disabled={!selectedFileDiffChange}
+                  >
+                    {copy.diffTab}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="transcript-layout file-browser-layout">
+          <div className="transcript-scroll file-browser-scroll">
+            {fileBrowserTab === 'diff' && selectedFileDiffChange ? (
+              <div className="inspector-diff-pane">
+                <FileChangeList
+                  fileChanges={[selectedFileDiffChange]}
+                  language={language}
+                  noInlineDiffLabel={copy.noInlineDiff}
+                />
+              </div>
+            ) : fileBrowserTab === 'diff' ? (
+              <div className="file-preview-empty">
+                <strong>{copy.diffTab}</strong>
+                <p>{copy.noDiffSelected}</p>
+              </div>
+            ) : (
+              renderFilePreviewPane()
+            )}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  function renderDeveloperInspectorPane() {
+    if (!developerInspectorWorkspace || !developerInspectorFilePath) {
+      return (
+        <div className="file-preview-empty">
+          <strong>{copy.filesTitle}</strong>
+          <p>{copy.selectFileHint}</p>
+        </div>
+      );
+    }
+
+    const canShowDiff = Boolean(developerInspectorDiffChange);
+    const canShowPreview = developerInspectorDiffChange?.kind.toLowerCase() !== 'delete';
+
+    return (
+      <section className="panel transcript transcript-inspector">
+        <div className="panel-header panel-header-file-browser">
+          <div className="session-title-row">
+            <div className="file-preview-title-block">
+              <h2>{developerInspectorFilePath.split('/').pop() ?? developerInspectorFilePath}</h2>
+              <p className="file-preview-title-path">{relativeFileLabel(developerInspectorFilePath)}</p>
+            </div>
+            <div className="inspector-header-actions">
+              <div className="inspector-tabs" role="tablist" aria-label={copy.filesTitle}>
+                <button
+                  type="button"
+                  className={`button-secondary inspector-tab-button ${developerInspectorTab === 'preview' ? 'inspector-tab-button-active' : ''}`}
+                  onClick={() => setDeveloperInspectorTab('preview')}
+                  disabled={!canShowPreview}
+                >
+                  {copy.previewTab}
+                </button>
+                <button
+                  type="button"
+                  className={`button-secondary inspector-tab-button ${developerInspectorTab === 'diff' ? 'inspector-tab-button-active' : ''}`}
+                  onClick={() => setDeveloperInspectorTab('diff')}
+                  disabled={!canShowDiff}
+                >
+                  {copy.diffTab}
+                </button>
+              </div>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={hideDeveloperInspector}
+              >
+                {copy.hideInspector}
+              </button>
+            </div>
+          </div>
+        </div>
+        <div className="transcript-layout file-browser-layout">
+          <div className="transcript-scroll file-browser-scroll">
+            {developerInspectorTab === 'diff' && developerInspectorDiffChange ? (
+              <div className="inspector-diff-pane">
+                <FileChangeList
+                  fileChanges={[developerInspectorDiffChange]}
+                  language={language}
+                  noInlineDiffLabel={copy.noInlineDiff}
+                />
+              </div>
+            ) : developerInspectorTab === 'diff' ? (
+              <div className="file-preview-empty">
+                <strong>{copy.diffTab}</strong>
+                <p>{copy.noDiffSelected}</p>
+              </div>
+            ) : developerInspectorError ? (
+              <div className="file-preview-empty file-preview-empty-error">
+                <strong>{copy.filesTitle}</strong>
+                <p>{developerInspectorError}</p>
+              </div>
+            ) : !developerInspectorPreview ? (
+              <div className="file-preview-empty">
+                <strong>{developerInspectorLoadingKey ? copy.loadingFile : copy.filesTitle}</strong>
+                {!developerInspectorLoadingKey ? <p>{copy.selectFileHint}</p> : null}
+              </div>
+            ) : (
+              renderResolvedFilePreviewContent(developerInspectorPreview, developerInspectorWorkspace.id)
+            )}
+          </div>
+        </div>
+      </section>
+    );
+  }
+
   function openWorkspaceManager(mode: WorkspaceModalMode) {
     setDetailMenuOpen(false);
     setSessionMenuSessionId(null);
@@ -5249,22 +6312,23 @@ export function App() {
     setSettingsOpen(true);
   }
 
+  function handleRailVisibilityToggle() {
+    closePrimaryDialogs();
+    if (activeMode === 'developer') {
+      setDeveloperRailHidden((current) => !current);
+      return;
+    }
+    setChatRailHidden((current) => !current);
+  }
+
   function handlePrimaryModeClick(nextMode: AppMode) {
     if (nextMode === 'developer' && !developerModeEnabled) return;
     if (nextMode === 'chat' && !chatModeEnabled) return;
 
     closePrimaryDialogs();
 
-    if (activeMode === nextMode) {
-      if (nextMode === 'developer') {
-        setDeveloperRailHidden((current) => !current);
-      } else {
-        setChatRailHidden((current) => !current);
-      }
-      return;
-    }
-
     if (nextMode === 'developer') {
+      setDeveloperSubview('sessions');
       setDeveloperRailHidden(false);
     } else {
       setChatRailHidden(false);
@@ -5468,14 +6532,38 @@ export function App() {
               <div className="primary-nav-menu">
                 <button
                   type="button"
-                  className={`primary-nav-button ${activeMode === 'developer' ? 'primary-nav-button-active' : ''}`}
+                  className={`primary-nav-button ${currentRailHidden ? 'primary-nav-button-active' : ''}`}
+                  onClick={handleRailVisibilityToggle}
+                  data-label={currentRailHidden ? copy.showSidebar : copy.hideSidebar}
+                  aria-label={currentRailHidden ? copy.showSidebar : copy.hideSidebar}
+                  title={currentRailHidden ? copy.showSidebar : copy.hideSidebar}
+                >
+                  <SidebarIcon collapsed={currentRailHidden} />
+                  <span className="sr-only">{currentRailHidden ? copy.showSidebar : copy.hideSidebar}</span>
+                </button>
+                <button
+                  type="button"
+                  className={`primary-nav-button ${activeMode === 'developer' && developerSubview === 'sessions' ? 'primary-nav-button-active' : ''}`}
                   onClick={() => handlePrimaryModeClick('developer')}
                   disabled={!developerModeEnabled}
                   data-label="coding"
                   aria-label="coding"
+                  title="coding"
                 >
                   <CodingIcon />
                   <span className="sr-only">coding</span>
+                </button>
+                <button
+                  type="button"
+                  className={`primary-nav-button ${developerFilesView ? 'primary-nav-button-active' : ''}`}
+                  onClick={() => handleDeveloperSubviewClick('files')}
+                  disabled={!developerModeEnabled}
+                  data-label={copy.filesNav}
+                  aria-label={copy.filesNav}
+                  title={copy.filesNav}
+                >
+                  <FilesIcon />
+                  <span className="sr-only">{copy.filesNav}</span>
                 </button>
                 <button
                   type="button"
@@ -5484,27 +6572,31 @@ export function App() {
                   disabled={!chatModeEnabled}
                   data-label="chat"
                   aria-label="chat"
+                  title="chat"
                 >
                   <ChatIcon />
                   <span className="sr-only">chat</span>
                 </button>
-                <button
-                  type="button"
-                  className={`primary-nav-button ${rolesOpen ? 'primary-nav-button-active' : ''}`}
-                  onClick={() => openPrimaryDialog('roles')}
-                  disabled={!canManageChatRolePresets}
-                  data-label="roles"
-                  aria-label="roles"
-                >
-                  <RolesIcon />
-                  <span className="sr-only">roles</span>
-                </button>
+                {canManageChatRolePresets ? (
+                  <button
+                    type="button"
+                    className={`primary-nav-button ${rolesOpen ? 'primary-nav-button-active' : ''}`}
+                    onClick={() => openPrimaryDialog('roles')}
+                    data-label="roles"
+                    aria-label="roles"
+                    title="roles"
+                  >
+                    <RolesIcon />
+                    <span className="sr-only">roles</span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className={`primary-nav-button ${settingsOpen ? 'primary-nav-button-active' : ''}`}
                   onClick={() => openPrimaryDialog('settings')}
                   data-label="setting"
                   aria-label="setting"
+                  title="setting"
                 >
                   <SettingsIcon />
                   <span className="sr-only">setting</span>
@@ -5516,6 +6608,7 @@ export function App() {
                   disabled={!bootstrap.currentUser.isAdmin}
                   data-label="admin"
                   aria-label="admin"
+                  title="admin"
                 >
                   <AdminIcon />
                   <span className="sr-only">admin</span>
@@ -5526,9 +6619,42 @@ export function App() {
 
             {!currentRailHidden ? (
               <aside className="rail">
-                <div className="rail-header">
-                  <div>
+                <div className={`rail-header ${developerFilesView ? 'rail-header-file-browser' : ''}`}>
+                  <div className="rail-header-copy">
                     <p className="eyebrow">{railEyebrow}</p>
+                    {developerFilesView ? (
+                      fileWorkspaceSelectOptions.length > 0 ? (
+                        <div className="rail-header-controls">
+                          <AppSelect
+                            value={selectedFileWorkspaceId ?? fileWorkspaceSelectOptions[0]?.value ?? ''}
+                            options={fileWorkspaceSelectOptions}
+                            onChange={handleFileWorkspaceChange}
+                            ariaLabel={copy.browseWorkspace}
+                          />
+                          <button
+                            type="button"
+                            className="button-secondary icon-button"
+                            onClick={() => {
+                              void refreshFileBrowser();
+                            }}
+                            title={copy.refresh}
+                            aria-label={copy.refresh}
+                            disabled={!selectedFileWorkspaceId || selectedFileRootTreeState?.loading || filePreviewLoadingKey !== null}
+                          >
+                            <RefreshIcon />
+                          </button>
+                        </div>
+                      ) : null
+                    ) : executorSelectOptions.length > 1 && (!detail || detail.session.sessionType !== 'code') ? (
+                      <div className="rail-header-controls">
+                        <AppSelect
+                          value={draftCodingExecutor}
+                          options={executorSelectOptions}
+                          onChange={(nextValue) => setDraftCodingExecutorState(nextValue as AgentExecutor)}
+                          ariaLabel={copy.executorLabel}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
 
@@ -5542,7 +6668,23 @@ export function App() {
                     maybeAutoScrollWorkspaceRail(event.clientY);
                   }}
                 >
-                  {activeMode === 'developer' ? (
+                  {developerFilesView ? (
+                    <div className="rail-section file-browser-rail-section">
+                      {!selectedFileWorkspace ? (
+                        <div className="file-tree-empty">{noWorkspaceLabel}</div>
+                      ) : !hasSelectedFileRootTreeState || selectedFileRootTreeState?.loading ? (
+                        <div className="file-tree-empty">{copy.loadingFiles}</div>
+                      ) : selectedFileRootTreeState?.error ? (
+                        <div className="file-tree-empty file-tree-empty-error">{selectedFileRootTreeState.error}</div>
+                      ) : selectedFileRootTreeState && selectedFileRootTreeState.entries.length > 0 ? (
+                        <ul className="file-tree-list">
+                          {renderFileTreeEntries(selectedFileWorkspace.id, selectedFileRootTreeState.entries)}
+                        </ul>
+                      ) : (
+                        <div className="file-tree-empty">{copy.emptyWorkspaceFiles}</div>
+                      )}
+                    </div>
+                  ) : activeMode === 'developer' ? (
                     <div className="rail-section">
                       <ul className="session-list workspace-tree">
                         {railVisibleWorkspaces.length === 0 && (!workspaceEditMode || editableHiddenWorkspaces.length === 0) ? (
@@ -5573,41 +6715,43 @@ export function App() {
                   )}
                 </div>
 
-                <div className="rail-footer">
-                  {activeMode === 'developer' ? (
-                    <div className="rail-footer-actions">
-                      <button
-                        type="button"
-                        className={`button-secondary ${workspaceEditMode ? 'rail-footer-button-active' : ''}`}
-                        onClick={() => setWorkspaceEditMode((current) => !current)}
-                      >
-                        {workspaceEditMode ? copy.finish : copy.editWorkspaces}
-                      </button>
-                      <button type="button" className="button-warm" onClick={() => openWorkspaceManager('create')}>
-                        {copy.createWorkspaceAction}
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="rail-footer-actions">
-                      <button
-                        type="button"
-                        className={`button-secondary ${chatRailEditMode ? 'rail-footer-button-active' : ''}`}
-                        onClick={() => setChatRailEditMode((current) => !current)}
-                      >
-                        {chatRailEditMode ? copy.finish : copy.rename}
-                      </button>
-                      <button
-                        type="button"
-                        className="button-warm"
-                        onClick={() => {
-                          void handleCreateConversation();
-                        }}
-                      >
-                        {language === 'zh' ? '新建' : 'New'}
-                      </button>
-                    </div>
-                  )}
-                </div>
+                {!developerFilesView ? (
+                  <div className="rail-footer">
+                    {activeMode === 'developer' ? (
+                      <div className="rail-footer-actions">
+                        <button
+                          type="button"
+                          className={`button-secondary ${workspaceEditMode ? 'rail-footer-button-active' : ''}`}
+                          onClick={() => setWorkspaceEditMode((current) => !current)}
+                        >
+                          {workspaceEditMode ? copy.finish : copy.editWorkspaces}
+                        </button>
+                        <button type="button" className="button-warm" onClick={() => openWorkspaceManager('create')}>
+                          {copy.createWorkspaceAction}
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="rail-footer-actions">
+                        <button
+                          type="button"
+                          className={`button-secondary ${chatRailEditMode ? 'rail-footer-button-active' : ''}`}
+                          onClick={() => setChatRailEditMode((current) => !current)}
+                        >
+                          {chatRailEditMode ? copy.finish : copy.rename}
+                        </button>
+                        <button
+                          type="button"
+                          className="button-warm"
+                          onClick={() => {
+                            void handleCreateConversation();
+                          }}
+                        >
+                          {language === 'zh' ? '新建' : 'New'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
               </aside>
             ) : null}
           </div>
@@ -5616,8 +6760,10 @@ export function App() {
             <div className="rail-resizer" onMouseDown={handleRailResizeStart} role="separator" aria-orientation="vertical" aria-label={copy.hideSidebar} />
           ) : null}
 
+          <div className={`developer-content-shell ${showDeveloperInspector ? 'developer-content-shell-with-inspector' : ''}`}>
+            {developerFilesView ? renderFileBrowserPane() : (
           <section className="panel transcript">
-            <div className="panel-header">
+                <div className="panel-header">
               <div className="session-title-row">
                 {detail ? (
                   inlineRenameActive ? (
@@ -5715,6 +6861,7 @@ export function App() {
                               badgeLabel={toolLabel(event, language)}
                               language={language}
                               noInlineDiffLabel={copy.noInlineDiff}
+                              onSelectFileChange={!sessionIsChat ? handleTranscriptFileChangeSelect : undefined}
                             />
                           );
                         }
@@ -5745,9 +6892,10 @@ export function App() {
                                     <a
                                       key={attachment.id}
                                       className={`chat-attachment-card chat-attachment-card-${attachment.kind}`}
-                                      href={attachment.url}
-                                      target="_blank"
-                                      rel="noreferrer"
+                                      href={attachmentHref(attachment)}
+                                      target={attachment.kind === 'image' ? '_blank' : undefined}
+                                      rel={attachment.kind === 'image' ? 'noreferrer' : undefined}
+                                      download={attachment.kind === 'image' ? undefined : attachment.filename}
                                     >
                                       {attachment.kind === 'image' ? (
                                         <div className="chat-attachment-media">
@@ -5821,6 +6969,23 @@ export function App() {
                     />
                     {detail ? (
                       <div className="composer-config-row">
+                        {!sessionIsChat && currentSessionExecutor && executorSelectOptions.length > 1 ? (
+                          <label className="composer-config-field">
+                            <span>{copy.executorLabel}</span>
+                            <AppSelect
+                              className="app-select-compact"
+                              value={currentSessionExecutor}
+                              options={executorSelectOptions}
+                              onChange={handleSessionExecutorChange}
+                              ariaLabel={copy.executorLabel}
+                              disabled={
+                                busy === 'update-session-preferences'
+                                || sessionHasActiveTurn
+                                || selectedSessionIsOptimistic
+                              }
+                            />
+                          </label>
+                        ) : null}
                         <label className="composer-config-field">
                           <span>{copy.model}</span>
                           <AppSelect
@@ -5950,6 +7115,14 @@ export function App() {
               </section>
             )}
           </section>
+            )}
+          {showDeveloperInspector ? (
+            <>
+              <div className="developer-content-divider" aria-hidden="true" />
+              {renderDeveloperInspectorPane()}
+            </>
+          ) : null}
+          </div>
         </section>
       </div>
 
@@ -6173,6 +7346,9 @@ export function App() {
                 <p className="detail-card-meta">{copy.sessionType}: {detail.session.sessionType === 'chat' ? copy.chatSession : copy.codeSession}</p>
                 <p className="detail-card-meta">{copy.sessionOwner}: {detail.session.ownerUsername}</p>
                 <p className="detail-card-meta">{copy.securityLabel}: {securityProfileLabel(language, detail.session.sessionType, detail.session.securityProfile)}</p>
+                {detail.session.sessionType === 'code' ? (
+                  <p className="detail-card-meta">{copy.executorLabel}: {executorOptionLabel(language, detail.session.executor)}</p>
+                ) : null}
                 {detail.session.sessionType === 'code' ? (
                   <p className="detail-card-meta">{copy.approvalModeLabel}: {modeOptionLabel(language, currentSessionMode)}</p>
                 ) : null}

@@ -19,7 +19,7 @@ function buildConversation(overrides?: Partial<ConversationRecord>): Conversatio
     workspace: '/tmp/chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'running',
@@ -84,7 +84,7 @@ function createHarness() {
         liveEvents.push(event);
       },
     },
-    codex: {
+    runtime: {
       async interruptTurn(threadId: string, turnId: string) {
         interrupts.push({ threadId, turnId });
       },
@@ -248,7 +248,7 @@ test('chat turn service marks stale sessions when the runtime thread is gone', a
   const harness = createHarness();
   const service = createChatTurnService({
     ...harness.options,
-    codex: {
+    runtime: {
       async interruptTurn() {
         throw new Error('thread not loaded');
       },
@@ -271,7 +271,7 @@ test('chat turn service patches error state when interrupting fails', async () =
   const harness = createHarness();
   const service = createChatTurnService({
     ...harness.options,
-    codex: {
+    runtime: {
       async interruptTurn() {
         throw new Error('interrupt failed');
       },

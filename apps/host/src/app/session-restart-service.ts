@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import type { ConversationRecord, SessionEvent, SessionRecord } from '../types.js';
+import type { AgentExecutor, ConversationRecord, SessionEvent, SessionRecord } from '../types.js';
+import type { RuntimeThreadStarter } from './agent-runtime.js';
 
 type TurnRecord = ConversationRecord | SessionRecord;
 
@@ -10,20 +11,9 @@ interface RestartStore {
   addLiveEvent(sessionId: string, event: SessionEvent): void;
 }
 
-interface StartThreadPort {
-  startThread(options: {
-    cwd: string;
-    securityProfile: SessionRecord['securityProfile'];
-    model?: string | null;
-  }): Promise<{
-    thread: {
-      id: string;
-    };
-  }>;
-}
-
 interface CreateSessionRestartServiceOptions {
-  codex: StartThreadPort;
+  chatRuntime: RuntimeThreadStarter;
+  runtimeForExecutor: (executor: AgentExecutor) => RuntimeThreadStarter;
   store: RestartStore;
   ensureChatWorkspace: (ownerUsername: string, ownerUserId: string) => Promise<{ path: string }>;
   rotateConversationThread: (conversation: ConversationRecord, nextThreadId: string) => Promise<unknown>;
@@ -48,7 +38,10 @@ export function createSessionRestartService(options: CreateSessionRestartService
       ? (await options.ensureChatWorkspace(session.ownerUsername, session.ownerUserId)).path
       : session.workspace;
 
-    const threadResponse = await options.codex.startThread({
+    const runtime = isConversation(session)
+      ? options.chatRuntime
+      : options.runtimeForExecutor(session.executor);
+    const threadResponse = await runtime.startThread({
       cwd: workspace,
       securityProfile: session.securityProfile,
       model: session.model,

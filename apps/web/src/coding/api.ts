@@ -1,6 +1,8 @@
 import type { SessionAttachmentSummary } from '../types';
 import type {
   CodingBootstrapPayload,
+  CodingWorkspaceDirectoryResponse,
+  CodingWorkspaceFileResponse,
   CodingSessionDetailResponse,
   CodingSessionRecord,
   CodingSessionTranscriptPageResponse,
@@ -56,6 +58,32 @@ export function fetchCodingSessionTranscript(sessionId: string, options?: { limi
 
 export function fetchCodingBootstrap() {
   return requestJson<CodingBootstrapPayload>('/api/coding/bootstrap');
+}
+
+export function fetchCodingWorkspaceTree(workspaceId: string, path = '') {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set('path', path);
+  }
+  const suffix = params.toString();
+  return requestJson<CodingWorkspaceDirectoryResponse>(
+    `/api/coding/workspaces/${workspaceId}/tree${suffix ? `?${suffix}` : ''}`,
+  );
+}
+
+export function fetchCodingWorkspaceFile(workspaceId: string, path: string) {
+  const params = new URLSearchParams();
+  params.set('path', path);
+  return requestJson<CodingWorkspaceFileResponse>(`/api/coding/workspaces/${workspaceId}/file?${params.toString()}`);
+}
+
+export function codingWorkspaceFileContentHref(workspaceId: string, path: string, download = true) {
+  const params = new URLSearchParams();
+  params.set('path', path);
+  if (download) {
+    params.set('download', '1');
+  }
+  return `${API_BASE_URL}/api/coding/workspaces/${workspaceId}/file/content?${params.toString()}`;
 }
 
 export async function createCodingWorkspace(input: CreateCodingWorkspaceRequest) {

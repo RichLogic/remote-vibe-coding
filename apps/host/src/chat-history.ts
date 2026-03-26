@@ -6,6 +6,7 @@ import {
   type Db,
 } from 'mongodb';
 
+import { DEFAULT_APPROVAL_MODE } from './approval-mode.js';
 import type {
   ConversationRecord,
   SessionAttachmentKind,
@@ -18,6 +19,7 @@ export interface PersistedChatAttachmentRef {
   mimeType: string;
   sizeBytes: number;
   storagePath: string;
+  previewText?: string | null;
   createdAt: string;
 }
 
@@ -138,7 +140,7 @@ function asConversationRecord(document: ChatConversationDocument): ConversationR
     workspace: document.workspace ?? '',
     archivedAt: document.archivedAt ?? null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: DEFAULT_APPROVAL_MODE,
     networkEnabled: document.networkEnabled ?? false,
     fullHostEnabled: false,
     status: document.status ?? 'idle',
@@ -274,7 +276,7 @@ export class ChatHistoryRepository {
       id: current.id,
       sessionType: 'chat',
       securityProfile: 'repo-write',
-      approvalMode: 'less-approval',
+      approvalMode: DEFAULT_APPROVAL_MODE,
       fullHostEnabled: false,
       updatedAt: patch.updatedAt ?? new Date().toISOString(),
     };

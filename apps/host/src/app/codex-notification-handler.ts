@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
-import type { JsonRpcNotification } from '../codex-app-server.js';
 import type { CodexThread, ConversationRecord, SessionEvent, SessionRecord, SessionStatus } from '../types.js';
+import type { AgentRuntimeNotification } from './agent-runtime.js';
 
 type TurnRecord = ConversationRecord | SessionRecord;
 
@@ -15,7 +15,7 @@ interface ThreadState {
   thread: CodexThread | null;
 }
 
-interface CreateCodexNotificationHandlerOptions {
+interface CreateRuntimeNotificationHandlerOptions {
   store: NotificationStore;
   findRecordByThreadId: (threadId: string) => Promise<TurnRecord | null>;
   updateRecord: (record: TurnRecord, patch: Partial<TurnRecord>) => Promise<TurnRecord | null>;
@@ -24,6 +24,7 @@ interface CreateCodexNotificationHandlerOptions {
   maybeAutoTitleChatSession: (session: TurnRecord, threadOverride?: CodexThread | null) => Promise<unknown>;
   maybeAutoTitleCodingSession: (session: SessionRecord, threadOverride?: CodexThread | null) => Promise<unknown>;
   syncConversationHistoryFromThread: (conversation: ConversationRecord, thread: CodexThread | null) => Promise<unknown>;
+  syncCodingHistoryFromThread: (session: SessionRecord, thread: CodexThread | null) => Promise<unknown>;
   latestMeaningfulChatReplyFromTurn: (thread: CodexThread, turnId: string) => string | null;
   isTransitionOnlyChatReply: (text: string) => boolean;
   summarizeNotification: (method: string, params: Record<string, unknown>) => string;
@@ -51,11 +52,11 @@ function isDeveloperSession(record: TurnRecord): record is SessionRecord {
   return record.sessionType === 'code';
 }
 
-export function createCodexNotificationHandler(options: CreateCodexNotificationHandlerOptions) {
+export function createRuntimeNotificationHandler(options: CreateRuntimeNotificationHandlerOptions) {
   const randomId = options.randomId ?? (() => randomUUID());
   const now = options.now ?? (() => new Date().toISOString());
 
-  return async function handleNotification(message: JsonRpcNotification) {
+  return async function handleNotification(message: AgentRuntimeNotification) {
     const threadId = extractThreadId(message.params);
     if (!threadId) return;
 
@@ -199,6 +200,18 @@ export function createCodexNotificationHandler(options: CreateCodexNotificationH
       return;
     }
 
+    const latestSession = await options.getCurrentRecord(nextSession.id);
+    if (latestSession && isDeveloperSession(latestSession)) {
+      const threadState = await options.readSessionThread(latestSession);
+      if (isDeveloperSession(threadState.session)) {
+        await options.syncCodingHistoryFromThread(threadState.session, threadState.thread);
+        await options.maybeAutoTitleCodingSession(threadState.session, threadState.thread);
+        return;
+      }
+    }
+
     await options.maybeAutoTitleCodingSession(nextSession);
   };
 }
+
+export const createCodexNotificationHandler = createRuntimeNotificationHandler;

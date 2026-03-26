@@ -1,4 +1,5 @@
-import type { CodexThreadInput, ConversationRecord, SessionAttachmentRecord, SessionRecord } from '../types.js';
+import type { AgentExecutor, CodexThreadInput, ConversationRecord, SessionAttachmentRecord, SessionRecord } from '../types.js';
+import type { RuntimeTurnStarter } from './agent-runtime.js';
 
 type TurnRecord = ConversationRecord | SessionRecord;
 
@@ -8,21 +9,9 @@ interface RecoveryState {
   prefaceText: string | null;
 }
 
-interface StartTurnPort {
-  startTurn(
-    threadId: string,
-    input: CodexThreadInput[],
-    options?: { model?: string | null; effort?: SessionRecord['reasoningEffort'] | null },
-  ): Promise<{
-    turn: {
-      id: string;
-      status: string;
-    };
-  }>;
-}
-
 interface CreateTurnStartServiceOptions {
-  codex: StartTurnPort;
+  chatRuntime: RuntimeTurnStarter;
+  runtimeForExecutor: (executor: AgentExecutor) => RuntimeTurnStarter;
   restartSessionThread: (session: TurnRecord, summary?: string) => Promise<TurnRecord>;
   getCurrentRecord: (recordId: string) => Promise<TurnRecord | null>;
   prepareConversationRecoveryState: (conversation: ConversationRecord) => Promise<RecoveryState>;
@@ -99,9 +88,14 @@ export function createTurnStartService(options: CreateTurnStartServiceOptions) {
         });
       }
 
-      const turn = await options.codex.startTurn(targetSession.threadId, input, {
+      const runtime = isConversation(targetSession)
+        ? options.chatRuntime
+        : options.runtimeForExecutor(targetSession.executor);
+      const turn = await runtime.startTurn(targetSession.threadId, input, {
         model: targetSession.model,
         effort: targetSession.reasoningEffort,
+        approvalMode: targetSession.approvalMode,
+        securityProfile: targetSession.securityProfile,
       });
 
       await options.markAttachmentsConsumed(targetSession.id, attachments.map((attachment) => attachment.id));

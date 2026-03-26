@@ -1,14 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
 import type { ConversationRecord, SessionAttachmentRecord, SessionEvent } from '../types.js';
+import type { RuntimeTurnInterrupter } from './agent-runtime.js';
 
 interface ChatAttachmentStore {
   getAttachment(conversationId: string, attachmentId: string): SessionAttachmentRecord | null | undefined;
   addLiveEvent(sessionId: string, event: SessionEvent): void;
-}
-
-interface ChatInterruptPort {
-  interruptTurn(threadId: string, turnId: string): Promise<void>;
 }
 
 export class ChatTurnServiceError extends Error {
@@ -29,7 +26,7 @@ interface CreateChatTurnInput {
 
 interface CreateChatTurnServiceOptions {
   store: ChatAttachmentStore;
-  codex: ChatInterruptPort;
+  runtime: RuntimeTurnInterrupter;
   startTurnWithAutoRestart: (
     conversation: ConversationRecord,
     prompt: string | null,
@@ -101,7 +98,7 @@ export function createChatTurnService(options: CreateChatTurnServiceOptions) {
     }
 
     try {
-      await options.codex.interruptTurn(conversation.threadId, conversation.activeTurnId);
+      await options.runtime.interruptTurn(conversation.threadId, conversation.activeTurnId);
       options.store.addLiveEvent(conversation.id, {
         id: randomId(),
         method: 'turn/interrupted',

@@ -24,6 +24,7 @@ function buildCodeSession(): SessionRecord {
     ownerUserId: 'owner-1',
     ownerUsername: 'owner',
     sessionType: 'code',
+    executor: 'codex',
     workspaceId: 'workspace-1',
     threadId: 'thread-source',
     activeTurnId: null,
@@ -32,7 +33,7 @@ function buildCodeSession(): SessionRecord {
     workspace: '/tmp/code',
     archivedAt: null,
     securityProfile: 'full-host',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: true,
     fullHostEnabled: true,
     status: 'idle',
@@ -58,7 +59,7 @@ function buildChatConversation(): ConversationRecord {
     workspace: '/tmp/chat',
     archivedAt: null,
     securityProfile: 'repo-write',
-    approvalMode: 'less-approval',
+    approvalMode: 'detailed',
     networkEnabled: false,
     fullHostEnabled: false,
     status: 'idle',
@@ -82,12 +83,18 @@ function createHarness() {
   };
 
   const service = createSessionForkService({
-    codex: {
+    chatRuntime: {
       async startThread(options) {
         threadStarts.push(options);
         return { thread: { id: `thread-${threadStarts.length}` } };
       },
     },
+    runtimeForExecutor: () => ({
+      async startThread(options) {
+        threadStarts.push(options);
+        return { thread: { id: `thread-${threadStarts.length}` } };
+      },
+    }),
     async ensureChatWorkspace() {
       return { path: '/tmp/chat-workspace' };
     },
@@ -117,6 +124,7 @@ test('session fork service forks coding sessions with inherited execution settin
     model: 'gpt-5-codex',
   }]);
   assert.equal(result.id, 'fork-id');
+  assert.equal(result.executor, 'codex');
   assert.equal(result.title, 'Implement auth (fork)');
   assert.equal(result.fullHostEnabled, true);
   assert.equal(harness.persisted.sessions.length, 1);

@@ -1,10 +1,11 @@
 export type SecurityProfile = 'read-only' | 'repo-write' | 'full-host';
-export type ApprovalMode = 'less-approval' | 'full-approval';
+export type ApprovalMode = 'detailed' | 'less-interruption' | 'full-auto';
 export type ApprovalScope = 'once' | 'session';
 export type SessionStatus = 'idle' | 'running' | 'needs-approval' | 'error' | 'stale';
 export type ChatUiStatus = 'new' | 'processing' | 'completed' | 'error';
 export type ChatRecoveryState = 'ready' | 'stale';
 export type SessionType = 'code' | 'chat';
+export type AgentExecutor = 'codex' | 'claude-code';
 export type UserRole = 'user' | 'developer' | 'admin';
 export type AppMode = 'chat' | 'developer';
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -26,8 +27,11 @@ export interface ModelOption {
   supportedReasoningEfforts: ReasoningEffort[];
 }
 
+export type ExecutorModelCatalog = Partial<Record<AgentExecutor, ModelOption[]>>;
+
 export interface ProductDefaults {
-  executor: 'codex';
+  executor: AgentExecutor;
+  availableExecutors: AgentExecutor[];
   transcriptMode: 'app-server';
   defaultSecurityProfile: SecurityProfile;
   networkEnabledByDefault: boolean;
@@ -103,6 +107,7 @@ export interface ConversationRecord extends BaseTurnRecord {
 
 export interface SessionRecord extends BaseTurnRecord {
   sessionType: 'code';
+  executor: AgentExecutor;
   workspaceId: string;
   securityProfile: SecurityProfile;
   approvalMode: ApprovalMode;
@@ -129,7 +134,7 @@ export interface PendingApproval {
   title: string;
   risk: string;
   scopeOptions: ApprovalScope[];
-  source: 'codex';
+  source: AgentExecutor;
   payload: unknown;
   createdAt: string;
 }
@@ -363,6 +368,7 @@ export interface BootstrapPayload {
   workspaceRoot: string;
   workspaces: WorkspaceSummary[];
   availableModels: ModelOption[];
+  availableModelsByExecutor: ExecutorModelCatalog;
   sessions: SessionSummary[];
   conversations: ConversationSummary[];
   approvals: PendingApproval[];
@@ -399,6 +405,7 @@ export interface CreateSessionRequest {
   cwd?: string;
   workspaceName?: string;
   title?: string;
+  executor?: AgentExecutor;
   securityProfile?: SecurityProfile;
   approvalMode?: ApprovalMode;
   model?: string | null;
@@ -437,6 +444,7 @@ export interface UpdateWorkspaceRequest {
 }
 
 export interface UpdateSessionPreferencesRequest {
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   approvalMode?: ApprovalMode;

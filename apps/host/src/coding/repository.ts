@@ -26,6 +26,7 @@ interface CodingSessionDocument {
   _id: string;
   ownerUserId: string;
   ownerUsername: string;
+  executor: SessionRecord['executor'];
   workspaceId: string;
   threadId: string;
   activeTurnId: string | null;
@@ -66,6 +67,7 @@ function asSessionRecord(document: CodingSessionDocument): SessionRecord {
     ownerUserId: document.ownerUserId,
     ownerUsername: document.ownerUsername,
     sessionType: 'code',
+    executor: document.executor ?? 'codex',
     workspaceId: document.workspaceId,
     threadId: document.threadId,
     activeTurnId: document.activeTurnId,
@@ -240,6 +242,7 @@ export class CodingRepository {
         $set: {
           ownerUserId: record.ownerUserId,
           ownerUsername: record.ownerUsername,
+          executor: record.executor,
           workspaceId: record.workspaceId,
           threadId: record.threadId,
           activeTurnId: record.activeTurnId,

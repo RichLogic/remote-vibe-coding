@@ -258,7 +258,16 @@ export class CodexAppServerClient extends EventEmitter {
     });
   }
 
-  async startTurn(threadId: string, input: CodexThreadInput[], options?: { model?: string | null; effort?: ReasoningEffort | null }) {
+  async startTurn(
+    threadId: string,
+    input: CodexThreadInput[],
+    options?: {
+      model?: string | null;
+      effort?: ReasoningEffort | null;
+      securityProfile?: SecurityProfile;
+      approvalMode?: string;
+    },
+  ) {
     return this.request<{
       turn: {
         id: string;

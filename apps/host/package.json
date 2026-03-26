@@ -7,7 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "MONGODB_URL=\"${MONGODB_URL:-mongodb://127.0.0.1:27017/?directConnection=true}\" node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/app/*.test.js"
+    "test": "npm run build && node --test dist/*.test.js dist/app/*.test.js dist/routes/*.test.js dist/coding/*.test.js"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
