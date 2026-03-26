@@ -83,6 +83,34 @@ export function buildPersistedCodingHistory(turns: Array<Pick<PersistedCodingTur
   };
 }
 
+export function summarizePersistedCodingHistory(turns: Array<Pick<PersistedCodingTurnRecord, 'transcriptEntries' | 'commands' | 'changes'>>) {
+  let transcriptTotal = 0;
+  const commands: SessionCommandEvent[] = [];
+  const changes: SessionFileChangeEvent[] = [];
+
+  for (const turn of turns) {
+    transcriptTotal += turn.transcriptEntries.length;
+    for (const command of turn.commands) {
+      commands.push({
+        ...command,
+        index: commands.length,
+      });
+    }
+    for (const change of turn.changes) {
+      changes.push({
+        ...change,
+        index: changes.length,
+      });
+    }
+  }
+
+  return {
+    transcriptTotal,
+    commands,
+    changes,
+  };
+}
+
 export class CodingHistoryRepository {
   private readonly turns: Collection<CodingTurnDocument>;
 

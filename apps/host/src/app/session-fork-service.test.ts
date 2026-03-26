@@ -52,6 +52,7 @@ function buildChatConversation(): ConversationRecord {
     ownerUserId: 'owner-1',
     ownerUsername: 'owner',
     sessionType: 'chat',
+    executor: 'codex',
     threadId: 'thread-chat-source',
     activeTurnId: null,
     title: 'Planning',

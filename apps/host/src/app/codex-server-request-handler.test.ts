@@ -13,6 +13,7 @@ function buildChatSession(): ConversationRecord {
     ownerUserId: 'owner-1',
     ownerUsername: 'owner',
     sessionType: 'chat',
+    executor: 'codex',
     threadId: 'thread-chat',
     activeTurnId: null,
     title: 'Chat',

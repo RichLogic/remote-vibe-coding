@@ -10,7 +10,7 @@ interface CreateSessionForkServiceOptions {
   ensureChatWorkspace: (ownerUsername: string, ownerUserId: string) => Promise<{ path: string }>;
   persistForkedSession: (session: SessionRecord) => Promise<unknown>;
   persistForkedConversation: (conversation: ConversationRecord) => Promise<unknown>;
-  currentDefaultModel: () => string;
+  currentDefaultModel: (executor?: AgentExecutor) => string;
   currentDefaultEffort: (model: string | null | undefined) => SessionRecord['reasoningEffort'];
   nextForkedSessionTitle: (title: string) => string;
   randomId?: () => string;
@@ -22,7 +22,7 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
   const now = options.now ?? (() => new Date().toISOString());
 
   async function createForkedSession(currentUser: UserRecord, sourceSession: SessionRecord) {
-    const nextModel = sourceSession.model ?? options.currentDefaultModel();
+    const nextModel = sourceSession.model ?? options.currentDefaultModel(sourceSession.executor);
     const nextReasoningEffort = sourceSession.reasoningEffort ?? options.currentDefaultEffort(nextModel);
     const nextTitle = options.nextForkedSessionTitle(sourceSession.title);
     const threadResponse = await options.runtimeForExecutor(sourceSession.executor).startThread({
@@ -62,11 +62,11 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
   }
 
   async function createForkedConversation(currentUser: UserRecord, sourceConversation: ConversationRecord) {
-    const nextModel = sourceConversation.model ?? options.currentDefaultModel();
+    const nextModel = sourceConversation.model ?? options.currentDefaultModel(sourceConversation.executor);
     const nextReasoningEffort = sourceConversation.reasoningEffort ?? options.currentDefaultEffort(nextModel);
     const nextTitle = options.nextForkedSessionTitle(sourceConversation.title);
     const workspaceInfo = await options.ensureChatWorkspace(currentUser.username, currentUser.id);
-    const threadResponse = await options.chatRuntime.startThread({
+    const threadResponse = await options.runtimeForExecutor(sourceConversation.executor).startThread({
       cwd: workspaceInfo.path,
       securityProfile: 'repo-write',
       model: nextModel,
@@ -77,6 +77,7 @@ export function createSessionForkService(options: CreateSessionForkServiceOption
       ownerUserId: currentUser.id,
       ownerUsername: currentUser.username,
       sessionType: 'chat',
+      executor: sourceConversation.executor,
       threadId: threadResponse.thread.id,
       activeTurnId: null,
       title: nextTitle,

@@ -89,6 +89,7 @@ export function toApiChatConversation(
     id: record.id,
     ownerUserId: record.ownerUserId,
     ownerUsername: record.ownerUsername,
+    executor: record.executor,
     threadId: record.threadId,
     activeTurnId: record.activeTurnId,
     title: record.title,

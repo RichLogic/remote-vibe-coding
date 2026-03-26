@@ -89,7 +89,7 @@ export function createTurnStartService(options: CreateTurnStartServiceOptions) {
       }
 
       const runtime = isConversation(targetSession)
-        ? options.chatRuntime
+        ? options.runtimeForExecutor(targetSession.executor)
         : options.runtimeForExecutor(targetSession.executor);
       const turn = await runtime.startTurn(targetSession.threadId, input, {
         model: targetSession.model,

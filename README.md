@@ -123,6 +123,28 @@ npm run start:host
 
 Then open `http://127.0.0.1:8787`.
 
+## Startup Scripts
+
+The repo now includes two helper entry points for day-to-day start and restart flows:
+
+- `bash scripts/rvc-dev.sh start all`
+  Starts local-only development services on `127.0.0.1:8788` (host) and `127.0.0.1:5174` (web). The first `configure` or `start` stores an executor choice of `codex`, `claude-code`, or `both`.
+- `bash scripts/rvc-prod-launchagent.sh install all`
+  Builds the production bundles, writes LaunchAgents `com.remote-vibe-coding.host` and `com.remote-vibe-coding.web`, and boots them on `127.0.0.1:8787` and `127.0.0.1:5173`.
+
+Useful follow-up commands:
+
+- `bash scripts/rvc-dev.sh status all`
+- `bash scripts/rvc-dev.sh restart all`
+- `bash scripts/rvc-prod-launchagent.sh status all`
+- `bash scripts/rvc-prod-launchagent.sh restart all`
+
+The restart logic is intentionally conservative:
+
+- development restarts only stop a process when there is a matching managed pidfile and the command signature still matches
+- production restarts use LaunchAgent labels instead of killing by port
+- if a port is occupied by an unmanaged process, the scripts stop and report the conflict instead of killing it
+
 ## Authentication
 
 The browser surface is owner-gated by default.
@@ -189,6 +211,8 @@ Current attachment behavior:
 | `MONGODB_URL` | MongoDB connection string | `mongodb://127.0.0.1:27017/?directConnection=true` |
 | `MONGODB_DB_NAME` | MongoDB database name | `remote_vibe_coding` |
 | `CODEX_BIN` | Path to the Codex executable | platform default |
+| `CLAUDE_BIN` | Path to the Claude Code executable | platform default |
+| `RVC_EXECUTOR_INIT` | Runtime init mode: `codex`, `claude-code`, `both`, or `auto` | `auto` |
 
 ### Auth
 

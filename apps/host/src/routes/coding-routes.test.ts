@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { URLSearchParams } from 'node:url';
 
 import Fastify from 'fastify';
 
@@ -407,5 +408,39 @@ test('coding routes preview workspace files and reject traversal outside the wor
   assert.equal(traversalResponse.statusCode, 400);
   assert.deepEqual(traversalResponse.json(), {
     error: 'Path must stay inside the workspace.',
+  });
+});
+
+test('coding routes preview workspace files from absolute in-workspace paths', async (t) => {
+  const workspaceRoot = await createWorkspaceFixture();
+  t.after(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const harness = createHarness({
+    getOwnedCodingWorkspaceOrReply: async () => buildWorkspace({ path: workspaceRoot }),
+  });
+  registerCodingRoutes(harness.app, harness.deps);
+  t.after(() => harness.app.close());
+
+  const query = new URLSearchParams({
+    path: join(workspaceRoot, 'src', 'index.ts'),
+  }).toString();
+  const previewResponse = await harness.app.inject({
+    method: 'GET',
+    url: `/api/coding/workspaces/workspace-1/file?${query}`,
+  });
+
+  assert.equal(previewResponse.statusCode, 200);
+  assert.deepEqual(previewResponse.json(), {
+    workspaceId: 'workspace-1',
+    path: 'src/index.ts',
+    name: 'index.ts',
+    mimeType: 'text/plain; charset=utf-8',
+    sizeBytes: 26,
+    previewable: true,
+    truncated: false,
+    content: 'export const answer = 42;\n',
+    downloadUrl: '/api/coding/workspaces/workspace-1/file/content?path=src%2Findex.ts&download=1',
   });
 });

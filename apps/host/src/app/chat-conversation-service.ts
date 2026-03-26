@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { DEFAULT_APPROVAL_MODE } from '../approval-mode.js';
 import type {
+  AgentExecutor,
   ConversationRecord,
   ModelOption,
   ReasoningEffort,
@@ -28,6 +29,7 @@ export class ChatConversationServiceError extends Error {
 
 interface CreateChatConversationInput {
   title?: string;
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   rolePresetId?: string | null;
@@ -38,13 +40,15 @@ interface UpdateChatConversationInput {
 }
 
 interface UpdateChatConversationPreferencesInput {
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   rolePresetId?: string | null;
 }
 
 interface CreateChatConversationServiceOptions {
-  runtime: RuntimeThreadStarter;
+  isExecutorSupported: (executor: AgentExecutor) => boolean;
+  runtimeForExecutor: (executor: AgentExecutor) => RuntimeThreadStarter;
   ensureChatWorkspace: (ownerUsername: string, ownerUserId: string) => Promise<{ path: string }>;
   persistConversation: (conversation: ConversationRecord) => Promise<unknown>;
   ensureConversationHistory: (conversation: ConversationRecord) => Promise<unknown>;
@@ -52,12 +56,14 @@ interface CreateChatConversationServiceOptions {
     conversation: ConversationRecord,
     patch: Partial<ConversationRecord>,
   ) => Promise<ConversationRecord | null>;
-  currentDefaultModel: () => string;
-  currentDefaultEffort: (model: string | null | undefined) => ReasoningEffort;
+  currentDefaultExecutor: () => AgentExecutor;
+  currentDefaultModel: (executor?: AgentExecutor) => string;
+  currentDefaultEffort: (model: string | null | undefined, executor?: AgentExecutor) => ReasoningEffort;
   defaultChatTitle: () => string;
   trimOptional: (value: unknown) => string | null;
+  normalizeExecutor: (value: unknown) => AgentExecutor;
   normalizeReasoningEffort: (value: unknown) => ReasoningEffort | null;
-  findModelOption: (model: string | null | undefined) => ModelOption | null;
+  findModelOption: (model: string | null | undefined, executor?: AgentExecutor) => ModelOption | null;
   preferredReasoningEffortForModel: (modelOption: ModelOption) => ReasoningEffort;
   loadChatRolePresetConfig: () => Promise<ChatRolePresetConfig>;
   normalizeChatRolePresetId: (
@@ -74,8 +80,19 @@ export function createChatConversationService(options: CreateChatConversationSer
 
   async function createConversation(currentUser: UserRecord, input: CreateChatConversationInput) {
     const requestedTitle = options.trimOptional(input.title);
-    const model = options.trimOptional(input.model) ?? options.currentDefaultModel();
-    const reasoningEffort = options.normalizeReasoningEffort(input.reasoningEffort) ?? options.currentDefaultEffort(model);
+    const executor = options.normalizeExecutor(input.executor ?? options.currentDefaultExecutor());
+    if (!options.isExecutorSupported(executor)) {
+      throw new ChatConversationServiceError(`Executor "${executor}" is not available.`, 400);
+    }
+    const model = options.trimOptional(input.model) ?? options.currentDefaultModel(executor);
+    const modelOption = options.findModelOption(model, executor);
+    if (!modelOption) {
+      throw new ChatConversationServiceError('Unknown model.', 400);
+    }
+    const requestedEffort = options.normalizeReasoningEffort(input.reasoningEffort);
+    const reasoningEffort = requestedEffort && modelOption.supportedReasoningEfforts.includes(requestedEffort)
+      ? requestedEffort
+      : options.preferredReasoningEffortForModel(modelOption);
     const rolePresetConfig = await options.loadChatRolePresetConfig();
     const hasRolePresetId = Object.prototype.hasOwnProperty.call(input, 'rolePresetId');
     const requestedRolePresetId = hasRolePresetId ? options.trimOptional(input.rolePresetId) : null;
@@ -95,10 +112,10 @@ export function createChatConversationService(options: CreateChatConversationSer
       throw new ChatConversationServiceError(message, 400);
     }
 
-    const threadResponse = await options.runtime.startThread({
+    const threadResponse = await options.runtimeForExecutor(executor).startThread({
       cwd: workspaceInfo.path,
       securityProfile: 'repo-write',
-      model,
+      model: modelOption.model,
     });
 
     const conversation: ConversationRecord = {
@@ -106,6 +123,7 @@ export function createChatConversationService(options: CreateChatConversationSer
       ownerUserId: currentUser.id,
       ownerUsername: currentUser.username,
       sessionType: 'chat',
+      executor,
       threadId: threadResponse.thread.id,
       activeTurnId: null,
       title: requestedTitle || options.defaultChatTitle(),
@@ -121,7 +139,7 @@ export function createChatConversationService(options: CreateChatConversationSer
       retryable: false,
       lastIssue: null,
       hasTranscript: false,
-      model,
+      model: modelOption.model,
       reasoningEffort,
       rolePresetId,
       createdAt: now(),
@@ -153,8 +171,21 @@ export function createChatConversationService(options: CreateChatConversationSer
     conversation: ConversationRecord,
     input: UpdateChatConversationPreferencesInput,
   ) {
-    const requestedModel = options.trimOptional(input.model) ?? conversation.model ?? options.currentDefaultModel();
-    const modelOption = options.findModelOption(requestedModel);
+    const requestedExecutor = input.executor === undefined
+      ? conversation.executor
+      : options.normalizeExecutor(input.executor);
+    if (!options.isExecutorSupported(requestedExecutor)) {
+      throw new ChatConversationServiceError('Executor not available.', 400);
+    }
+    if (requestedExecutor !== conversation.executor && conversation.activeTurnId) {
+      throw new ChatConversationServiceError('Stop the active turn before switching executor.', 409);
+    }
+
+    const requestedModel = options.trimOptional(input.model)
+      ?? (requestedExecutor === conversation.executor
+        ? (conversation.model ?? options.currentDefaultModel(requestedExecutor))
+        : options.currentDefaultModel(requestedExecutor));
+    const modelOption = options.findModelOption(requestedModel, requestedExecutor);
     if (!modelOption) {
       throw new ChatConversationServiceError('Unknown model.', 400);
     }
@@ -175,11 +206,13 @@ export function createChatConversationService(options: CreateChatConversationSer
     }
 
     return (await options.updateConversation(conversation, {
+      executor: requestedExecutor,
       model: modelOption.model,
       reasoningEffort,
       rolePresetId,
     })) ?? {
       ...conversation,
+      executor: requestedExecutor,
       model: modelOption.model,
       reasoningEffort,
       rolePresetId,

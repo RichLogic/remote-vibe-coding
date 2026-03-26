@@ -24,11 +24,13 @@ function buildUser(): UserRecord {
 }
 
 function buildConversation(overrides?: Partial<ConversationRecord>): ConversationRecord {
+  const { executor = 'codex', ...rest } = overrides ?? {};
   return {
     id: 'conversation-1',
     ownerUserId: 'user-1',
     ownerUsername: 'owner',
     sessionType: 'chat',
+    executor,
     threadId: 'thread-1',
     activeTurnId: null,
     title: 'New chat',
@@ -49,7 +51,7 @@ function buildConversation(overrides?: Partial<ConversationRecord>): Conversatio
     rolePresetId: 'preset-default',
     createdAt: '2026-02-01T00:00:00.000Z',
     updatedAt: '2026-02-01T00:00:00.000Z',
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -74,12 +76,13 @@ function createHarness() {
   const models = [buildModel('gpt-5-default'), buildModel('gpt-5-codex')];
 
   const options: ChatConversationServiceOptions = {
-    runtime: {
+    isExecutorSupported: (executor) => executor === 'codex' || executor === 'claude-code',
+    runtimeForExecutor: () => ({
       async startThread(options: { cwd: string; securityProfile: string; model?: string | null }) {
         threadStarts.push(options);
         return { thread: { id: 'thread-new' } };
       },
-    },
+    }),
     async ensureChatWorkspace() {
       return { path: '/tmp/chat' };
     },
@@ -96,6 +99,7 @@ function createHarness() {
         ...patch,
       };
     },
+    currentDefaultExecutor: () => 'codex',
     currentDefaultModel: () => 'gpt-5-default',
     currentDefaultEffort: () => 'medium',
     defaultChatTitle: () => 'New chat',
@@ -103,6 +107,7 @@ function createHarness() {
       const next = typeof value === 'string' ? value.trim() : '';
       return next || null;
     },
+    normalizeExecutor: (value: unknown) => value === 'claude-code' ? 'claude-code' : 'codex',
     normalizeReasoningEffort: (value: unknown) => (
       value === 'low' || value === 'medium' || value === 'high'
         ? value
@@ -145,8 +150,9 @@ test('chat conversation service creates a conversation with defaults', async () 
   assert.equal(result.id, 'conversation-new');
   assert.equal(result.title, 'New chat');
   assert.equal(result.autoTitle, true);
+  assert.equal(result.executor, 'codex');
   assert.equal(result.model, 'gpt-5-default');
-  assert.equal(result.reasoningEffort, 'medium');
+  assert.equal(result.reasoningEffort, 'high');
   assert.equal(result.rolePresetId, 'preset-default');
   assert.deepEqual(harness.threadStarts, [{
     cwd: '/tmp/chat',

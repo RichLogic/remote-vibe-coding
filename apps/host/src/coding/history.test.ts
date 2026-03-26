@@ -6,7 +6,7 @@ import type {
   SessionFileChangeEvent,
   SessionTranscriptEntry,
 } from '../types.js';
-import { buildPersistedCodingHistory } from './history.js';
+import { buildPersistedCodingHistory, summarizePersistedCodingHistory } from './history.js';
 
 function buildTranscriptEntry(overrides: Partial<SessionTranscriptEntry> = {}): SessionTranscriptEntry {
   const entry: SessionTranscriptEntry = {
@@ -74,6 +74,40 @@ test('buildPersistedCodingHistory flattens turn projections and reindexes items'
       { id: 'entry-3', index: 2 },
     ],
   );
+  assert.deepEqual(
+    result.commands.map((entry) => ({ id: entry.id, index: entry.index })),
+    [
+      { id: 'command-1', index: 0 },
+      { id: 'command-2', index: 1 },
+    ],
+  );
+  assert.deepEqual(
+    result.changes.map((entry) => ({ id: entry.id, index: entry.index })),
+    [
+      { id: 'change-1', index: 0 },
+      { id: 'change-2', index: 1 },
+    ],
+  );
+});
+
+test('summarizePersistedCodingHistory keeps transcript count without flattening entries', () => {
+  const result = summarizePersistedCodingHistory([
+    {
+      transcriptEntries: [
+        buildTranscriptEntry({ id: 'entry-1', index: 0 }),
+        buildTranscriptEntry({ id: 'entry-2', index: 1 }),
+      ],
+      commands: [buildCommand({ id: 'command-1', index: 3 })],
+      changes: [buildChange({ id: 'change-1', index: 4 })],
+    },
+    {
+      transcriptEntries: [buildTranscriptEntry({ id: 'entry-3', index: 0 })],
+      commands: [buildCommand({ id: 'command-2', index: 0 })],
+      changes: [buildChange({ id: 'change-2', index: 0 })],
+    },
+  ]);
+
+  assert.equal(result.transcriptTotal, 3);
   assert.deepEqual(
     result.commands.map((entry) => ({ id: entry.id, index: entry.index })),
     [

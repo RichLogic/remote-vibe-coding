@@ -7,11 +7,13 @@ import { ChatTurnServiceError, createChatTurnService } from './chat-turn-service
 type ChatTurnServiceOptions = Parameters<typeof createChatTurnService>[0];
 
 function buildConversation(overrides?: Partial<ConversationRecord>): ConversationRecord {
+  const { executor = 'codex', ...rest } = overrides ?? {};
   return {
     id: 'conversation-1',
     ownerUserId: 'user-1',
     ownerUsername: 'owner',
     sessionType: 'chat',
+    executor,
     threadId: 'thread-1',
     activeTurnId: 'turn-1',
     title: 'Chat',
@@ -32,7 +34,7 @@ function buildConversation(overrides?: Partial<ConversationRecord>): Conversatio
     rolePresetId: null,
     createdAt: '2026-02-01T00:00:00.000Z',
     updatedAt: '2026-02-01T00:00:00.000Z',
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -84,10 +86,8 @@ function createHarness() {
         liveEvents.push(event);
       },
     },
-    runtime: {
-      async interruptTurn(threadId: string, turnId: string) {
-        interrupts.push({ threadId, turnId });
-      },
+    async interruptTurn(_conversation, threadId: string, turnId: string) {
+      interrupts.push({ threadId, turnId });
     },
     async startTurnWithAutoRestart(conversation, prompt, nextAttachments) {
       turnStarts.push({
@@ -248,10 +248,8 @@ test('chat turn service marks stale sessions when the runtime thread is gone', a
   const harness = createHarness();
   const service = createChatTurnService({
     ...harness.options,
-    runtime: {
-      async interruptTurn() {
-        throw new Error('thread not loaded');
-      },
+    async interruptTurn() {
+      throw new Error('thread not loaded');
     },
   });
 
@@ -271,10 +269,8 @@ test('chat turn service patches error state when interrupting fails', async () =
   const harness = createHarness();
   const service = createChatTurnService({
     ...harness.options,
-    runtime: {
-      async interruptTurn() {
-        throw new Error('interrupt failed');
-      },
+    async interruptTurn() {
+      throw new Error('interrupt failed');
     },
   });
 

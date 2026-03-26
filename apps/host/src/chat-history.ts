@@ -7,6 +7,7 @@ import {
 } from 'mongodb';
 
 import { DEFAULT_APPROVAL_MODE } from './approval-mode.js';
+import { DEFAULT_AGENT_EXECUTOR } from './executor.js';
 import type {
   ConversationRecord,
   SessionAttachmentKind,
@@ -74,6 +75,7 @@ interface ChatConversationDocument {
   _id: string;
   ownerUserId: string;
   ownerUsername?: string;
+  executor?: ConversationRecord['executor'];
   currentThreadId: string;
   activeTurnId?: string | null;
   title?: string;
@@ -133,6 +135,7 @@ function asConversationRecord(document: ChatConversationDocument): ConversationR
     ownerUserId: document.ownerUserId,
     ownerUsername: document.ownerUsername ?? document.ownerUserId,
     sessionType: 'chat',
+    executor: document.executor ?? DEFAULT_AGENT_EXECUTOR,
     threadId: document.currentThreadId,
     activeTurnId: document.activeTurnId ?? null,
     title: document.title ?? 'New chat',
@@ -218,6 +221,7 @@ export class ChatHistoryRepository {
         $set: {
           ownerUserId: record.ownerUserId,
           ownerUsername: record.ownerUsername,
+          executor: record.executor,
           currentThreadId: record.threadId,
           activeTurnId: record.activeTurnId,
           title: record.title,
@@ -275,6 +279,7 @@ export class ChatHistoryRepository {
       ...patch,
       id: current.id,
       sessionType: 'chat',
+      executor: patch.executor ?? current.executor,
       securityProfile: 'repo-write',
       approvalMode: DEFAULT_APPROVAL_MODE,
       fullHostEnabled: false,

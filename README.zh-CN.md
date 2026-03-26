@@ -123,6 +123,28 @@ npm run start:host
 
 然后访问 `http://127.0.0.1:8787`。
 
+## 启动脚本
+
+仓库现在自带两套启动入口，分别对应开发和生产：
+
+- `bash scripts/rvc-dev.sh start all`
+  启动纯本地开发环境，host 监听 `127.0.0.1:8788`，web 监听 `127.0.0.1:5174`。第一次执行 `configure` 或 `start` 时，会记录一次 executor 选择：`codex`、`claude-code` 或 `both`。
+- `bash scripts/rvc-prod-launchagent.sh install all`
+  构建生产产物，写入 `com.remote-vibe-coding.host` 和 `com.remote-vibe-coding.web` 两个 LaunchAgent，并启动 `127.0.0.1:8787` 和 `127.0.0.1:5173`。
+
+常用后续命令：
+
+- `bash scripts/rvc-dev.sh status all`
+- `bash scripts/rvc-dev.sh restart all`
+- `bash scripts/rvc-prod-launchagent.sh status all`
+- `bash scripts/rvc-prod-launchagent.sh restart all`
+
+这套重启逻辑刻意做得很保守：
+
+- 开发脚本只会在 pidfile 和命令签名都匹配时停止进程
+- 生产脚本通过 LaunchAgent label 重启，不按端口杀进程
+- 如果端口被未托管的进程占用，脚本只会报冲突，不会直接 kill
+
 ## 认证说明
 
 浏览器入口默认是 owner-gated 的。
@@ -189,6 +211,8 @@ http://127.0.0.1:8787/?token=YOUR_TOKEN
 | `MONGODB_URL` | MongoDB 连接串 | `mongodb://127.0.0.1:27017/?directConnection=true` |
 | `MONGODB_DB_NAME` | MongoDB 数据库名 | `remote_vibe_coding` |
 | `CODEX_BIN` | Codex 可执行文件路径 | 平台默认值 |
+| `CLAUDE_BIN` | Claude Code 可执行文件路径 | 平台默认值 |
+| `RVC_EXECUTOR_INIT` | runtime 初始化模式：`codex`、`claude-code`、`both` 或 `auto` | `auto` |
 
 ### 认证
 

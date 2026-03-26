@@ -100,6 +100,7 @@ export interface BaseTurnRecord {
 
 export interface ConversationRecord extends BaseTurnRecord {
   sessionType: 'chat';
+  executor: AgentExecutor;
   rolePresetId: string | null;
   recoveryState: ChatRecoveryState;
   retryable: boolean;
@@ -414,6 +415,7 @@ export interface CreateSessionRequest {
 
 export interface CreateConversationRequest {
   title?: string;
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
 }

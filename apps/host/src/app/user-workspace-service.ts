@@ -98,9 +98,9 @@ export function createUserWorkspaceService(options: UserWorkspaceServiceOptions)
           path,
           existing,
           id: existing?.id ?? legacy?.id ?? randomId(),
-          name: legacy?.name ?? existing?.name ?? entry.name,
-          visible: legacy?.visible ?? existing?.visible ?? true,
-          sortHint: legacy?.sortOrder ?? existing?.sortOrder ?? Number.MAX_SAFE_INTEGER,
+          name: existing?.name ?? legacy?.name ?? entry.name,
+          visible: existing?.visible ?? legacy?.visible ?? true,
+          sortHint: existing?.sortOrder ?? legacy?.sortOrder ?? Number.MAX_SAFE_INTEGER,
           createdAt: existing?.createdAt ?? legacy?.createdAt ?? now(),
           updatedAt: existing?.updatedAt ?? legacy?.updatedAt ?? now(),
         };

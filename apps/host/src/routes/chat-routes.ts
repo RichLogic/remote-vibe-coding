@@ -106,6 +106,10 @@ interface ChatRoutesDependencies {
     conversation: ConversationRecord,
     body: UpdateChatConversationPreferencesRequest,
   ) => Promise<ConversationRecord>;
+  restartSessionThread: (
+    conversation: ConversationRecord,
+    reason?: string,
+  ) => Promise<ConversationRecord>;
   archiveConversation: (conversation: ConversationRecord) => Promise<ConversationRecord>;
   restoreConversation: (conversation: ConversationRecord) => Promise<ConversationRecord>;
   createForkedConversation: (
@@ -383,7 +387,13 @@ export function registerChatRoutes(app: FastifyInstance, deps: ChatRoutesDepende
     }
 
     try {
-      const nextConversation = await deps.updateConversationPreferences(conversation, body);
+      let nextConversation = await deps.updateConversationPreferences(conversation, body);
+      if (nextConversation.executor !== conversation.executor) {
+        nextConversation = await deps.restartSessionThread(
+          nextConversation,
+          'Executor changed. Started a fresh thread for this session.',
+        );
+      }
       return {
         conversation: deps.toApiChatConversationRecord(nextConversation),
       };

@@ -30,6 +30,7 @@ import { createRuntimeNotificationHandler } from './app/codex-notification-handl
 import { createRuntimeServerRequestHandler } from './app/codex-server-request-handler.js';
 import { createDeveloperSessionService } from './app/developer-session-create-service.js';
 import { initializeHostRuntime } from './app/host-runtime.js';
+import { generateChatConversationSummary } from './app/chat-summary-service.js';
 import { registerRequestAuthHook, type AuthenticatedRequest } from './app/request-auth-hook.js';
 import { bindRuntimeEvents } from './app/runtime-events.js';
 import { createSessionForkService } from './app/session-fork-service.js';
@@ -55,7 +56,8 @@ import { registerCodingRoutes } from './routes/coding-routes.js';
 import { registerCoreRoutes } from './routes/core-routes.js';
 import { registerSessionRoutes } from './routes/session-routes.js';
 import { registerWorkspaceRoutes } from './routes/workspace-routes.js';
-import { buildPersistedCodingHistory } from './coding/history.js';
+import { buildPersistedCodingHistory, summarizePersistedCodingHistory } from './coding/history.js';
+import { normalizeWorkspaceFilePath } from './workspace-paths.js';
 import type { CodingSessionRecord as SessionRecord } from './coding/types.js';
 import type {
   CodingBootstrapPayload,
@@ -1098,9 +1100,10 @@ type AttachmentSummaryBuilder = (record: SessionAttachmentRecord) => SessionAtta
 function itemToTranscriptEntry(
   item: CodexThreadItem,
   index: number,
-  sessionId: string,
+  _sessionId: string,
   attachments: SessionAttachmentRecord[],
   attachmentBuilder: AttachmentSummaryBuilder = attachmentSummary,
+  workspacePath: string | null = null,
 ): SessionTranscriptEntry | null {
   if (item.type === 'userMessage') {
     const content = Array.isArray((item as { content?: unknown }).content)
@@ -1214,7 +1217,9 @@ function itemToTranscriptEntry(
     };
     const changes = Array.isArray(fileChangeItem.changes) ? fileChangeItem.changes : [];
     const fileChanges = changes.map((change) => ({
-      path: typeof change.path === 'string' ? change.path : 'unknown',
+      path: typeof change.path === 'string'
+        ? (workspacePath ? normalizeWorkspaceFilePath(workspacePath, change.path) : change.path)
+        : 'unknown',
       kind: typeof change.kind?.type === 'string' ? change.kind.type : 'update',
       diff: typeof change.diff === 'string' ? change.diff : null,
     }));
@@ -1250,11 +1255,19 @@ function collectTranscriptEntriesFromTurns(
   sessionId: string,
   attachments: SessionAttachmentRecord[],
   attachmentBuilder: AttachmentSummaryBuilder = attachmentSummary,
+  workspacePath: string | null = null,
 ) {
   const entries: SessionTranscriptEntry[] = [];
   for (const turn of turns) {
     for (const item of turn.items) {
-      const entry = itemToTranscriptEntry(item, entries.length, sessionId, attachments, attachmentBuilder);
+      const entry = itemToTranscriptEntry(
+        item,
+        entries.length,
+        sessionId,
+        attachments,
+        attachmentBuilder,
+        workspacePath,
+      );
       if (entry) {
         entries.push(entry);
       }
@@ -1307,7 +1320,7 @@ function collectCommands(thread: CodexThread | null) {
   return collectCommandsFromTurns(thread?.turns ?? []);
 }
 
-function collectFileChangesFromTurns(turns: CodexTurn[]) {
+function collectFileChangesFromTurns(turns: CodexTurn[], workspacePath: string | null = null) {
   const changes: SessionFileChangeEvent[] = [];
   for (const turn of turns) {
     for (const item of turn.items) {
@@ -1326,7 +1339,9 @@ function collectFileChangesFromTurns(turns: CodexTurn[]) {
         changes.push({
           id: `${fileChangeItem.id}-${typeof change.path === 'string' ? change.path : 'change'}-${changes.length}`,
           index: changes.length,
-          path: typeof change.path === 'string' ? change.path : '',
+          path: typeof change.path === 'string'
+            ? (workspacePath ? normalizeWorkspaceFilePath(workspacePath, change.path) : change.path)
+            : '',
           kind: typeof change.kind?.type === 'string' ? change.kind.type : 'update',
           status: typeof fileChangeItem.status === 'string' ? fileChangeItem.status : '',
           diff: typeof change.diff === 'string' ? change.diff : null,
@@ -1498,12 +1513,17 @@ function buildChatRecoveryPreface(summary: string | null, recentMessages: ChatMe
   return sections.join('\n\n');
 }
 
-async function waitForTurnThread(threadId: string, turnId: string, timeoutMs = CHAT_SUMMARY_TIMEOUT_MS) {
+async function waitForTurnThread(
+  threadId: string,
+  turnId: string,
+  executor: AgentExecutor,
+  timeoutMs = CHAT_SUMMARY_TIMEOUT_MS,
+) {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     try {
-      const response = await chatRuntime.readThread(threadId);
+      const response = await runtimeForExecutor(executor).readThread(threadId);
       const thread = isCodexThread(response.thread) ? response.thread : null;
       const turn = thread?.turns.find((entry) => entry.id === turnId) ?? null;
       if (thread && turn && !turnIsActive(turn.status)) {
@@ -1628,9 +1648,15 @@ function projectPersistedCodingTurns(
       turnId: turn.id,
       threadId: thread.id,
       status: turn.status,
-      transcriptEntries: collectTranscriptEntriesFromTurns([turn], session.id, attachments),
+      transcriptEntries: collectTranscriptEntriesFromTurns(
+        [turn],
+        session.id,
+        attachments,
+        attachmentSummary,
+        session.workspace,
+      ),
       commands: collectCommandsFromTurns([turn]),
-      changes: collectFileChangesFromTurns([turn]),
+      changes: collectFileChangesFromTurns([turn], session.workspace),
     }));
 }
 
@@ -1654,13 +1680,46 @@ async function buildCodingHistoryView(
   const activeTurns = thread?.turns.filter((turn) => turnIsActive(turn.status)) ?? [];
   const liveSegments = activeTurns.length > 0
     ? [{
-        transcriptEntries: collectTranscriptEntriesFromTurns(activeTurns, session.id, attachments, attachmentBuilder),
+        transcriptEntries: collectTranscriptEntriesFromTurns(
+          activeTurns,
+          session.id,
+          attachments,
+          attachmentBuilder,
+          session.workspace,
+        ),
         commands: collectCommandsFromTurns(activeTurns),
-        changes: collectFileChangesFromTurns(activeTurns),
+        changes: collectFileChangesFromTurns(activeTurns, session.workspace),
       }]
     : [];
 
   return buildPersistedCodingHistory([
+    ...persistedTurns,
+    ...liveSegments,
+  ]);
+}
+
+async function buildCodingHistorySummary(
+  session: SessionRecord,
+  thread: CodexThread | null,
+) {
+  const persistedTurns = await syncCodingHistoryFromThread(session, thread);
+  const attachments = store.listAttachments(session.id);
+  const activeTurns = thread?.turns.filter((turn) => turnIsActive(turn.status)) ?? [];
+  const liveSegments = activeTurns.length > 0
+    ? [{
+        transcriptEntries: collectTranscriptEntriesFromTurns(
+          activeTurns,
+          session.id,
+          attachments,
+          codingAttachmentSummary,
+          session.workspace,
+        ),
+        commands: collectCommandsFromTurns(activeTurns),
+        changes: collectFileChangesFromTurns(activeTurns, session.workspace),
+      }]
+    : [];
+
+  return summarizePersistedCodingHistory([
     ...persistedTurns,
     ...liveSegments,
   ]);
@@ -1671,29 +1730,20 @@ async function generateConversationSummary(
   existingSummary: string | null,
   messages: ChatMessageRecord[],
 ) {
-  if (messages.length === 0) {
-    return existingSummary?.trim() ?? '';
-  }
+  const summaryExecutor = runtimeRegistry.defaultExecutor();
+  const summaryModel = currentDefaultModel(summaryExecutor);
+  const summaryEffort = currentDefaultEffort(summaryModel, summaryExecutor);
 
-  const threadResponse = await chatRuntime.startThread({
-    cwd: conversation.workspace,
-    securityProfile: 'read-only',
-    model: conversation.model,
+  return generateChatConversationSummary(conversation, existingSummary, messages, {
+    summaryRuntime: chatRuntime,
+    summaryExecutor,
+    summaryModel,
+    summaryEffort,
+    buildSummaryPrompt: buildChatSummaryPrompt,
+    textThreadInput,
+    waitForTurnThread,
+    assistantTextFromTurn,
   });
-  const turnResponse = await chatRuntime.startTurn(
-    threadResponse.thread.id,
-    [textThreadInput(buildChatSummaryPrompt(existingSummary, messages))],
-    {
-      model: conversation.model,
-      effort: conversation.reasoningEffort,
-    },
-  );
-  const thread = await waitForTurnThread(threadResponse.thread.id, turnResponse.turn.id);
-  const summary = assistantTextFromTurn(thread, turnResponse.turn.id);
-  if (!summary) {
-    throw new Error(`Summary generation returned no assistant text for conversation ${conversation.id}`);
-  }
-  return summary.trim();
 }
 
 async function prepareConversationRecoveryState(conversation: ConversationRecord) {
@@ -1727,7 +1777,7 @@ async function prepareConversationRecoveryState(conversation: ConversationRecord
       await chatHistory.updateSummary(conversation.id, {
         text: nextSummary,
         summarizedUntilSeq: recentStartSeq - 1,
-        model: conversation.model ?? null,
+        model: currentDefaultModel(runtimeRegistry.defaultExecutor()),
       });
       state = await chatHistory.getConversationOrThrow(conversation.id);
     }
@@ -1795,11 +1845,7 @@ const runtime = await initializeHostRuntime({
 const { auth, store, chatHistory, codingHistory, coding, runtimeRegistry, cloudflare, cloudflareStatusCache, modelCatalog } = runtime;
 const chatRuntime = runtimeRegistry.defaultRuntime();
 const runtimeForExecutor = (executor: AgentExecutor) => runtimeRegistry.require(executor);
-const runtimeForRecord = (record: TurnRecord) => (
-  isDeveloperSession(record)
-    ? runtimeForExecutor(record.executor)
-    : chatRuntime
-);
+const runtimeForRecord = (record: TurnRecord) => runtimeForExecutor(record.executor);
 const userWorkspaceRoot = (username: string, userId: string) => workspaceService.userWorkspaceRoot(username, userId);
 const listUserWorkspaces = (username: string, userId: string) => (
   workspaceService.listUserWorkspaces(username, userId, { store, coding })
@@ -1897,19 +1943,22 @@ const {
   archiveConversation,
   restoreConversation,
 } = createChatConversationService({
-  runtime: chatRuntime,
+  isExecutorSupported: (executor) => runtimeRegistry.get(executor) !== null,
+  runtimeForExecutor,
   ensureChatWorkspace: (ownerUsername, ownerUserId) => (
     ensureUserWorkspace(ownerUsername, ownerUserId, defaultChatWorkspaceName())
   ),
   persistConversation: (conversation) => store.upsertConversation(conversation),
   ensureConversationHistory: (conversation) => chatHistory.ensureConversation(conversation),
   updateConversation: (conversation, patch) => updateRecord(conversation, patch) as Promise<ConversationRecord | null>,
+  currentDefaultExecutor: () => runtimeRegistry.defaultExecutor(),
   currentDefaultModel,
   currentDefaultEffort,
   defaultChatTitle,
   trimOptional,
+  normalizeExecutor: normalizeAgentExecutor,
   normalizeReasoningEffort,
-  findModelOption: (model) => modelCatalog.findByModel(model),
+  findModelOption: (model, executor) => modelCatalog.findByModel(model, executor),
   preferredReasoningEffortForModel,
   loadChatRolePresetConfig: () => chatPromptConfig.loadRolePresetConfig(),
   normalizeChatRolePresetId: (value, config) => chatPromptConfig.normalizeRolePresetId(value, config),
@@ -2026,8 +2075,8 @@ const {
 async function buildCodingSessionDetailResponse(session: SessionRecord) {
   const threadState = await readSessionThread(session);
   let responseSession = threadState.session as SessionRecord;
-  const history = await buildCodingHistoryView(responseSession, threadState.thread);
-  const transcriptTotal = history.transcriptEntries.length;
+  const history = await buildCodingHistorySummary(responseSession, threadState.thread);
+  const transcriptTotal = history.transcriptTotal;
   const hasTranscript = transcriptTotal > 0;
   if (threadState.session.hasTranscript !== hasTranscript) {
     responseSession = (await coding.updateSession(threadState.session.id, {
@@ -2068,6 +2117,7 @@ async function buildLegacySessionDetailResponse(session: TurnRecord) {
   const threadState = await readSessionThread(session);
   let responseSession = threadState.session;
   let transcriptTotal = 0;
+  let codingHistorySummary: Awaited<ReturnType<typeof buildCodingHistorySummary>> | null = null;
 
   if (isConversation(threadState.session)) {
     await syncConversationHistoryFromThread(threadState.session, threadState.thread);
@@ -2082,8 +2132,8 @@ async function buildLegacySessionDetailResponse(session: TurnRecord) {
       };
     }
   } else {
-    const history = await buildCodingHistoryView(threadState.session as SessionRecord, threadState.thread);
-    transcriptTotal = history.transcriptEntries.length;
+    codingHistorySummary = await buildCodingHistorySummary(threadState.session as SessionRecord, threadState.thread);
+    transcriptTotal = codingHistorySummary.transcriptTotal;
     const hasTranscript = transcriptTotal > 0;
     if (threadState.session.hasTranscript !== hasTranscript) {
       responseSession = (await coding.updateSession(threadState.session.id, {
@@ -2096,7 +2146,7 @@ async function buildLegacySessionDetailResponse(session: TurnRecord) {
   }
 
   const codingHistoryView = isDeveloperSession(responseSession)
-    ? await buildCodingHistoryView(responseSession, threadState.thread)
+    ? (codingHistorySummary ?? await buildCodingHistorySummary(responseSession, threadState.thread))
     : { commands: [] as SessionCommandEvent[], changes: [] as SessionFileChangeEvent[] };
   return {
     session: responseSession,
@@ -2373,7 +2423,7 @@ async function maybeAutoTitleChatSession(session: TurnRecord, threadOverride: Co
     const rolePresetConfig = await chatPromptConfig.loadRolePresetConfig();
     let nextThread = threadOverride;
     if (!nextThread) {
-      const response = await chatRuntime.readThread(latestSession.threadId);
+      const response = await runtimeForExecutor(latestSession.executor).readThread(latestSession.threadId);
       nextThread = isCodexThread(response.thread) ? response.thread : null;
     }
     const nextTitle = deriveChatTitleFromThread(nextThread, latestSession.rolePresetId, rolePresetConfig);
@@ -2515,10 +2565,8 @@ const startTurnWithAutoRestart = createTurnStartService({
 });
 const { createMessage: createChatMessage, stopTurn: stopChatTurn } = createChatTurnService({
   store,
-  runtime: {
-    interruptTurn: async (threadId, turnId) => {
-      await chatRuntime.interruptTurn(threadId, turnId);
-    },
+  interruptTurn: async (conversation, threadId, turnId) => {
+    await runtimeForExecutor(conversation.executor).interruptTurn(threadId, turnId);
   },
   startTurnWithAutoRestart: async (conversation, prompt, attachments) => {
     const result = await startTurnWithAutoRestart(conversation, prompt, attachments);
@@ -2614,6 +2662,9 @@ registerChatRoutes(app, {
   createChatConversation,
   renameConversation,
   updateConversationPreferences,
+  restartSessionThread: async (conversation, reason) => (
+    await restartSessionThread(conversation, reason)
+  ) as ConversationRecord,
   archiveConversation,
   restoreConversation,
   createForkedConversation,

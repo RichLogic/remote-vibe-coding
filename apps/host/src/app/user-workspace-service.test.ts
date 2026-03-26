@@ -185,3 +185,92 @@ test('user workspace service provisions missing workspaces on disk and in coding
     },
   ]);
 });
+
+test('user workspace service preserves existing coding metadata when legacy store is stale', async (t) => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), 'rvc-workspace-sync-existing-'));
+  t.after(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  const service = createUserWorkspaceService({
+    workspaceRoot,
+    normalizeWorkspaceSegment,
+    normalizeWorkspaceFolderName: (value) => typeof value === 'string' ? value.trim() || null : null,
+    ensureWorkspaceExists: async (cwd) => {
+      const info = await stat(cwd);
+      assert.ok(info.isDirectory());
+    },
+    cloneWorkspaceInto: async () => {},
+    now: () => '2026-01-01T00:00:00.000Z',
+    randomId: () => 'generated-id',
+  });
+
+  const root = service.userWorkspaceRoot('Owner', 'user-1');
+  await mkdir(join(root, 'alpha'), { recursive: true });
+  await mkdir(join(root, 'beta'), { recursive: true });
+
+  const codingRecords = [
+    buildWorkspace(root, 'alpha', {
+      id: 'alpha-id',
+      ownerUsername: 'Owner',
+      sortOrder: 1,
+    }),
+    buildWorkspace(root, 'beta', {
+      id: 'beta-id',
+      ownerUsername: 'Owner',
+      name: 'beta-live',
+      visible: true,
+      sortOrder: 0,
+    }),
+  ];
+  const updateCalls: Array<{
+    workspaceId: string;
+    patch: Pick<WorkspaceRecord, 'ownerUsername' | 'name' | 'visible' | 'sortOrder' | 'updatedAt'>;
+  }> = [];
+
+  const result = await service.listUserWorkspaces('Owner', 'user-1', {
+    store: {
+      listWorkspacesForUser: () => [
+        buildWorkspace(root, 'beta', {
+          id: 'beta-legacy',
+          name: 'beta-stale',
+          visible: false,
+          sortOrder: 9,
+        }),
+      ],
+    },
+    coding: {
+      async listWorkspacesForUser() {
+        return [...codingRecords].sort((left, right) => left.sortOrder - right.sortOrder);
+      },
+      async updateWorkspace(workspaceId, patch) {
+        updateCalls.push({ workspaceId, patch });
+        return null;
+      },
+      async createWorkspace() {
+        throw new Error('createWorkspace should not be called in this scenario');
+      },
+      async findWorkspaceByPathForUser() {
+        return null;
+      },
+    },
+  });
+
+  assert.deepEqual(updateCalls, []);
+  assert.deepEqual(result.workspaces, [
+    {
+      id: 'beta-id',
+      name: 'beta-live',
+      path: join(root, 'beta'),
+      visible: true,
+      sortOrder: 0,
+    },
+    {
+      id: 'alpha-id',
+      name: 'alpha',
+      path: join(root, 'alpha'),
+      visible: true,
+      sortOrder: 1,
+    },
+  ]);
+});

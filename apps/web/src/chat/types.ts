@@ -1,4 +1,5 @@
 import type {
+  AgentExecutor,
   AppMode,
   ChatRecoveryState,
   ChatUiStatus,
@@ -17,6 +18,7 @@ export interface ChatConversation {
   id: string;
   ownerUserId: string;
   ownerUsername: string;
+  executor: AgentExecutor;
   threadId: string;
   activeTurnId: string | null;
   title: string;
@@ -95,6 +97,7 @@ export interface ChatTranscriptPageResponse {
 
 export interface CreateChatConversationRequest {
   title?: string;
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   rolePresetId?: string | null;
@@ -105,6 +108,7 @@ export interface UpdateChatConversationRequest {
 }
 
 export interface UpdateChatConversationPreferencesRequest {
+  executor?: AgentExecutor;
   model?: string | null;
   reasoningEffort?: ReasoningEffort | null;
   rolePresetId?: string | null;

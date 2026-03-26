@@ -39,7 +39,7 @@ export function createSessionRestartService(options: CreateSessionRestartService
       : session.workspace;
 
     const runtime = isConversation(session)
-      ? options.chatRuntime
+      ? options.runtimeForExecutor(session.executor)
       : options.runtimeForExecutor(session.executor);
     const threadResponse = await runtime.startThread({
       cwd: workspace,

@@ -28,11 +28,13 @@ function buildUser(): UserRecord {
 }
 
 function buildConversation(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
+  const { executor = 'codex', ...rest } = overrides;
   return {
     id: 'conversation-1',
     ownerUserId: 'user-1',
     ownerUsername: 'owner',
     sessionType: 'chat',
+    executor,
     threadId: 'thread-1',
     activeTurnId: 'turn-1',
     title: 'Chat',
@@ -53,7 +55,7 @@ function buildConversation(overrides: Partial<ConversationRecord> = {}): Convers
     rolePresetId: null,
     recoveryState: 'ready',
     retryable: false,
-    ...overrides,
+    ...rest,
   };
 }
 

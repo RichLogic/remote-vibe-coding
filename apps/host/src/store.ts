@@ -183,6 +183,7 @@ export class SessionStore {
       for (const conversation of parsed.conversations ?? []) {
         this.conversations.set(conversation.id, {
           ...conversation,
+          executor: conversation.executor ?? DEFAULT_AGENT_EXECUTOR,
           approvalMode: normalizeApprovalMode(conversation.approvalMode),
           rolePresetId: conversation.rolePresetId ?? null,
           recoveryState: conversation.recoveryState ?? defaultConversationRecoveryState(conversation.status),
@@ -216,6 +217,7 @@ export class SessionStore {
         const conversation: ConversationRecord = {
           ...record,
           sessionType: 'chat',
+          executor: DEFAULT_AGENT_EXECUTOR,
           securityProfile: 'repo-write',
           approvalMode: DEFAULT_APPROVAL_MODE,
           fullHostEnabled: false,

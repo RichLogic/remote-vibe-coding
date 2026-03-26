@@ -498,7 +498,14 @@ export function registerSessionRoutes(app: FastifyInstance, deps: SessionRoutesD
 
     if (isConversation(session)) {
       try {
-        return { session: await deps.updateConversationPreferences(session, body) };
+        let nextConversation = await deps.updateConversationPreferences(session, body);
+        if (nextConversation.executor !== session.executor) {
+          nextConversation = await deps.restartSessionThread(
+            nextConversation,
+            'Executor changed. Started a fresh thread for this session.',
+          ) as ConversationRecord;
+        }
+        return { session: nextConversation };
       } catch (error) {
         reply.code(errorStatusCode(error) ?? 400);
         return { error: deps.errorMessage(error) };

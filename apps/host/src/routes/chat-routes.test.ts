@@ -24,11 +24,13 @@ function buildUser(overrides: Partial<UserRecord> = {}): UserRecord {
 }
 
 function buildConversation(overrides: Partial<ConversationRecord> = {}): ConversationRecord {
+  const { executor = 'codex', ...rest } = overrides;
   return {
     id: 'conversation-1',
     ownerUserId: 'user-1',
     ownerUsername: 'owner',
     sessionType: 'chat',
+    executor,
     threadId: 'thread-1',
     activeTurnId: 'turn-1',
     title: 'Chat',
@@ -49,7 +51,7 @@ function buildConversation(overrides: Partial<ConversationRecord> = {}): Convers
     rolePresetId: null,
     recoveryState: 'ready',
     retryable: false,
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -115,6 +117,7 @@ function createHarness(overrides: Partial<Parameters<typeof registerChatRoutes>[
     createChatConversation: async () => buildConversation(),
     renameConversation: async () => conversation,
     updateConversationPreferences: async () => conversation,
+    restartSessionThread: async (currentConversation) => currentConversation,
     archiveConversation: async () => ({ ...conversation, archivedAt: '2026-01-02T00:00:00.000Z' }),
     restoreConversation: async () => ({ ...conversation, archivedAt: null }),
     createForkedConversation: async () => ({ ...conversation, id: 'forked-conversation' }),

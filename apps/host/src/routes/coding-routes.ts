@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
-import { basename, extname, join, resolve, sep } from 'node:path';
+import { basename, extname, isAbsolute, join, resolve, sep } from 'node:path';
 
 import { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
 import { CodingWorkspaceServiceError } from '../app/coding-workspace-service.js';
+import { normalizeWorkspaceFilePath } from '../workspace-paths.js';
 import type {
   CodingBootstrapPayload,
   CodingWorkspaceDirectoryResponse,
@@ -239,7 +240,11 @@ function isPathInsideWorkspace(workspaceRootPath: string, targetPath: string) {
 }
 
 async function resolveWorkspaceEntryPath(workspacePath: string, requestedPath: unknown) {
-  const relativePath = normalizeWorkspaceRelativePath(requestedPath);
+  const rawPath = typeof requestedPath === 'string' ? requestedPath.trim().replace(/\\/g, '/') : '';
+  if (rawPath.includes('\0')) {
+    throw new WorkspaceBrowserRouteError('Invalid path.', 400);
+  }
+
   let workspaceRootPath: string;
   try {
     workspaceRootPath = await realpath(workspacePath);
@@ -247,7 +252,12 @@ async function resolveWorkspaceEntryPath(workspacePath: string, requestedPath: u
     throw new WorkspaceBrowserRouteError('Workspace folder not found.', 404);
   }
 
-  const absolutePath = relativePath ? resolve(workspaceRootPath, relativePath) : workspaceRootPath;
+  const relativePath = rawPath && !isAbsolute(rawPath)
+    ? normalizeWorkspaceRelativePath(rawPath)
+    : '';
+  const absolutePath = rawPath
+    ? (isAbsolute(rawPath) ? rawPath : resolve(workspaceRootPath, relativePath))
+    : workspaceRootPath;
   let targetPath: string;
   try {
     targetPath = await realpath(absolutePath);
@@ -261,9 +271,9 @@ async function resolveWorkspaceEntryPath(workspacePath: string, requestedPath: u
 
   return {
     workspaceRootPath,
-    relativePath,
+    relativePath: normalizeWorkspaceFilePath(workspaceRootPath, targetPath),
     targetPath,
-    name: relativePath ? basename(relativePath) : basename(workspaceRootPath) || workspacePath,
+    name: basename(targetPath) || basename(workspaceRootPath) || workspacePath,
   };
 }
 

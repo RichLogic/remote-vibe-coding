@@ -41,6 +41,7 @@ import {
   fetchCodingSessionTranscript,
   forkCodingSession,
   reorderCodingWorkspaces,
+  resolveCodingApproval,
   startCodingTurn,
   stopCodingSession,
   updateCodingSession,
@@ -119,6 +120,18 @@ interface ChatRolePresetFormState {
 interface SelectOption {
   value: string;
   label: string;
+}
+
+interface InlinePreviewResource {
+  path: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  previewable: boolean;
+  truncated: boolean;
+  content: string | null;
+  inlineUrl: string;
+  downloadUrl: string;
 }
 
 interface WorkspaceDropIndicator {
@@ -1119,6 +1132,7 @@ function chatConversationToConversationSummary(
     ownerUserId: conversation.ownerUserId,
     ownerUsername: conversation.ownerUsername,
     sessionType: 'chat',
+    executor: conversation.executor,
     threadId: conversation.threadId,
     activeTurnId: conversation.activeTurnId,
     title: conversation.title,
@@ -1325,20 +1339,20 @@ function filePreviewExtension(path: string) {
   return lastDot >= 0 ? filename.slice(lastDot).toLowerCase() : '';
 }
 
-function isImageFilePreview(file: CodingWorkspaceFileResponse) {
+function isImageFilePreview(file: Pick<InlinePreviewResource, 'mimeType'>) {
   return file.mimeType.startsWith('image/');
 }
 
-function isMarkdownFilePreview(file: CodingWorkspaceFileResponse) {
+function isMarkdownFilePreview(file: Pick<InlinePreviewResource, 'mimeType' | 'path' | 'previewable'>) {
   const extension = filePreviewExtension(file.path);
   return file.previewable && (file.mimeType.includes('markdown') || extension === '.md' || extension === '.mdx');
 }
 
-function isCsvFilePreview(file: CodingWorkspaceFileResponse) {
+function isCsvFilePreview(file: Pick<InlinePreviewResource, 'mimeType' | 'path' | 'previewable'>) {
   return file.previewable && (file.mimeType.includes('csv') || filePreviewExtension(file.path) === '.csv');
 }
 
-function isPdfFilePreview(file: CodingWorkspaceFileResponse) {
+function isPdfFilePreview(file: Pick<InlinePreviewResource, 'mimeType'>) {
   return file.mimeType === 'application/pdf';
 }
 
@@ -1407,13 +1421,109 @@ function parseCsvPreview(content: string) {
   return rows;
 }
 
-function attachmentHref(attachment: SessionAttachmentSummary) {
-  if (attachment.kind === 'image') {
-    return attachment.url;
+function apiHref(path: string) {
+  if (/^https?:\/\//i.test(path)) {
+    return path;
   }
-  return attachment.url.includes('?')
+  const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+  return `${baseUrl}${path}`;
+}
+
+function attachmentInlineHref(attachment: SessionAttachmentSummary) {
+  return apiHref(attachment.url);
+}
+
+function attachmentDownloadHref(attachment: SessionAttachmentSummary) {
+  const url = attachment.url.includes('?')
     ? `${attachment.url}&download=1`
     : `${attachment.url}?download=1`;
+  return apiHref(url);
+}
+
+function isTextLikeMimeType(mimeType: string) {
+  return mimeType.startsWith('text/')
+    || mimeType.includes('json')
+    || mimeType.includes('xml')
+    || mimeType.includes('yaml')
+    || mimeType.includes('javascript')
+    || mimeType.includes('typescript')
+    || mimeType.includes('markdown')
+    || mimeType.includes('toml')
+    || mimeType.includes('csv');
+}
+
+function isLikelyTextAttachment(attachment: SessionAttachmentSummary) {
+  if (attachment.kind === 'image' || attachment.kind === 'pdf') {
+    return false;
+  }
+  const extension = filePreviewExtension(attachment.filename);
+  return isTextLikeMimeType(attachment.mimeType)
+    || [
+      '.c',
+      '.cc',
+      '.cpp',
+      '.css',
+      '.csv',
+      '.go',
+      '.graphql',
+      '.h',
+      '.html',
+      '.java',
+      '.js',
+      '.json',
+      '.jsx',
+      '.md',
+      '.mdx',
+      '.mjs',
+      '.py',
+      '.rb',
+      '.rs',
+      '.sh',
+      '.sql',
+      '.svg',
+      '.toml',
+      '.ts',
+      '.tsx',
+      '.txt',
+      '.vue',
+      '.xml',
+      '.yaml',
+      '.yml',
+    ].includes(extension);
+}
+
+function workspacePreviewResource(preview: CodingWorkspaceFileResponse, workspaceId: string): InlinePreviewResource {
+  const downloadUrl = preview.downloadUrl
+    ? apiHref(preview.downloadUrl)
+    : codingWorkspaceFileContentHref(workspaceId, preview.path, true);
+  return {
+    path: preview.path,
+    name: preview.name,
+    mimeType: preview.mimeType,
+    sizeBytes: preview.sizeBytes,
+    previewable: preview.previewable,
+    truncated: preview.truncated,
+    content: preview.content,
+    inlineUrl: codingWorkspaceFileContentHref(workspaceId, preview.path, false),
+    downloadUrl,
+  };
+}
+
+function attachmentPreviewResource(
+  attachment: SessionAttachmentSummary,
+  options?: { content?: string | null; previewable?: boolean },
+): InlinePreviewResource {
+  return {
+    path: attachment.filename,
+    name: attachment.filename,
+    mimeType: attachment.mimeType,
+    sizeBytes: attachment.sizeBytes,
+    previewable: options?.previewable ?? false,
+    truncated: false,
+    content: options?.content ?? null,
+    inlineUrl: attachmentInlineHref(attachment),
+    downloadUrl: attachmentDownloadHref(attachment),
+  };
 }
 
 function composerDraftKey(mode: AppMode, sessionId: string | null) {
@@ -2251,6 +2361,10 @@ export function App() {
   const [filePreviewCache, setFilePreviewCache] = useState<Record<string, CodingWorkspaceFileResponse>>({});
   const [filePreviewLoadingKey, setFilePreviewLoadingKey] = useState<string | null>(null);
   const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
+  const [attachmentPreviewTarget, setAttachmentPreviewTarget] = useState<SessionAttachmentSummary | null>(null);
+  const [attachmentPreviewResourceState, setAttachmentPreviewResourceState] = useState<InlinePreviewResource | null>(null);
+  const [attachmentPreviewLoading, setAttachmentPreviewLoading] = useState(false);
+  const [attachmentPreviewError, setAttachmentPreviewError] = useState<string | null>(null);
   const [fileBrowserTab, setFileBrowserTab] = useState<DeveloperInspectorTab>('preview');
   const [developerInspectorOpen, setDeveloperInspectorOpen] = useState(false);
   const [developerInspectorWorkspaceId, setDeveloperInspectorWorkspaceId] = useState<string | null>(null);
@@ -2320,6 +2434,7 @@ export function App() {
   const [visibleSessionActivityLabel, setVisibleSessionActivityLabel] = useState<string | null>(null);
   const [departingSessionActivityLabel, setDepartingSessionActivityLabel] = useState<string | null>(null);
   const [isPromptComposing, setIsPromptComposing] = useState(false);
+  const [approvalSelectionIndex, setApprovalSelectionIndex] = useState(0);
   const promptCompositionResetTimerRef = useRef<number | null>(null);
   const activityTickerTimerRef = useRef<number | null>(null);
   const lastPromptCompositionEndAtRef = useRef(0);
@@ -2331,9 +2446,11 @@ export function App() {
   const inlineRenameInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceDraftInputRef = useRef<HTMLInputElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const approvalPromptRef = useRef<HTMLDivElement | null>(null);
   const chatProcessingSnapshotRef = useRef<Record<string, boolean>>({});
   const workspaceExpansionInitializedRef = useRef(false);
   const dragWorkspaceIdRef = useRef<string | null>(null);
+  const attachmentPreviewRequestRef = useRef(0);
   const bootstrapRequestVersionRef = useRef(0);
   const notificationSnapshotsReadyRef = useRef(false);
   const notificationSessionSnapshotsRef = useRef<Record<string, NotificationSessionSnapshot>>({});
@@ -2345,6 +2462,7 @@ export function App() {
   const selectedPromptDraftKey = composerDraftKey(activeMode, selectedSessionId);
   const prompt = selectedPromptDraftKey ? (promptDrafts[selectedPromptDraftKey] ?? '') : '';
   const availableModes = derivedAvailableModes(bootstrap);
+  const chatBootstrapEnabled = Boolean(bootstrap && availableModes.includes('chat'));
   const bootstrapWorkspaces = normalizedWorkspaces(bootstrap);
   const bootstrapSessions = normalizedDeveloperSessions(bootstrap);
   const bootstrapConversations = normalizedChatConversations(chatBootstrap);
@@ -2354,20 +2472,14 @@ export function App() {
   const draftCodingExecutor: AgentExecutor = availableCodingExecutors.includes(draftCodingExecutorState)
     ? draftCodingExecutorState
     : (bootstrap?.defaults.executor ?? availableCodingExecutors[0] ?? 'codex');
-  const currentCodingExecutor: AgentExecutor = detail?.session.sessionType === 'code'
-    ? detail.session.executor
-    : draftCodingExecutor;
-  const currentSessionExecutor: AgentExecutor | null = detail?.session.sessionType === 'code'
-    ? detail.session.executor
-    : null;
-  const availableCodingModels = codingModelsForExecutor(bootstrap, currentCodingExecutor);
-  const availableModels = activeMode === 'chat'
-    ? (chatBootstrap?.availableModels.length
-        ? chatBootstrap.availableModels
-        : (bootstrap?.availableModels.length ? bootstrap.availableModels : []))
-    : availableCodingModels;
+  const currentSessionExecutor: AgentExecutor = detail?.session.executor ?? draftCodingExecutor;
+  const availableModels = codingModelsForExecutor(bootstrap, currentSessionExecutor);
   const availableChatRolePresets = chatBootstrap?.rolePresets ?? [];
   const canManageChatRolePresets = Boolean(bootstrap?.currentUser.isAdmin && derivedAvailableModes(bootstrap).includes('chat'));
+  const selectedChatTranscriptShouldPoll = activeMode === 'chat'
+    && detail?.session.sessionType === 'chat'
+    && detail.session.id === selectedSessionId
+    && isChatSessionProcessing(detail.session);
   const currentSessionModelOption = availableModels.find((entry) => entry.model === sessionModel)
     ?? availableModels.find((entry) => entry.isDefault)
     ?? availableModels[0]
@@ -2652,7 +2764,7 @@ export function App() {
   }, [activeMode, copy.unknownError]);
 
   useEffect(() => {
-    if (!bootstrap || !derivedAvailableModes(bootstrap).includes('chat')) {
+    if (!chatBootstrapEnabled) {
       setChatBootstrap(null);
       return;
     }
@@ -2684,7 +2796,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [bootstrap, activeMode, copy.unknownError]);
+  }, [chatBootstrapEnabled, activeMode, copy.unknownError]);
 
   useEffect(() => {
     if (!bootstrap) {
@@ -2941,10 +3053,6 @@ export function App() {
     }
 
     let cancelled = false;
-    const shouldPollChatTranscript = activeMode === 'chat'
-      && detail?.session.sessionType === 'chat'
-      && detail.session.id === currentSessionId
-      && isChatSessionProcessing(detail.session);
 
     async function loadLatestTranscript() {
       try {
@@ -2984,7 +3092,7 @@ export function App() {
     }
 
     void loadLatestTranscript();
-    if (activeMode === 'chat' && !shouldPollChatTranscript) {
+    if (activeMode === 'chat' && !selectedChatTranscriptShouldPoll) {
       return () => {
         cancelled = true;
       };
@@ -2997,7 +3105,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedSessionId, activeMode, detail, transcriptLoadedOlder, copy.unknownError]);
+  }, [selectedSessionId, activeMode, selectedChatTranscriptShouldPoll, transcriptLoadedOlder, copy.unknownError]);
 
   useEffect(() => {
     const currentConversations = new Map<string, ChatStatusRecord>();
@@ -3165,6 +3273,14 @@ export function App() {
     setDeveloperInspectorSourceToken(null);
     setDeveloperInspectorDismissedToken(null);
   }, [activeMode, developerSubview, selectedSessionId]);
+
+  useEffect(() => {
+    attachmentPreviewRequestRef.current += 1;
+    setAttachmentPreviewTarget(null);
+    setAttachmentPreviewResourceState(null);
+    setAttachmentPreviewLoading(false);
+    setAttachmentPreviewError(null);
+  }, [activeMode, selectedSessionId]);
 
   useEffect(() => {
     const filesViewActive = activeMode === 'developer' && developerSubview === 'files';
@@ -3409,7 +3525,9 @@ export function App() {
   const inlineRenameBusy = Boolean(detail && busy === `rename-${detail.session.id}`);
   const sessionHasActiveTurn = Boolean(detail?.session.activeTurnId);
   const draftAttachments = detail?.draftAttachments ?? [];
-  const pendingApprovals = detail?.approvals ?? [];
+  const pendingApprovals = detail?.session.sessionType === 'code'
+    ? (bootstrap?.approvals.filter((approval) => approval.sessionId === detail.session.id) ?? [])
+    : (detail?.approvals ?? []);
   const activeApproval = pendingApprovals[0] ?? null;
   const developerModeEnabled = availableModes.includes('developer');
   const chatModeEnabled = availableModes.includes('chat');
@@ -3421,6 +3539,13 @@ export function App() {
     : networkState === 'recovering'
       ? copy.networkStatusRecovering
       : copy.networkStatusDown;
+  const approvalOptions: Array<{ decision: 'accept' | 'decline'; scope: 'once' | 'session'; label: string; tone?: 'secondary' }> = [
+    { decision: 'accept', scope: 'once', label: copy.approveOnce },
+    ...(activeApproval?.scopeOptions.includes('session')
+      ? [{ decision: 'accept' as const, scope: 'session' as const, label: copy.approveSession }]
+      : []),
+    { decision: 'decline', scope: 'once', label: copy.decline, tone: 'secondary' },
+  ];
   const networkAlertMessage = networkState === 'recovering'
     ? copy.networkAlertRecovering
     : networkState === 'down'
@@ -3599,6 +3724,14 @@ export function App() {
       activityTickerTimerRef.current = null;
     }, ACTIVITY_TICKER_TRANSITION_MS);
   }, [activityTickerOwnerKey, latestSessionActivityLabel, visibleSessionActivityLabel]);
+
+  useEffect(() => {
+    setApprovalSelectionIndex(0);
+    if (detailSessionState !== 'pending' || !activeApproval) return;
+    window.setTimeout(() => {
+      approvalPromptRef.current?.focus();
+    }, 0);
+  }, [detailSessionState, activeApproval?.id]);
 
   const canSaveSession = Boolean(
     detail
@@ -3914,6 +4047,7 @@ export function App() {
 
     const conversation = await createChatConversation({
       ...(optimisticConversation.autoTitle ? {} : { title: optimisticConversation.title }),
+      executor: optimisticConversation.executor,
       ...(optimisticConversation.model ? { model: optimisticConversation.model } : {}),
       ...(optimisticConversation.reasoningEffort ? { reasoningEffort: optimisticConversation.reasoningEffort } : {}),
       ...(optimisticConversation.rolePresetId ? { rolePresetId: optimisticConversation.rolePresetId } : {}),
@@ -4332,11 +4466,9 @@ export function App() {
       bootstrap.currentUser.username,
       `user-${bootstrap.currentUser.id.slice(0, 8)}`,
     );
-    const defaultModel = chatBootstrap?.availableModels.find((entry) => entry.model === chatBootstrap?.defaults.model)
-      ?? chatBootstrap?.availableModels.find((entry) => entry.isDefault)
-      ?? chatBootstrap?.availableModels[0]
-      ?? bootstrap.availableModels.find((entry) => entry.isDefault)
-      ?? bootstrap.availableModels[0]
+    const executorModels = codingModelsForExecutor(bootstrap, draftCodingExecutor);
+    const defaultModel = executorModels.find((entry) => entry.isDefault)
+      ?? executorModels[0]
       ?? null;
     const optimisticWorkspace = `${bootstrap.workspaceRoot}/${ownerRoot}/chat`;
     const optimisticConversation: ConversationSummary = {
@@ -4344,6 +4476,7 @@ export function App() {
       ownerUserId: bootstrap.currentUser.id,
       ownerUsername: bootstrap.currentUser.username,
       sessionType: 'chat',
+      executor: draftCodingExecutor,
       threadId: optimisticId,
       activeTurnId: null,
       title: 'New chat',
@@ -4358,8 +4491,8 @@ export function App() {
       uiStatus: 'new',
       lastIssue: null,
       hasTranscript: false,
-      model: defaultModel?.model ?? chatBootstrap?.defaults.model ?? null,
-      reasoningEffort: chatBootstrap?.defaults.reasoningEffort ?? preferredReasoningEffort(defaultModel),
+      model: defaultModel?.model ?? null,
+      reasoningEffort: preferredReasoningEffort(defaultModel),
       rolePresetId: chatBootstrap?.defaults.rolePresetId ?? null,
       recoveryState: 'ready',
       retryable: false,
@@ -4454,6 +4587,65 @@ export function App() {
     }
   }
 
+  function closeAttachmentPreview() {
+    attachmentPreviewRequestRef.current += 1;
+    setAttachmentPreviewTarget(null);
+    setAttachmentPreviewResourceState(null);
+    setAttachmentPreviewLoading(false);
+    setAttachmentPreviewError(null);
+  }
+
+  async function handleOpenAttachmentPreview(attachment: SessionAttachmentSummary) {
+    const requestId = attachmentPreviewRequestRef.current + 1;
+    attachmentPreviewRequestRef.current = requestId;
+    setAttachmentPreviewTarget(attachment);
+    setAttachmentPreviewResourceState(null);
+    setAttachmentPreviewError(null);
+    setAttachmentPreviewLoading(true);
+
+    try {
+      if (attachment.kind === 'image' || attachment.kind === 'pdf') {
+        if (attachmentPreviewRequestRef.current !== requestId) {
+          return;
+        }
+        setAttachmentPreviewResourceState(attachmentPreviewResource(attachment));
+        return;
+      }
+
+      if (!isLikelyTextAttachment(attachment)) {
+        if (attachmentPreviewRequestRef.current !== requestId) {
+          return;
+        }
+        setAttachmentPreviewResourceState(attachmentPreviewResource(attachment));
+        return;
+      }
+
+      const response = await fetch(attachmentInlineHref(attachment));
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(errorBody?.error ?? `${attachment.filename} failed with status ${response.status}`);
+      }
+
+      const content = await response.text();
+      if (attachmentPreviewRequestRef.current !== requestId) {
+        return;
+      }
+      setAttachmentPreviewResourceState(attachmentPreviewResource(attachment, {
+        content,
+        previewable: true,
+      }));
+    } catch (previewError) {
+      if (attachmentPreviewRequestRef.current !== requestId) {
+        return;
+      }
+      setAttachmentPreviewError(previewError instanceof Error ? previewError.message : copy.unknownError);
+    } finally {
+      if (attachmentPreviewRequestRef.current === requestId) {
+        setAttachmentPreviewLoading(false);
+      }
+    }
+  }
+
   async function submitPrompt() {
     if (!selectedSessionId || sessionHasActiveTurn || busy === 'stop-session') return;
     const trimmedPrompt = prompt.trim();
@@ -4533,15 +4725,11 @@ export function App() {
     const previousModel = detail.session.model ?? currentSessionModelOption?.model ?? '';
     const previousEffort = detail.session.reasoningEffort ?? preferredReasoningEffort(currentSessionModelOption);
     const previousApprovalMode = detail.session.approvalMode;
-    const targetExecutor = detail.session.sessionType === 'code'
-      ? (nextExecutor ?? detail.session.executor)
-      : undefined;
+    const targetExecutor = nextExecutor ?? detail.session.executor;
     const now = new Date().toISOString();
     const optimisticSession = {
       ...detail.session,
-      ...(detail.session.sessionType === 'code' && targetExecutor
-        ? { executor: targetExecutor }
-        : {}),
+      executor: targetExecutor,
       model: nextModel,
       reasoningEffort: nextEffort,
       approvalMode: detail.session.sessionType === 'code' ? nextApprovalMode : detail.session.approvalMode,
@@ -4557,6 +4745,7 @@ export function App() {
                 conversation.id === optimisticSession.id
                   ? {
                       ...conversation,
+                      executor: targetExecutor,
                       model: nextModel,
                       reasoningEffort: nextEffort,
                       updatedAt: now,
@@ -4569,12 +4758,13 @@ export function App() {
       ));
       setOptimisticConversations((current) => (
         current.map((conversation) => (
-          conversation.id === optimisticSession.id
-            ? {
-                ...conversation,
-                model: nextModel,
-                reasoningEffort: nextEffort,
-                updatedAt: now,
+            conversation.id === optimisticSession.id
+              ? {
+                  ...conversation,
+                  executor: targetExecutor,
+                  model: nextModel,
+                  reasoningEffort: nextEffort,
+                  updatedAt: now,
               }
             : conversation
         ))
@@ -4589,6 +4779,7 @@ export function App() {
       ));
 
       if (isOptimisticSessionId(selectedSessionId)) {
+        setDraftCodingExecutorState(targetExecutor);
         setError(null);
         setBusy(null);
         return;
@@ -4596,9 +4787,11 @@ export function App() {
 
       try {
         const nextConversation = await updateChatConversationPreferences(selectedSessionId, {
+          executor: targetExecutor,
           model: nextModel,
           reasoningEffort: nextEffort,
         });
+        setDraftCodingExecutorState(nextConversation.executor);
         setChatBootstrap((current) => (
           current
             ? {
@@ -4628,6 +4821,7 @@ export function App() {
         setBootstrap(previousBootstrap);
         setChatBootstrap(previousChatBootstrap);
         setDetail(previousDetail);
+        setDraftCodingExecutorState(previousDraftExecutor);
         setSessionModel(previousModel);
         setSessionEffort(previousEffort);
         setSessionApprovalMode(previousApprovalMode);
@@ -4671,9 +4865,7 @@ export function App() {
           }
         : current
     ));
-    if (targetExecutor) {
-      setDraftCodingExecutorState(targetExecutor);
-    }
+    setDraftCodingExecutorState(targetExecutor);
     try {
       const nextPreferences = detail.session.sessionType === 'code'
         ? {
@@ -4724,7 +4916,7 @@ export function App() {
   }
 
   function handleSessionExecutorChange(nextExecutorValue: string) {
-    if (!detail || detail.session.sessionType !== 'code' || sessionHasActiveTurn) return;
+    if (!detail || sessionHasActiveTurn) return;
     const nextExecutor = nextExecutorValue === 'claude-code' ? 'claude-code' : 'codex';
     if (nextExecutor === detail.session.executor) return;
 
@@ -5429,6 +5621,46 @@ export function App() {
     void handleDeleteSession(confirmAction.session.id);
   }
 
+  async function handleApprovalAction(
+    approval: PendingApproval,
+    decision: 'accept' | 'decline',
+    scope: 'once' | 'session',
+  ) {
+    setBusy(approval.id);
+    try {
+      await resolveCodingApproval(approval.sessionId, approval.id, { decision, scope });
+      await refreshCurrentSelection(approval.sessionId);
+      setError(null);
+    } catch (approvalError) {
+      setError(approvalError instanceof Error ? approvalError.message : copy.decline);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function handleApprovalPromptKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (!activeApproval) return;
+
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setApprovalSelectionIndex((current) => (current + 1) % approvalOptions.length);
+      return;
+    }
+
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setApprovalSelectionIndex((current) => (current - 1 + approvalOptions.length) % approvalOptions.length);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const option = approvalOptions[approvalSelectionIndex] ?? approvalOptions[0];
+      if (!option) return;
+      void handleApprovalAction(activeApproval, option.decision, option.scope);
+    }
+  }
+
   function beginCreateChatRolePreset() {
     setEditingChatRolePresetId(null);
     setChatRolePresetForm({
@@ -6026,14 +6258,10 @@ export function App() {
       );
     }
 
-    return renderResolvedFilePreviewContent(selectedFilePreview, selectedFileWorkspace.id);
+    return renderResolvedFilePreviewContent(workspacePreviewResource(selectedFilePreview, selectedFileWorkspace.id));
   }
 
-  function renderResolvedFilePreviewContent(preview: CodingWorkspaceFileResponse, workspaceId: string) {
-    const downloadHref = preview.downloadUrl
-      ? `${(import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '')}${preview.downloadUrl}`
-      : codingWorkspaceFileContentHref(workspaceId, preview.path, true);
-    const inlineHref = codingWorkspaceFileContentHref(workspaceId, preview.path, false);
+  function renderResolvedFilePreviewContent(preview: InlinePreviewResource) {
     const imagePreview = isImageFilePreview(preview);
     const markdownPreview = isMarkdownFilePreview(preview);
     const pdfPreview = isPdfFilePreview(preview);
@@ -6051,7 +6279,7 @@ export function App() {
             <span>{formatAttachmentSize(preview.sizeBytes)}</span>
             <span>{preview.mimeType}</span>
           </div>
-          <a className="button-secondary file-preview-download" href={downloadHref} download={preview.name}>
+          <a className="button-secondary file-preview-download" href={preview.downloadUrl} download={preview.name}>
             {copy.downloadFile}
           </a>
         </div>
@@ -6061,7 +6289,7 @@ export function App() {
         {imagePreview ? (
           <div className="file-preview-rich-surface file-preview-image-wrap">
             <img
-              src={inlineHref}
+              src={preview.inlineUrl}
               alt={preview.name}
               className="file-preview-image"
             />
@@ -6085,7 +6313,7 @@ export function App() {
           <div className="file-preview-rich-surface file-preview-pdf-wrap">
             <iframe
               title={preview.name}
-              src={inlineHref}
+              src={preview.inlineUrl}
               className="file-preview-pdf-frame"
             />
           </div>
@@ -6271,11 +6499,65 @@ export function App() {
                 {!developerInspectorLoadingKey ? <p>{copy.selectFileHint}</p> : null}
               </div>
             ) : (
-              renderResolvedFilePreviewContent(developerInspectorPreview, developerInspectorWorkspace.id)
+              renderResolvedFilePreviewContent(workspacePreviewResource(developerInspectorPreview, developerInspectorWorkspace.id))
             )}
           </div>
         </div>
       </section>
+    );
+  }
+
+  function renderAttachmentPreviewModal() {
+    if (!attachmentPreviewTarget) {
+      return null;
+    }
+
+    return (
+      <div className="modal-overlay" onClick={closeAttachmentPreview}>
+        <aside
+          className="modal-card management-modal-card attachment-preview-modal"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="panel-header panel-header-file-browser attachment-preview-header">
+            <div className="session-title-row">
+              <div className="file-preview-title-block">
+                <h2>{attachmentPreviewTarget.filename}</h2>
+                <p className="file-preview-title-path">{attachmentPreviewTarget.mimeType}</p>
+              </div>
+              <div className="inspector-header-actions">
+                <a
+                  className="button-secondary file-preview-download"
+                  href={attachmentDownloadHref(attachmentPreviewTarget)}
+                  download={attachmentPreviewTarget.filename}
+                >
+                  {copy.downloadFile}
+                </a>
+                <button
+                  type="button"
+                  className="button-secondary"
+                  onClick={closeAttachmentPreview}
+                >
+                  {copy.close}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="attachment-preview-shell">
+            {attachmentPreviewError ? (
+              <div className="file-preview-empty file-preview-empty-error">
+                <strong>{copy.filesTitle}</strong>
+                <p>{attachmentPreviewError}</p>
+              </div>
+            ) : attachmentPreviewLoading || !attachmentPreviewResourceState ? (
+              <div className="file-preview-empty">
+                <strong>{copy.loadingFile}</strong>
+              </div>
+            ) : (
+              renderResolvedFilePreviewContent(attachmentPreviewResourceState)
+            )}
+          </div>
+        </aside>
+      </div>
     );
   }
 
@@ -6645,7 +6927,7 @@ export function App() {
                           </button>
                         </div>
                       ) : null
-                    ) : executorSelectOptions.length > 1 && (!detail || detail.session.sessionType !== 'code') ? (
+                    ) : executorSelectOptions.length > 1 && !detail ? (
                       <div className="rail-header-controls">
                         <AppSelect
                           value={draftCodingExecutor}
@@ -6889,24 +7171,24 @@ export function App() {
                               {event.attachments.length > 0 ? (
                                 <div className="chat-attachments">
                                   {event.attachments.map((attachment) => (
-                                    <a
+                                    <button
                                       key={attachment.id}
+                                      type="button"
                                       className={`chat-attachment-card chat-attachment-card-${attachment.kind}`}
-                                      href={attachmentHref(attachment)}
-                                      target={attachment.kind === 'image' ? '_blank' : undefined}
-                                      rel={attachment.kind === 'image' ? 'noreferrer' : undefined}
-                                      download={attachment.kind === 'image' ? undefined : attachment.filename}
+                                      onClick={() => {
+                                        void handleOpenAttachmentPreview(attachment);
+                                      }}
                                     >
                                       {attachment.kind === 'image' ? (
                                         <div className="chat-attachment-media">
-                                          <img src={attachment.url} alt={attachment.filename} className="chat-attachment-image" />
+                                          <img src={attachmentInlineHref(attachment)} alt={attachment.filename} className="chat-attachment-image" />
                                         </div>
                                       ) : null}
                                       <div className="chat-attachment-copy">
                                         <strong>{attachment.filename}</strong>
                                         <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
                                       </div>
-                                    </a>
+                                    </button>
                                   ))}
                                 </div>
                               ) : null}
@@ -6958,6 +7240,43 @@ export function App() {
                     ) : null}
                   </div>
                 </div>
+                {detailSessionState === 'pending' && activeApproval ? (
+                  <section
+                    ref={approvalPromptRef}
+                    className={`session-status-bar session-status-${detailSessionState}`}
+                    tabIndex={0}
+                    onKeyDown={handleApprovalPromptKeyDown}
+                  >
+                    <div className="session-status-copy">
+                      <div className="session-status-title-row">
+                        <span className={`session-status-badge session-status-badge-${detailSessionState}`}>
+                          {copy.approvalPendingStatus}
+                        </span>
+                        <strong>{activeApproval.title}</strong>
+                      </div>
+                      <p>{activeApproval.risk}</p>
+                      <p className="detail-card-meta">{copy.approvalPendingHint}</p>
+                      <p className="detail-card-meta">{copy.approvalKeyboardHint}</p>
+                      {pendingApprovals.length > 1 ? (
+                        <p className="detail-card-meta">{formatRemainingApprovals(pendingApprovals.length - 1, language)}</p>
+                      ) : null}
+                    </div>
+                    <div className="approval-inline-options session-status-actions">
+                      {approvalOptions.map((option, index) => (
+                        <button
+                          key={`${option.decision}-${option.scope}`}
+                          type="button"
+                          className={`approval-inline-option ${index === approvalSelectionIndex ? 'approval-inline-option-active' : ''} ${option.tone === 'secondary' ? 'approval-inline-option-secondary' : ''}`}
+                          onClick={() => void handleApprovalAction(activeApproval, option.decision, option.scope)}
+                          disabled={busy === activeApproval.id}
+                        >
+                          <span className="approval-inline-marker">{index === approvalSelectionIndex ? '›' : ''}</span>
+                          <span>{option.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
                 <form className="composer-form composer-docked" onSubmit={handleStartTurn}>
                   <div className="composer-shell">
                     <input
@@ -6969,7 +7288,7 @@ export function App() {
                     />
                     {detail ? (
                       <div className="composer-config-row">
-                        {!sessionIsChat && currentSessionExecutor && executorSelectOptions.length > 1 ? (
+                        {currentSessionExecutor && executorSelectOptions.length > 1 ? (
                           <label className="composer-config-field">
                             <span>{copy.executorLabel}</span>
                             <AppSelect
@@ -7125,6 +7444,8 @@ export function App() {
           </div>
         </section>
       </div>
+
+      {renderAttachmentPreviewModal()}
 
       {rolesOpen ? (
         <div className="modal-overlay" onClick={() => setRolesOpen(false)}>
@@ -7346,9 +7667,7 @@ export function App() {
                 <p className="detail-card-meta">{copy.sessionType}: {detail.session.sessionType === 'chat' ? copy.chatSession : copy.codeSession}</p>
                 <p className="detail-card-meta">{copy.sessionOwner}: {detail.session.ownerUsername}</p>
                 <p className="detail-card-meta">{copy.securityLabel}: {securityProfileLabel(language, detail.session.sessionType, detail.session.securityProfile)}</p>
-                {detail.session.sessionType === 'code' ? (
-                  <p className="detail-card-meta">{copy.executorLabel}: {executorOptionLabel(language, detail.session.executor)}</p>
-                ) : null}
+                <p className="detail-card-meta">{copy.executorLabel}: {executorOptionLabel(language, detail.session.executor)}</p>
                 {detail.session.sessionType === 'code' ? (
                   <p className="detail-card-meta">{copy.approvalModeLabel}: {modeOptionLabel(language, currentSessionMode)}</p>
                 ) : null}

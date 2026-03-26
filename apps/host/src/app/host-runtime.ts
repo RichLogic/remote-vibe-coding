@@ -3,7 +3,11 @@ import { CloudflareTunnelManager } from '../cloudflare.js';
 import { CodingHistoryRepository } from '../coding/history.js';
 import { CodingRepository } from '../coding/repository.js';
 import { ClaudeCodeCliRuntime, claudeCodeExecutableAvailable } from '../claude-code-runtime.js';
-import { DEFAULT_AGENT_EXECUTOR } from '../executor.js';
+import {
+  EXECUTOR_INIT_ENV_VAR,
+  defaultExecutorForConfiguredExecutors,
+  resolveConfiguredExecutors,
+} from '../executor.js';
 import { getMongoDb } from '../mongo.js';
 import { SessionStore } from '../store.js';
 import { CodexAppServerClient } from '../codex-app-server.js';
@@ -65,13 +69,31 @@ export async function initializeHostRuntime(options: InitializeHostRuntimeOption
   await options.loadChatSystemPromptText();
   await options.loadChatRolePresetConfig();
 
-  const agentRuntime = new CodexAppServerClient();
-  await agentRuntime.ensureStarted();
-  const claudeRuntime = claudeCodeExecutableAvailable()
+  const claudeAvailable = claudeCodeExecutableAvailable();
+  const requestedExecutors = resolveConfiguredExecutors({ claudeAvailable });
+  const requestedExecutorSet = new Set(requestedExecutors);
+
+  if (requestedExecutorSet.has('claude-code') && !claudeAvailable) {
+    throw new Error(
+      `${EXECUTOR_INIT_ENV_VAR} requested claude-code, but the Claude Code executable is not available. Set CLAUDE_BIN or choose codex.`,
+    );
+  }
+
+  const agentRuntime = requestedExecutorSet.has('codex')
+    ? new CodexAppServerClient()
+    : null;
+  if (agentRuntime) {
+    await agentRuntime.ensureStarted();
+  }
+
+  const claudeRuntime = requestedExecutorSet.has('claude-code')
     ? new ClaudeCodeCliRuntime()
     : null;
   if (claudeRuntime) {
     await claudeRuntime.ensureStarted();
+  }
+  if (!agentRuntime && !claudeRuntime) {
+    throw new Error('No agent runtimes are configured.');
   }
   await store.markAllStale(options.staleSessionMessage);
   await chatHistory.markAllStale(options.staleSessionMessage);
@@ -82,9 +104,9 @@ export async function initializeHostRuntime(options: InitializeHostRuntimeOption
   void cloudflareStatusCache.refresh().catch(() => undefined);
 
   const runtimeRegistry = new StaticAgentRuntimeRegistry({
-    [DEFAULT_AGENT_EXECUTOR]: agentRuntime,
+    ...(agentRuntime ? { codex: agentRuntime } : {}),
     ...(claudeRuntime ? { 'claude-code': claudeRuntime } : {}),
-  }, DEFAULT_AGENT_EXECUTOR);
+  }, defaultExecutorForConfiguredExecutors(requestedExecutors));
   const modelCatalog = new ModelCatalog(runtimeRegistry);
   await modelCatalog.refresh();
 
@@ -103,7 +125,9 @@ export async function initializeHostRuntime(options: InitializeHostRuntimeOption
       if (claudeRuntime) {
         await claudeRuntime.stop();
       }
-      await agentRuntime.stop();
+      if (agentRuntime) {
+        await agentRuntime.stop();
+      }
     },
   };
 }
