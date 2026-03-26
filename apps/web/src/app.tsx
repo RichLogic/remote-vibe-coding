@@ -81,6 +81,7 @@ import type {
 } from './types';
 
 type Language = 'en' | 'zh';
+type ThemeMode = 'white' | 'warm' | 'night';
 type UserModalMode = 'create' | 'edit';
 type WorkspaceModalMode = 'create';
 type WorkspaceDropPosition = 'before' | 'after';
@@ -132,6 +133,7 @@ const COMPOSER_MAX_LINES = 6;
 const ACTIVITY_TICKER_TRANSITION_MS = 280;
 const OPTIMISTIC_SESSION_PREFIX = '__optimistic_session__:';
 const OPTIMISTIC_WORKSPACE_PREFIX = '__optimistic_workspace__:';
+const THEME_STORAGE_KEY = 'rvc-theme';
 const CHAT_COMPLETION_MARKERS_STORAGE_KEY = 'rvc-chat-completion-markers';
 const DEVELOPER_RAIL_HIDDEN_STORAGE_KEY = 'rvc-developer-rail-hidden';
 const CHAT_RAIL_HIDDEN_STORAGE_KEY = 'rvc-chat-rail-hidden';
@@ -206,6 +208,11 @@ const COPY = {
     showSidebar: 'Show sidebar',
     languageSetting: 'Language',
     languageSettingHint: 'Choose the interface language.',
+    themeSetting: 'Theme',
+    themeSettingHint: 'Choose the interface skin.',
+    themeWhite: 'white',
+    themeWarm: 'warm',
+    themeNight: 'night',
     languageEnglish: 'English',
     languageChinese: '中文',
     languageButtonComment: 'Switch the interface language.',
@@ -461,6 +468,11 @@ const COPY = {
     showSidebar: '显示侧栏',
     languageSetting: '语言',
     languageSettingHint: '选择界面语言。',
+    themeSetting: '皮肤',
+    themeSettingHint: '选择界面皮肤。',
+    themeWhite: 'white',
+    themeWarm: 'warm',
+    themeNight: 'night',
     languageEnglish: 'English',
     languageChinese: '中文',
     languageButtonComment: '切换界面语言。',
@@ -1473,6 +1485,18 @@ function readStoredBoolean(key: string, fallback = false) {
   return fallback;
 }
 
+function readStoredTheme(): ThemeMode {
+  if (typeof window === 'undefined') return 'white';
+  const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === 'white' || stored === 'warm' || stored === 'night') {
+    return stored;
+  }
+  if (stored === 'contrast') {
+    return 'white';
+  }
+  return 'white';
+}
+
 function extractTextContent(node: ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') {
     return String(node);
@@ -1939,6 +1963,7 @@ function SidebarIcon({ collapsed = false }: { collapsed?: boolean }) {
 }
 
 export function App() {
+  const [theme, setTheme] = useState<ThemeMode>(() => readStoredTheme());
   const [language, setLanguage] = useState<Language>(() => {
     if (typeof window === 'undefined') return 'en';
     const stored = window.localStorage.getItem('rvc-language');
@@ -2234,6 +2259,11 @@ export function App() {
   const editingAdminUser = editingUserId
     ? adminUsers?.find((entry) => entry.id === editingUserId) ?? null
     : null;
+
+  useEffect(() => {
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   useEffect(() => {
     window.localStorage.setItem('rvc-language', language);
@@ -3059,6 +3089,25 @@ export function App() {
       ? `${workspaceNameForSession(detail.session, allWorkspaces, bootstrap?.workspaceRoot)} · ${detail.session.title}`
       : detail.session.title
     : copy.selectOrCreate;
+  const codingAnswerLabelEntryIds = new Set<string>();
+  if (!sessionIsChat) {
+    let hasAssistantReplyInCurrentTurn = false;
+    for (const entry of transcriptItems) {
+      if (entry.kind === 'user') {
+        hasAssistantReplyInCurrentTurn = false;
+        continue;
+      }
+
+      if (entry.kind !== 'assistant') {
+        continue;
+      }
+
+      if (!hasAssistantReplyInCurrentTurn) {
+        codingAnswerLabelEntryIds.add(entry.id);
+        hasAssistantReplyInCurrentTurn = true;
+      }
+    }
+  }
 
   useEffect(() => {
     if (activityTickerOwnerRef.current !== activityTickerOwnerKey) {
@@ -5685,7 +5734,7 @@ export function App() {
                         return (
                           <article key={event.id} className={`chat-message chat-${event.kind}`}>
                             <div className="chat-message-main">
-                              {event.kind === 'assistant' ? (
+                              {event.kind === 'assistant' && (sessionIsChat || codingAnswerLabelEntryIds.has(event.id)) ? (
                                 <div className="chat-message-head">
                                   <strong>{copy.answerLabel}</strong>
                                 </div>
@@ -5973,6 +6022,36 @@ export function App() {
                   onClick={() => setLanguage('zh')}
                 >
                   {copy.languageChinese}
+                </button>
+              </div>
+            </section>
+
+            <section className="settings-section">
+              <div className="settings-section-head">
+                <strong>{copy.themeSetting}</strong>
+                <span>{copy.themeSettingHint}</span>
+              </div>
+              <div className="settings-language-row">
+                <button
+                  type="button"
+                  className={theme === 'white' ? 'button-secondary settings-language-button settings-language-button-active' : 'button-secondary settings-language-button'}
+                  onClick={() => setTheme('white')}
+                >
+                  {copy.themeWhite}
+                </button>
+                <button
+                  type="button"
+                  className={theme === 'warm' ? 'button-secondary settings-language-button settings-language-button-active' : 'button-secondary settings-language-button'}
+                  onClick={() => setTheme('warm')}
+                >
+                  {copy.themeWarm}
+                </button>
+                <button
+                  type="button"
+                  className={theme === 'night' ? 'button-secondary settings-language-button settings-language-button-active' : 'button-secondary settings-language-button'}
+                  onClick={() => setTheme('night')}
+                >
+                  {copy.themeNight}
                 </button>
               </div>
             </section>
