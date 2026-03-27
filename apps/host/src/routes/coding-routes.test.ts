@@ -9,7 +9,7 @@ import Fastify from 'fastify';
 
 import { CodingWorkspaceServiceError } from '../app/coding-workspace-service.js';
 import { registerCodingRoutes } from './coding-routes.js';
-import type { ModelOption, SessionRecord, UserRecord, WorkspaceSummary } from '../types.js';
+import type { ModelOption, QueuedTurnSummary, SessionRecord, UserRecord, WorkspaceSummary } from '../types.js';
 
 function buildUser(overrides: Partial<UserRecord> = {}): UserRecord {
   return {
@@ -115,7 +115,17 @@ function createHarness(overrides: Partial<Parameters<typeof registerCodingRoutes
     createDeveloperSession: async () => session,
     errorMessage: (error) => error instanceof Error ? error.message : String(error),
     getOwnedCodingSessionOrReply: async () => session,
-    buildCodingSessionDetailResponse: async (currentSession) => ({ session: currentSession }) as never,
+    buildCodingSessionDetailResponse: async (currentSession) => ({
+      session: currentSession,
+      approvals: [],
+      liveEvents: [],
+      thread: null,
+      transcriptTotal: 0,
+      commands: [],
+      changes: [],
+      draftAttachments: [],
+      queuedTurns: [],
+    }) as never,
     buildCodingSessionTranscriptResponse: async () => ({ items: [], nextCursor: null, total: 0 }) as never,
     attachmentKindFromUpload: () => 'file',
     sanitizeAttachmentFilename: (filename) => filename,
@@ -132,6 +142,16 @@ function createHarness(overrides: Partial<Parameters<typeof registerCodingRoutes
     }),
     getAttachment: () => null,
     removeAttachment: async () => true,
+    isAttachmentQueued: async () => false,
+    listQueuedTurns: async () => [],
+    queueCodingTurn: async () => ({
+      id: 'queued-1',
+      promptPreview: 'follow-up',
+      attachmentCount: 1,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }),
+    getQueuedTurn: async () => null,
+    removeQueuedTurn: async () => true,
     deleteStoredAttachments: async () => {},
     trimOptional: (value) => {
       const next = typeof value === 'string' ? value.trim() : '';
@@ -179,6 +199,16 @@ function createHarness(overrides: Partial<Parameters<typeof registerCodingRoutes
     deps,
     updateCalls,
     liveEvents,
+  };
+}
+
+function buildQueuedTurnSummary(overrides: Partial<QueuedTurnSummary> = {}): QueuedTurnSummary {
+  return {
+    id: 'queued-1',
+    promptPreview: 'follow-up request',
+    attachmentCount: 1,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -442,5 +472,123 @@ test('coding routes preview workspace files from absolute in-workspace paths', a
     truncated: false,
     content: 'export const answer = 42;\n',
     downloadUrl: '/api/coding/workspaces/workspace-1/file/content?path=src%2Findex.ts&download=1',
+  });
+});
+
+test('coding routes queue follow-up turns while a coding turn is active', async (t) => {
+  const queuedTurn = buildQueuedTurnSummary();
+  const queuedTurns = [queuedTurn];
+  const queueCalls: Array<{ prompt: string | null; attachmentIds: string[] }> = [];
+  const harness = createHarness({
+    getOwnedCodingSessionOrReply: async () => buildSession({
+      activeTurnId: 'turn-1',
+      status: 'running',
+    }),
+    getAttachment: (_sessionId, attachmentId) => ({
+      id: attachmentId,
+      ownerKind: 'session',
+      ownerId: 'session-1',
+      sessionId: 'session-1',
+      ownerUserId: 'user-1',
+      ownerUsername: 'owner',
+      kind: 'file',
+      filename: `${attachmentId}.txt`,
+      mimeType: 'text/plain',
+      sizeBytes: 12,
+      storagePath: `/tmp/${attachmentId}.txt`,
+      extractedText: null,
+      consumedAt: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }),
+    queueCodingTurn: async (_session, prompt, attachmentIds) => {
+      queueCalls.push({ prompt, attachmentIds });
+      return queuedTurn;
+    },
+    listQueuedTurns: async () => queuedTurns,
+  });
+  registerCodingRoutes(harness.app, harness.deps);
+  t.after(() => harness.app.close());
+
+  const response = await harness.app.inject({
+    method: 'POST',
+    url: '/api/coding/sessions/session-1/turns',
+    payload: {
+      prompt: '  follow-up request  ',
+      attachmentIds: ['attachment-1'],
+    },
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(queueCalls, [{
+    prompt: 'follow-up request',
+    attachmentIds: ['attachment-1'],
+  }]);
+  assert.deepEqual(response.json(), {
+    status: 'queued',
+    queuedTurn,
+    session: buildSession({
+      activeTurnId: 'turn-1',
+      status: 'running',
+    }),
+    queuedTurns,
+  });
+});
+
+test('coding routes block deleting attachments referenced by queued turns', async (t) => {
+  const harness = createHarness({
+    getAttachment: () => ({
+      id: 'attachment-1',
+      ownerKind: 'session',
+      ownerId: 'session-1',
+      sessionId: 'session-1',
+      ownerUserId: 'user-1',
+      ownerUsername: 'owner',
+      kind: 'file',
+      filename: 'attachment.txt',
+      mimeType: 'text/plain',
+      sizeBytes: 12,
+      storagePath: '/tmp/attachment.txt',
+      extractedText: null,
+      consumedAt: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+    }),
+    isAttachmentQueued: async () => true,
+  });
+  registerCodingRoutes(harness.app, harness.deps);
+  t.after(() => harness.app.close());
+
+  const response = await harness.app.inject({
+    method: 'DELETE',
+    url: '/api/coding/sessions/session-1/attachments/attachment-1',
+  });
+
+  assert.equal(response.statusCode, 409);
+  assert.deepEqual(response.json(), {
+    error: 'This attachment is already part of a queued turn.',
+  });
+});
+
+test('coding routes cancel queued turns', async (t) => {
+  const queuedTurn = {
+    id: 'queued-1',
+    status: 'queued' as const,
+  };
+  const harness = createHarness({
+    getQueuedTurn: async () => queuedTurn,
+    removeQueuedTurn: async () => true,
+    listQueuedTurns: async () => [],
+  });
+  registerCodingRoutes(harness.app, harness.deps);
+  t.after(() => harness.app.close());
+
+  const response = await harness.app.inject({
+    method: 'DELETE',
+    url: '/api/coding/sessions/session-1/queued-turns/queued-1',
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    ok: true,
+    queuedTurns: [],
   });
 });

@@ -114,6 +114,10 @@ function createHarness(overrides: Partial<Parameters<typeof registerChatRoutes>[
     }),
     getAttachment: () => null,
     removeAttachment: async () => true,
+    resolveChatBodyLink: async () => ({
+      kind: 'external',
+      href: 'https://example.com',
+    }),
     createChatConversation: async () => buildConversation(),
     renameConversation: async () => conversation,
     updateConversationPreferences: async () => conversation,
@@ -216,6 +220,54 @@ test('chat routes include patched conversations when stop fails with a chat turn
       id: 'conversation-1',
       status: 'error',
       kind: 'chat-conversation',
+    },
+  });
+});
+
+test('chat routes resolve body links into attachment summaries', async (t) => {
+  const harness = createHarness({
+    resolveChatBodyLink: async () => ({
+      kind: 'attachment',
+      attachment: {
+        id: 'attachment-1',
+        ownerKind: 'conversation',
+        ownerId: 'conversation-1',
+        sessionId: 'conversation-1',
+        ownerUserId: 'user-1',
+        ownerUsername: 'owner',
+        kind: 'file',
+        filename: 'report.md',
+        mimeType: 'text/markdown; charset=utf-8',
+        sizeBytes: 42,
+        storagePath: '/tmp/report.md',
+        extractedText: '# report',
+        consumedAt: '2026-01-01T00:00:00.000Z',
+        createdAt: '2026-01-01T00:00:00.000Z',
+      },
+    }),
+  });
+  registerChatRoutes(harness.app, harness.deps);
+  t.after(() => harness.app.close());
+
+  const response = await harness.app.inject({
+    method: 'POST',
+    url: '/api/chat/conversations/conversation-1/body-links/resolve',
+    payload: {
+      href: '/Users/richlogic/report.md',
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    kind: 'attachment',
+    attachment: {
+      id: 'attachment-1',
+      kind: 'file',
+      filename: 'report.md',
+      mimeType: 'text/markdown; charset=utf-8',
+      sizeBytes: 42,
+      url: '/attachment',
+      createdAt: '2026-01-01T00:00:00.000Z',
     },
   });
 });

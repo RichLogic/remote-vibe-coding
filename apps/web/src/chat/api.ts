@@ -1,5 +1,6 @@
 import type { SessionAttachmentSummary } from '../types';
 import type {
+  ChatBodyLinkResolveResponse,
   ChatBootstrapPayload,
   ChatConversation,
   ChatConversationDetailResponse,
@@ -172,6 +173,16 @@ export async function deleteChatAttachment(conversationId: string, attachmentId:
     `/api/chat/conversations/${conversationId}/attachments/${attachmentId}`,
     {
       method: 'DELETE',
+    },
+  );
+}
+
+export function resolveChatBodyLink(conversationId: string, href: string) {
+  return requestJson<ChatBodyLinkResolveResponse>(
+    `/api/chat/conversations/${conversationId}/body-links/resolve`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ href }),
     },
   );
 }

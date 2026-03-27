@@ -2,13 +2,17 @@ import type {
   AgentExecutor,
   ApprovalMode,
   CreateSessionRequest,
+  CreateTurnRequest,
   ExecutorModelCatalog,
   ModelOption,
   PendingApproval,
+  QueuedTurnSummary,
   ReasoningEffort,
+  SessionDetailResponse,
   SecurityProfile,
   SessionRecord,
   SessionSummary,
+  SessionTranscriptPageResponse,
   UpdateSessionPreferencesRequest,
   UpdateSessionRequest,
   UserRecord,
@@ -20,6 +24,9 @@ export type CodingSessionSummary = SessionSummary;
 export type CodingWorkspaceSummary = WorkspaceSummary;
 export type UpdateCodingSessionRequest = UpdateSessionRequest;
 export type UpdateCodingSessionPreferencesRequest = UpdateSessionPreferencesRequest;
+export type CodingSessionDetailResponse = SessionDetailResponse;
+export type CodingSessionTranscriptPageResponse = SessionTranscriptPageResponse;
+export type CreateCodingTurnRequest = CreateTurnRequest;
 
 export interface CreateCodingSessionRequest extends Omit<CreateSessionRequest, 'sessionType'> {
   sessionType?: 'code';
@@ -91,3 +98,17 @@ export interface CodingBootstrapPayload {
   };
   updatedAt: string;
 }
+
+export type CreateCodingTurnResponse =
+  | {
+      status: 'started';
+      turn: unknown;
+      session: CodingSessionRecord;
+      queuedTurns: QueuedTurnSummary[];
+    }
+  | {
+      status: 'queued';
+      queuedTurn: QueuedTurnSummary;
+      session: CodingSessionRecord;
+      queuedTurns: QueuedTurnSummary[];
+    };

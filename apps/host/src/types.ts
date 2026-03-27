@@ -174,6 +174,13 @@ export interface SessionAttachmentSummary {
   createdAt: string;
 }
 
+export interface QueuedTurnSummary {
+  id: string;
+  promptPreview: string;
+  attachmentCount: number;
+  createdAt: string;
+}
+
 export interface WorkspaceSummary {
   id: string;
   name: string;
@@ -385,6 +392,7 @@ export interface SessionDetailResponse {
   commands: SessionCommandEvent[];
   changes: SessionFileChangeEvent[];
   draftAttachments: SessionAttachmentSummary[];
+  queuedTurns: QueuedTurnSummary[];
 }
 
 export interface ConversationDetailResponse {

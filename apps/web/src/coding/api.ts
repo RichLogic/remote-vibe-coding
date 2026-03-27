@@ -7,6 +7,7 @@ import type {
   CodingSessionRecord,
   CodingSessionTranscriptPageResponse,
   CodingWorkspaceSummary,
+  CreateCodingTurnResponse,
   CreateCodingWorkspaceRequest,
   CreateCodingWorkspaceSessionRequest,
   CreateCodingTurnRequest,
@@ -160,7 +161,7 @@ export async function deleteCodingSession(sessionId: string) {
 }
 
 export async function startCodingTurn(sessionId: string, input: CreateCodingTurnRequest) {
-  return requestJson(`/api/coding/sessions/${sessionId}/turns`, {
+  return requestJson<CreateCodingTurnResponse>(`/api/coding/sessions/${sessionId}/turns`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
@@ -186,6 +187,12 @@ export async function uploadCodingAttachment(sessionId: string, file: File) {
 
 export async function deleteCodingAttachment(sessionId: string, attachmentId: string) {
   return requestJson<{ ok: true }>(`/api/coding/sessions/${sessionId}/attachments/${attachmentId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function deleteQueuedCodingTurn(sessionId: string, queuedTurnId: string) {
+  return requestJson<{ ok: true }>(`/api/coding/sessions/${sessionId}/queued-turns/${queuedTurnId}`, {
     method: 'DELETE',
   });
 }

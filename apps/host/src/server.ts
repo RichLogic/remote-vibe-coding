@@ -18,10 +18,12 @@ import {
   loginPageHtml,
 } from './auth.js';
 import { AdminUserService } from './app/admin-user-service.js';
+import { createChatBodyLinkService } from './app/chat-body-link-service.js';
 import {
   createChatConversationService,
 } from './app/chat-conversation-service.js';
 import { createChatTurnService } from './app/chat-turn-service.js';
+import { createCodingQueuedTurnDrainService } from './app/coding-queued-turn-drain-service.js';
 import {
   CodingWorkspaceServiceError,
   createCodingWorkspaceService,
@@ -80,6 +82,7 @@ import type {
   CreateSessionRequest,
   CreateTurnRequest,
   ModelOption,
+  QueuedTurnSummary,
   ReasoningEffort,
   ResolveApprovalRequest,
   SessionAttachmentKind,
@@ -1843,6 +1846,13 @@ const runtime = await initializeHostRuntime({
   loadChatRolePresetConfig: () => chatPromptConfig.loadRolePresetConfig(),
 });
 const { auth, store, chatHistory, codingHistory, coding, runtimeRegistry, cloudflare, cloudflareStatusCache, modelCatalog } = runtime;
+const chatBodyLinkService = createChatBodyLinkService({
+  getAttachment: (conversationId, attachmentId) => store.getAttachment(conversationId, attachmentId),
+  addAttachment: (attachment) => store.addAttachment(attachment),
+  attachmentKindFromUpload,
+  sanitizeAttachmentFilename,
+  extractAttachmentText,
+});
 const chatRuntime = runtimeRegistry.defaultRuntime();
 const runtimeForExecutor = (executor: AgentExecutor) => runtimeRegistry.require(executor);
 const runtimeForRecord = (record: TurnRecord) => runtimeForExecutor(record.executor);
@@ -1857,6 +1867,7 @@ const cloneWorkspaceFromGit = (username: string, userId: string, gitUrl: string)
   workspaceService.cloneWorkspaceFromGit(username, userId, gitUrl, { coding })
 );
 const adminUserService = new AdminUserService(auth, store, chatHistory, coding);
+let maybeDrainQueuedCodingTurn: ((session: SessionRecord) => Promise<unknown>) | undefined;
 const handleNotification = createRuntimeNotificationHandler({
   store,
   findRecordByThreadId,
@@ -1867,6 +1878,9 @@ const handleNotification = createRuntimeNotificationHandler({
   maybeAutoTitleCodingSession,
   syncConversationHistoryFromThread,
   syncCodingHistoryFromThread,
+  maybeStartQueuedCodingTurn: async (session) => {
+    await maybeDrainQueuedCodingTurn?.(session);
+  },
   latestMeaningfulChatReplyFromTurn,
   isTransitionOnlyChatReply,
   summarizeNotification,
@@ -1927,6 +1941,58 @@ function buildChatConversationDetailPayload(
     draftAttachments: store.listDraftAttachments(conversation.id).map(chatAttachmentSummary),
     normalizeRolePresetId: (value) => chatPromptConfig.normalizeRolePresetId(value),
   });
+}
+
+const QUEUED_TURN_PREVIEW_MAX_CHARS = 140;
+
+function queuedTurnPromptPreview(prompt: string | null, attachmentCount: number) {
+  const normalized = (prompt ?? '').replace(/\s+/g, ' ').trim();
+  if (normalized) {
+    return normalized.length > QUEUED_TURN_PREVIEW_MAX_CHARS
+      ? `${normalized.slice(0, QUEUED_TURN_PREVIEW_MAX_CHARS - 1).trimEnd()}…`
+      : normalized;
+  }
+  if (attachmentCount === 1) {
+    return 'Queued attachment';
+  }
+  if (attachmentCount > 1) {
+    return `Queued ${attachmentCount} attachments`;
+  }
+  return 'Queued follow-up turn';
+}
+
+function queuedTurnSummary(record: {
+  id: string;
+  prompt: string | null;
+  attachmentIds: string[];
+  createdAt: string;
+}): QueuedTurnSummary {
+  return {
+    id: record.id,
+    promptPreview: queuedTurnPromptPreview(record.prompt, record.attachmentIds.length),
+    attachmentCount: record.attachmentIds.length,
+    createdAt: record.createdAt,
+  };
+}
+
+async function listQueuedCodingTurnSummaries(sessionId: string) {
+  const queuedTurns = await coding.listQueuedTurns(sessionId);
+  return queuedTurns.map(queuedTurnSummary);
+}
+
+async function queueCodingTurn(
+  session: SessionRecord,
+  prompt: string | null,
+  attachmentIds: string[],
+) {
+  const queuedTurn = await coding.enqueueTurn({
+    sessionId: session.id,
+    ownerUserId: session.ownerUserId,
+    prompt,
+    attachmentIds,
+    queuedAfterTurnId: session.activeTurnId,
+  });
+  return queuedTurnSummary(queuedTurn);
 }
 
 function unavailableChatConversationStatePatch(
@@ -2076,6 +2142,8 @@ async function buildCodingSessionDetailResponse(session: SessionRecord) {
   const threadState = await readSessionThread(session);
   let responseSession = threadState.session as SessionRecord;
   const history = await buildCodingHistorySummary(responseSession, threadState.thread);
+  const queuedTurns = await coding.listQueuedTurns(responseSession.id);
+  const queuedAttachmentIds = new Set(queuedTurns.flatMap((queuedTurn) => queuedTurn.attachmentIds));
   const transcriptTotal = history.transcriptTotal;
   const hasTranscript = transcriptTotal > 0;
   if (threadState.session.hasTranscript !== hasTranscript) {
@@ -2095,7 +2163,10 @@ async function buildCodingSessionDetailResponse(session: SessionRecord) {
     transcriptTotal,
     commands: history.commands,
     changes: history.changes,
-    draftAttachments: store.listDraftAttachments(responseSession.id).map(codingAttachmentSummary),
+    draftAttachments: store.listDraftAttachments(responseSession.id)
+      .filter((attachment) => !queuedAttachmentIds.has(attachment.id))
+      .map(codingAttachmentSummary),
+    queuedTurns: queuedTurns.map(queuedTurnSummary),
   };
 }
 
@@ -2148,6 +2219,10 @@ async function buildLegacySessionDetailResponse(session: TurnRecord) {
   const codingHistoryView = isDeveloperSession(responseSession)
     ? (codingHistorySummary ?? await buildCodingHistorySummary(responseSession, threadState.thread))
     : { commands: [] as SessionCommandEvent[], changes: [] as SessionFileChangeEvent[] };
+  const queuedTurns = isDeveloperSession(responseSession)
+    ? await coding.listQueuedTurns(responseSession.id)
+    : [];
+  const queuedAttachmentIds = new Set(queuedTurns.flatMap((queuedTurn) => queuedTurn.attachmentIds));
   return {
     session: responseSession,
     approvals: isDeveloperSession(responseSession) ? store.getApprovals(responseSession.id) : [],
@@ -2156,7 +2231,10 @@ async function buildLegacySessionDetailResponse(session: TurnRecord) {
     transcriptTotal,
     commands: codingHistoryView.commands,
     changes: codingHistoryView.changes,
-    draftAttachments: store.listDraftAttachments(responseSession.id).map(attachmentSummary),
+    draftAttachments: store.listDraftAttachments(responseSession.id)
+      .filter((attachment) => !queuedAttachmentIds.has(attachment.id))
+      .map(attachmentSummary),
+    queuedTurns: queuedTurns.map(queuedTurnSummary),
   };
 }
 
@@ -2563,6 +2641,22 @@ const startTurnWithAutoRestart = createTurnStartService({
   persistConversationUserTurn,
   isThreadUnavailableError,
 });
+const drainQueuedCodingTurn = createCodingQueuedTurnDrainService({
+  getSession: (sessionId) => coding.getSession(sessionId),
+  claimNextQueuedTurn: (sessionId) => coding.claimNextQueuedTurn(sessionId),
+  resetQueuedTurnToQueued: (sessionId, queuedTurnId) => coding.resetQueuedTurnToQueued(sessionId, queuedTurnId),
+  deleteQueuedTurn: (sessionId, queuedTurnId) => coding.deleteQueuedTurn(sessionId, queuedTurnId),
+  getAttachment: (sessionId, attachmentId) => store.getAttachment(sessionId, attachmentId),
+  startTurnWithAutoRestart: async (session, prompt, attachments) => {
+    await startTurnWithAutoRestart(session, prompt, attachments);
+  },
+  updateCodingSession: (sessionId, patch) => coding.updateSession(sessionId, patch),
+  addLiveEvent: (sessionId, event) => store.addLiveEvent(sessionId, event),
+  errorMessage,
+});
+maybeDrainQueuedCodingTurn = async (session) => {
+  await drainQueuedCodingTurn(session.id);
+};
 const { createMessage: createChatMessage, stopTurn: stopChatTurn } = createChatTurnService({
   store,
   interruptTurn: async (conversation, threadId, turnId) => {
@@ -2659,6 +2753,7 @@ registerChatRoutes(app, {
   chatAttachmentSummary,
   getAttachment: (conversationId, attachmentId) => store.getAttachment(conversationId, attachmentId),
   removeAttachment: (conversationId, attachmentId) => store.removeAttachment(conversationId, attachmentId),
+  resolveChatBodyLink: (conversation, href) => chatBodyLinkService.resolveLink(conversation, href),
   createChatConversation,
   renameConversation,
   updateConversationPreferences,
@@ -2700,6 +2795,11 @@ registerCodingRoutes(app, {
   codingAttachmentSummary,
   getAttachment: (sessionId, attachmentId) => store.getAttachment(sessionId, attachmentId),
   removeAttachment: (sessionId, attachmentId) => store.removeAttachment(sessionId, attachmentId),
+  isAttachmentQueued: (sessionId, attachmentId) => coding.isAttachmentQueued(sessionId, attachmentId),
+  listQueuedTurns: (sessionId) => listQueuedCodingTurnSummaries(sessionId),
+  queueCodingTurn,
+  getQueuedTurn: (sessionId, queuedTurnId) => coding.getQueuedTurn(sessionId, queuedTurnId),
+  removeQueuedTurn: async (sessionId, queuedTurnId) => Boolean(await coding.removeQueuedTurn(sessionId, queuedTurnId)),
   deleteStoredAttachments,
   trimOptional,
   normalizeWorkspaceFolderName,

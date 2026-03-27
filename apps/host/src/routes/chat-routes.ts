@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 
+import { ChatBodyLinkServiceError, type ChatBodyLinkResolution } from '../app/chat-body-link-service.js';
 import { ChatConversationServiceError } from '../app/chat-conversation-service.js';
 import { ChatTurnServiceError } from '../app/chat-turn-service.js';
 import type { ChatMessageRecord } from '../chat-history.js';
@@ -94,6 +95,7 @@ interface ChatRoutesDependencies {
   chatAttachmentSummary: (attachment: SessionAttachmentRecord) => SessionAttachmentSummary;
   getAttachment: (conversationId: string, attachmentId: string) => SessionAttachmentRecord | null;
   removeAttachment: (conversationId: string, attachmentId: string) => Promise<boolean>;
+  resolveChatBodyLink: (conversation: ConversationRecord, href: string) => Promise<ChatBodyLinkResolution>;
   createChatConversation: (
     currentUser: UserRecord,
     body: CreateChatConversationRequest,
@@ -305,6 +307,33 @@ export function registerChatRoutes(app: FastifyInstance, deps: ChatRoutesDepende
       `${query?.download === '1' || query?.download === 'true' ? 'attachment' : 'inline'}; filename="${attachment.filename.replace(/"/g, '')}"`,
     );
     return buffer;
+  });
+
+  app.post('/api/chat/conversations/:conversationId/body-links/resolve', async (request, reply) => {
+    const currentUser = deps.getRequestUser(request);
+    const { conversationId } = request.params as { conversationId: string };
+    const conversation = await deps.getOwnedConversationOrReply(currentUser.id, conversationId, reply);
+    if (!conversation) {
+      return { error: 'Conversation not found' };
+    }
+
+    const body = request.body as { href?: string } | undefined;
+    try {
+      const resolution = await deps.resolveChatBodyLink(conversation, body?.href ?? '');
+      if (resolution.kind === 'attachment') {
+        return {
+          kind: 'attachment',
+          attachment: deps.chatAttachmentSummary(resolution.attachment),
+        };
+      }
+      return resolution;
+    } catch (error) {
+      if (error instanceof ChatBodyLinkServiceError) {
+        reply.code(error.statusCode);
+        return { error: error.message };
+      }
+      throw error;
+    }
   });
 
   app.delete('/api/chat/conversations/:conversationId/attachments/:attachmentId', async (request, reply) => {

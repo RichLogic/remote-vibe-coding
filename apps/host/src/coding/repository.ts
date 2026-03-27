@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   MongoServerError,
   type Collection,
@@ -47,6 +49,30 @@ interface CodingSessionDocument {
   updatedAt: string;
 }
 
+export interface QueuedCodingTurnRecord {
+  id: string;
+  sessionId: string;
+  ownerUserId: string;
+  prompt: string | null;
+  attachmentIds: string[];
+  status: 'queued' | 'starting';
+  queuedAfterTurnId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CodingQueuedTurnDocument {
+  _id: string;
+  sessionId: string;
+  ownerUserId: string;
+  prompt: string | null;
+  attachmentIds: string[];
+  status: QueuedCodingTurnRecord['status'];
+  queuedAfterTurnId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 function asWorkspaceRecord(document: CodingWorkspaceDocument): WorkspaceRecord {
   return {
     id: document._id,
@@ -89,6 +115,20 @@ function asSessionRecord(document: CodingSessionDocument): SessionRecord {
   };
 }
 
+function asQueuedCodingTurnRecord(document: CodingQueuedTurnDocument): QueuedCodingTurnRecord {
+  return {
+    id: document._id,
+    sessionId: document.sessionId,
+    ownerUserId: document.ownerUserId,
+    prompt: document.prompt,
+    attachmentIds: document.attachmentIds,
+    status: document.status,
+    queuedAfterTurnId: document.queuedAfterTurnId,
+    createdAt: document.createdAt,
+    updatedAt: document.updatedAt,
+  };
+}
+
 function isDuplicateKeyError(error: unknown) {
   return error instanceof MongoServerError && error.code === 11000;
 }
@@ -96,10 +136,12 @@ function isDuplicateKeyError(error: unknown) {
 export class CodingRepository {
   private readonly workspaces: Collection<CodingWorkspaceDocument>;
   private readonly sessions: Collection<CodingSessionDocument>;
+  private readonly queuedTurns: Collection<CodingQueuedTurnDocument>;
 
   constructor(db: Db) {
     this.workspaces = db.collection<CodingWorkspaceDocument>('coding_workspaces');
     this.sessions = db.collection<CodingSessionDocument>('coding_sessions');
+    this.queuedTurns = db.collection<CodingQueuedTurnDocument>('coding_queued_turns');
   }
 
   async ensureIndexes() {
@@ -108,6 +150,9 @@ export class CodingRepository {
     await this.sessions.createIndex({ ownerUserId: 1, workspaceId: 1, updatedAt: -1 });
     await this.sessions.createIndex({ threadId: 1 }, { unique: true });
     await this.sessions.createIndex({ ownerUserId: 1, updatedAt: -1 });
+    await this.queuedTurns.createIndex({ sessionId: 1, status: 1, createdAt: 1 });
+    await this.queuedTurns.createIndex({ sessionId: 1, createdAt: 1 });
+    await this.queuedTurns.createIndex({ ownerUserId: 1, createdAt: -1 });
   }
 
   async listWorkspacesForUser(userId: string) {
@@ -288,6 +333,7 @@ export class CodingRepository {
   }
 
   async deleteSession(sessionId: string) {
+    await this.queuedTurns.deleteMany({ sessionId });
     const result = await this.sessions.deleteOne({ _id: sessionId });
     return result.deletedCount > 0;
   }
@@ -337,5 +383,122 @@ export class CodingRepository {
         },
       },
     );
+  }
+
+  async listQueuedTurns(sessionId: string) {
+    const documents = await this.queuedTurns
+      .find({ sessionId, status: 'queued' })
+      .sort({ createdAt: 1, _id: 1 })
+      .toArray();
+    return documents.map(asQueuedCodingTurnRecord);
+  }
+
+  async enqueueTurn(input: {
+    sessionId: string;
+    ownerUserId: string;
+    prompt: string | null;
+    attachmentIds: string[];
+    queuedAfterTurnId?: string | null;
+  }) {
+    const now = new Date().toISOString();
+    const record: QueuedCodingTurnRecord = {
+      id: randomUUID(),
+      sessionId: input.sessionId,
+      ownerUserId: input.ownerUserId,
+      prompt: input.prompt,
+      attachmentIds: [...input.attachmentIds],
+      status: 'queued',
+      queuedAfterTurnId: input.queuedAfterTurnId ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const document: CodingQueuedTurnDocument = {
+      _id: record.id,
+      sessionId: record.sessionId,
+      ownerUserId: record.ownerUserId,
+      prompt: record.prompt,
+      attachmentIds: record.attachmentIds,
+      status: record.status,
+      queuedAfterTurnId: record.queuedAfterTurnId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+    await this.queuedTurns.insertOne(document);
+    return record;
+  }
+
+  async claimNextQueuedTurn(sessionId: string) {
+    const result = await this.queuedTurns.findOneAndUpdate(
+      {
+        sessionId,
+        status: 'queued',
+      },
+      {
+        $set: {
+          status: 'starting',
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      {
+        sort: {
+          createdAt: 1,
+          _id: 1,
+        },
+        returnDocument: 'after',
+      },
+    );
+    return result ? asQueuedCodingTurnRecord(result) : null;
+  }
+
+  async removeQueuedTurn(sessionId: string, queuedTurnId: string) {
+    const result = await this.queuedTurns.findOneAndDelete({
+      _id: queuedTurnId,
+      sessionId,
+      status: 'queued',
+    });
+    return result ? asQueuedCodingTurnRecord(result) : null;
+  }
+
+  async deleteQueuedTurn(sessionId: string, queuedTurnId: string) {
+    const result = await this.queuedTurns.deleteOne({
+      _id: queuedTurnId,
+      sessionId,
+    });
+    return result.deletedCount > 0;
+  }
+
+  async resetQueuedTurnToQueued(sessionId: string, queuedTurnId: string) {
+    const result = await this.queuedTurns.findOneAndUpdate(
+      {
+        _id: queuedTurnId,
+        sessionId,
+      },
+      {
+        $set: {
+          status: 'queued',
+          updatedAt: new Date().toISOString(),
+        },
+      },
+      { returnDocument: 'after' },
+    );
+    return result ? asQueuedCodingTurnRecord(result) : null;
+  }
+
+  async getQueuedTurn(sessionId: string, queuedTurnId: string) {
+    const document = await this.queuedTurns.findOne({
+      _id: queuedTurnId,
+      sessionId,
+    });
+    return document ? asQueuedCodingTurnRecord(document) : null;
+  }
+
+  async isAttachmentQueued(sessionId: string, attachmentId: string) {
+    const document = await this.queuedTurns.findOne({
+      sessionId,
+      attachmentIds: attachmentId,
+    }, {
+      projection: { _id: 1 },
+    });
+    return Boolean(document);
   }
 }

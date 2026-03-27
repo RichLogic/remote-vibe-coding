@@ -135,7 +135,17 @@ function createHarness(overrides: Partial<Parameters<typeof registerSessionRoute
     getOwnedRecordOrReply: async (_userId, recordId) => (
       recordId === chatConversation.id ? chatConversation : codingSession
     ),
-    buildSessionDetailResponse: async (session) => ({ session }),
+    buildSessionDetailResponse: async (session) => ({
+      session,
+      approvals: [],
+      liveEvents: [],
+      thread: null,
+      transcriptTotal: 0,
+      commands: [],
+      changes: [],
+      draftAttachments: [],
+      queuedTurns: [],
+    }),
     buildSessionTranscriptResponse: async () => ({ items: [], nextCursor: null, total: 0 }),
     attachmentKindFromUpload: () => 'file',
     sanitizeAttachmentFilename: (filename) => filename,

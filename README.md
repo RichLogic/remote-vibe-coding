@@ -1,93 +1,194 @@
 # remote-vibe-coding
 
-[中文说明](./README.zh-CN.md)
+[English README](./README.en.md)
 
-`remote-vibe-coding` is a Codex-first browser shell for running local coding and chat workflows through a web UI.
+> 把本机 AI 编码工作台搬到浏览器里。
+>
+> `remote-vibe-coding` 是一个面向 `Codex` / `Claude Code` 的本地优先 Web 外壳：真实执行器跑在你自己的机器上，浏览器负责会话、审批、附件、工作区和远程访问体验。
 
-The current repo ships a real, usable phase-1 runtime:
+## 为什么它比“再做一个聊天壳”更有意思
 
-- desktop web client
-- local host service backed by the real `codex app-server` protocol
-- two product modes: `developer` and `chat`
-- role-based access for `user`, `developer`, and `admin`
-- transcript-first sessions with approvals, attachments, archive/restore, stop, restart, and fork actions
-- managed workspaces under `~/Coding/<username>/...`
-- optional Cloudflare tunnel orchestration from the UI
+- **不是伪远程**：真正调用本机执行器，直接操作你自己的工作区。
+- **不是只有对话框**：Developer 模式把 transcript、命令输出、文件变更、审批请求放进同一个工作台。
+- **不是只能写代码**：同一套系统里同时支持 `developer` 和 `chat` 两种模式。
+- **不是裸暴露端口**：支持 owner-first 登录、token 兜底，以及可选的 Cloudflare Tunnel。
+- **不是一次性 session**：支持归档、恢复、Fork、重启、停止、附件上下文和持久化历史。
 
-## What It Does
+## 一张图理解它
 
-### Developer mode
+```mermaid
+flowchart LR
+  A[Browser UI] <-->|同源 API / 实时事件| B[Local Host]
+  B --> C[Codex CLI]
+  B --> D[Claude Code CLI]
+  B --> E[MongoDB]
+  B --> F[Managed Workspaces<br/>~/Coding/<username>/...]
+  B --> G[Cloudflare Tunnel]
+```
 
-- Create managed workspaces or clone a Git repository into a managed workspace
-- Start Codex coding sessions bound to one primary workspace
-- Send turns with prompt text and attachments
-- Review transcript events, command output, file changes, and approval requests
-- Restart stale sessions after runtime restarts
-- Archive, restore, fork, rename, and delete sessions
+## 界面草图
 
-### Chat mode
+> 这张图来自仓库里的早期布局草图，用来先说明 UI 重心：左侧会话，中间 transcript，右侧审批与上下文。
 
-- Run a general assistant experience on top of Codex in a dedicated shared `chat` workspace
-- Keep durable conversation history in MongoDB
-- Upload images, PDFs, and text-like files as context
-- Use admin-managed chat role presets
-- Archive, restore, fork, stop, and delete conversations
+![UI 布局草图](./docs/ui-redesign-left-nav-wireframe.svg)
 
-### Permissions and trust model
+## 界面预览
 
-- Executor: `Codex`
-- Primary client: desktop web
-- Default security profile: `repo-write`
-- Network: disabled by default
-- `full-host`: available only to users who are allowed to use it
-- Approvals: surfaced to the browser instead of being silently auto-approved
+> 建议把后续截图统一放到 `docs/screenshots/`。  
+> 补图时，把对应占位替换成 `![说明](./docs/screenshots/xx.png)` 即可。
 
-## Architecture
+### 1. 登录与主工作台
 
-- `apps/host`
-  Local Fastify host, auth, session state, approval routing, Cloudflare orchestration, Mongo-backed repositories, and the bridge to `codex app-server`.
-- `apps/web`
-  React + Vite browser client for chat and developer flows.
-- `apps/host/chat-system-prompt.json`
-  Default system prompt used by chat mode.
-- `apps/host/chat-role-presets.json`
-  Bundled chat role presets that admins can manage from the UI.
-- `docs/phase-1-architecture.md`
-  Product and technical blueprint for the current phase.
+> 截图占位：`docs/screenshots/01-login-overview.png`
+>
+> 建议画面：登录页，或登录后首页总览。最好同时带出左侧会话栏、中间 transcript、右侧审批/信息面板。
 
-## Requirements
+### 2. Developer 模式
 
-You need the following on the machine running the host:
+> 截图占位：`docs/screenshots/02-developer-session.png`
+>
+> 建议画面：创建 workspace 后进入编码会话，展示 prompt 输入区、运行状态、文件改动卡片和审批状态。
 
-- Node.js with `npm`
-- MongoDB reachable at `mongodb://127.0.0.1:27017/?directConnection=true` by default
-- `codex` CLI, because the host starts `codex app-server`
-- `cloudflared` only if you want built-in tunnel support
+### 3. Chat 模式与附件上下文
 
-If `codex` is not on the default path, set `CODEX_BIN`.
+> 截图占位：`docs/screenshots/03-chat-attachments.png`
+>
+> 建议画面：聊天会话、图片 / PDF / 文本附件、内联预览，以及角色预设选择。
 
-## Local Development
+### 4. Workspace 文件浏览
 
-Install dependencies:
+> 截图占位：`docs/screenshots/04-workspace-browser.png`
+>
+> 建议画面：文件树、文件预览、会话与 workspace 之间的对应关系。
+
+### 5. Admin / 用户与角色管理
+
+> 截图占位：`docs/screenshots/05-admin-roles-presets.png`
+>
+> 建议画面：用户管理、角色分配、默认模式、Chat 角色预设管理。
+
+### 6. Cloudflare 远程访问
+
+> 截图占位：`docs/screenshots/06-cloudflare-status.png`
+>
+> 建议画面：Tunnel 状态、Connect / Disconnect 操作、稳定公网地址展示。
+
+## 适合谁
+
+- 想在浏览器里继续自己电脑上的 AI 编码流程，而不是把代码丢进陌生云环境的人。
+- 需要把 transcript、审批、附件、工作区管理放进同一个界面的人。
+- 想把 `Codex` 作为默认执行器，但又希望在本机可用时切到 `Claude Code` 的人。
+- 需要一个 owner-first、可远程访问、但仍保持本地控制权的工作台的人。
+
+## 核心能力
+
+### Developer 模式
+
+- 创建托管 workspace，或从 Git 仓库直接克隆到托管 workspace。
+- 启动绑定单一主 workspace 的编码会话。
+- 在 transcript 里查看 prompt、工具调用、命令输出和文件变更。
+- 对需要用户决定的操作做显式审批，而不是静默自动放行。
+- 支持归档、恢复、Fork、重命名、停止、重启会话。
+- 支持切换模型、推理强度、审批模式，以及可用执行器。
+
+### Chat 模式
+
+- 在共享 `chat` workspace 中跑更偏助手型的对话流程。
+- 上传图片、PDF 和文本类文件作为上下文。
+- 首条消息后自动生成标题，历史会话可持续保存。
+- 支持管理员维护的角色预设，适合固定 prompt 场景。
+- Chat 和 Developer 共用同一套登录、存储和浏览器外壳。
+
+### 运行与管理
+
+- Host 运行在本机，前端是 React + Vite，后端是 Fastify。
+- 默认执行器是 `Codex`；如果本机安装了 `Claude Code`，也可以按配置启用。
+- 浏览器入口默认需要登录，未认证用户不会直接落到工作台。
+- Cloudflare Tunnel 可以直接从 UI 触发连接和断开。
+- 附件写入托管 workspace，方便执行器原地读取和修改。
+
+## 一次典型流程
+
+1. 登录本地 Host。
+2. 新建一个 workspace，或者直接克隆 Git 仓库。
+3. 选择 `developer` 或 `chat` 模式创建会话。
+4. 发出 prompt，必要时附上图片、PDF 或文本文件。
+5. 在右侧审批区处理越权操作、网络访问或其他敏感动作。
+6. 需要远程继续时，通过 Cloudflare Tunnel 暴露浏览器入口。
+7. 会话结束后归档；需要延续分支时直接 Fork。
+
+## 快速开始
+
+### 依赖准备
+
+运行 Host 的机器需要：
+
+- `Node.js` 和 `npm`
+- `MongoDB`
+- `codex` CLI
+- 可选：`claude` CLI（如果你想启用 `Claude Code`）
+- 可选：`cloudflared`（如果你想启用内置 Tunnel）
+
+如果 `codex` 或 `claude` 不在默认路径上，请分别设置 `CODEX_BIN` / `CLAUDE_BIN`。
+
+### 1. 安装依赖
 
 ```bash
 npm install
 ```
 
-Start MongoDB. Any local instance is fine. One simple option is:
+### 2. 启动 MongoDB
+
+最简单的本地方式之一：
 
 ```bash
 docker run --name rvc-mongo -p 27017:27017 -d mongo:7
 ```
 
-Set login credentials before first start. This is strongly recommended:
+### 3. 设置首次登录账号
 
 ```bash
 export RVC_AUTH_USERNAME=owner
 export RVC_AUTH_PASSWORD='change-me'
 ```
 
-Start the host and web client in separate terminals:
+### 4. 推荐方式：直接启动开发脚本
+
+只启用 `Codex`：
+
+```bash
+bash scripts/rvc-dev.sh start all --executor codex
+```
+
+如果本机同时装了 `Codex` 和 `Claude Code`，也可以：
+
+```bash
+bash scripts/rvc-dev.sh start all --executor both
+```
+
+常用命令：
+
+```bash
+bash scripts/rvc-dev.sh status all
+bash scripts/rvc-dev.sh restart all
+```
+
+默认开发端口：
+
+- Host: `http://127.0.0.1:8788`
+- Web: `http://127.0.0.1:5174`
+
+### 5. 打开浏览器
+
+访问：
+
+```text
+http://127.0.0.1:5174
+```
+
+## 另一种启动方式
+
+如果你更喜欢直接跑原始命令，而不是使用脚本：
 
 ```bash
 npm run dev:host
@@ -97,174 +198,128 @@ npm run dev:host
 npm run dev:web
 ```
 
-If the host is running on a non-default port, pass it when you start the web client:
+默认端口：
+
+- Host: `http://127.0.0.1:8787`
+- Web: `http://127.0.0.1:5173`
+
+如果 Host 不在默认端口，可以这样启动前端：
 
 ```bash
 npm run dev:web -- --api-port 8788
 ```
 
-Open `http://127.0.0.1:5173`.
+## 生产运行
 
-Development defaults:
-
-- host: `http://127.0.0.1:8787`
-- web: `http://127.0.0.1:5173`
-- Vite proxies `/api` to the host
-- `--api-port` overrides the default host port for the dev proxy
-
-## Single-Origin Build
-
-To serve the built web app from the host:
+### 单域名运行
 
 ```bash
 npm run build
 npm run start:host
 ```
 
-Then open `http://127.0.0.1:8787`.
+然后访问 `http://127.0.0.1:8787`。
 
-## Startup Scripts
+### macOS LaunchAgent 方式
 
-The repo now includes two helper entry points for day-to-day start and restart flows:
+如果你想把它当作常驻本机服务运行，仓库自带了 LaunchAgent 脚本：
 
-- `bash scripts/rvc-dev.sh start all`
-  Starts local-only development services on `127.0.0.1:8788` (host) and `127.0.0.1:5174` (web). The first `configure` or `start` stores an executor choice of `codex`, `claude-code`, or `both`.
-- `bash scripts/rvc-prod-launchagent.sh install all`
-  Builds the production bundles, writes LaunchAgents `com.remote-vibe-coding.host` and `com.remote-vibe-coding.web`, and boots them on `127.0.0.1:8787` and `127.0.0.1:5173`.
-
-Useful follow-up commands:
-
-- `bash scripts/rvc-dev.sh status all`
-- `bash scripts/rvc-dev.sh restart all`
-- `bash scripts/rvc-prod-launchagent.sh status all`
-- `bash scripts/rvc-prod-launchagent.sh restart all`
-
-The restart logic is intentionally conservative:
-
-- development restarts only stop a process when there is a matching managed pidfile and the command signature still matches
-- production restarts use LaunchAgent labels instead of killing by port
-- if a port is occupied by an unmanaged process, the scripts stop and report the conflict instead of killing it
-
-## Authentication
-
-The browser surface is owner-gated by default.
-
-- Unauthenticated browser requests are redirected to `/login`
-- Password login sets an HTTP-only cookie
-- `?token=...` links still work as a fallback
-- Users, roles, preferred mode, and tokens are managed by the host
-
-Recommended setup:
-
-- Set `RVC_AUTH_USERNAME` and `RVC_AUTH_PASSWORD` before the first run
-
-If you start without those environment variables, the app creates an `owner` user automatically and writes auth state to `~/.config/remote-vibe-coding/auth.json`.
-
-Important detail:
-
-- the file stores a password hash, not the plaintext password
-- the file does store the generated token
-
-So if you skipped explicit credentials on first boot, use the token from `~/.config/remote-vibe-coding/auth.json` like this:
-
-```text
-http://127.0.0.1:8787/?token=YOUR_TOKEN
+```bash
+bash scripts/rvc-prod-launchagent.sh install all --executor codex
 ```
 
-Then you can create or update users from the admin UI.
+常用命令：
 
-Development-only shortcut:
+```bash
+bash scripts/rvc-prod-launchagent.sh status all
+bash scripts/rvc-prod-launchagent.sh restart all
+```
 
-- set `RVC_DEV_DISABLE_AUTH=1` before `npm run dev:host`
-- the host will skip browser login and treat requests as the seeded admin user
-- keep this off outside local/dev preview usage
+> 这套生产脚本依赖 macOS `LaunchAgent`。如果你不在 macOS 上，优先用上面的单域名运行方式。
 
-## Data and Storage
+## 登录与认证
 
-The project uses both local files and MongoDB.
+- 浏览器入口默认会重定向到 `/login`。
+- 登录成功后会写入 HTTP-only cookie。
+- `?token=...` 链接仍然可以作为兜底方案。
+- 用户、角色、默认模式和 token 都由 Host 管理。
+
+如果你第一次启动时没有设置 `RVC_AUTH_USERNAME` / `RVC_AUTH_PASSWORD`，应用会自动创建 `owner` 用户，并把认证状态写入：
 
 - `~/.config/remote-vibe-coding/auth.json`
-  Auth state and user records.
-- `~/.config/remote-vibe-coding/sessions.json`
-  Local persisted session state and backups.
-- `~/Coding/<username>/...`
-  Managed workspaces created by the app.
-- MongoDB database `remote_vibe_coding`
-  Durable chat history, coding sessions, and workspace records.
 
-Attachments are written into the managed workspace so Codex can access them in-place.
+文件里保存的是密码哈希和 token，不是明文密码。  
+如果只是本地调试，也可以在启动 Host 前设置：
 
-Current attachment behavior:
+```bash
+export RVC_DEV_DISABLE_AUTH=1
+```
 
-- max upload size: `20 MB`
-- supported kinds: image, PDF, generic file
-- PDFs and text-like files are text-extracted when possible
+## 数据存储
 
-## Configuration
+| 位置 | 说明 |
+| --- | --- |
+| `~/.config/remote-vibe-coding/auth.json` | 认证状态和用户记录 |
+| `~/.config/remote-vibe-coding/sessions.json` | 本地持久化的会话状态和备份 |
+| `~/Coding/<username>/...` | 托管 workspace 根目录 |
+| MongoDB `remote_vibe_coding` | 聊天历史、编码会话、workspace 记录 |
 
-### Core runtime
+当前附件行为：
 
-| Variable | Purpose | Default |
+- 单文件最大 `20 MB`
+- 支持图片、PDF 和通用文件
+- PDF 和文本类文件会尽可能做文本提取
+
+## 关键配置
+
+| 变量 | 作用 | 默认值 |
 | --- | --- | --- |
-| `HOST` | Host bind address | `127.0.0.1` |
-| `PORT` | Host port | `8787` |
-| `MONGODB_URL` | MongoDB connection string | `mongodb://127.0.0.1:27017/?directConnection=true` |
-| `MONGODB_DB_NAME` | MongoDB database name | `remote_vibe_coding` |
-| `CODEX_BIN` | Path to the Codex executable | platform default |
-| `CLAUDE_BIN` | Path to the Claude Code executable | platform default |
-| `RVC_EXECUTOR_INIT` | Runtime init mode: `codex`, `claude-code`, `both`, or `auto` | `auto` |
+| `HOST` | Host 绑定地址 | `127.0.0.1` |
+| `PORT` | Host 端口 | `8787` |
+| `MONGODB_URL` | MongoDB 连接串 | `mongodb://127.0.0.1:27017/?directConnection=true` |
+| `MONGODB_DB_NAME` | MongoDB 数据库名 | `remote_vibe_coding` |
+| `CODEX_BIN` | Codex 可执行文件路径 | 平台默认 |
+| `CLAUDE_BIN` | Claude Code 可执行文件路径 | 平台默认 |
+| `RVC_EXECUTOR_INIT` | 初始化执行器：`auto` / `codex` / `claude-code` / `both` | `auto` |
+| `RVC_AUTH_USERNAME` | 首个管理员用户名 | 无 |
+| `RVC_AUTH_PASSWORD` | 首个管理员密码 | 无 |
+| `RVC_AUTH_TOKEN` | 首个管理员固定 token | 无 |
+| `RVC_DEV_DISABLE_AUTH` | 开发环境跳过浏览器认证 | `0` |
+| `CLOUDFLARE_TUNNEL_TOKEN` | 使用 managed tunnel | 无 |
+| `CLOUDFLARE_PUBLIC_URL` | UI 展示的稳定公网地址 | 无 |
+| `CLOUDFLARE_TARGET_URL` | Tunnel 暴露的本地目标地址 | 无 |
+| `VITE_API_BASE_URL` | 前端脱离 Host 单独运行时的 API 基地址 | 无 |
 
-### Auth
+## Cloudflare 支持
 
-| Variable | Purpose |
-| --- | --- |
-| `RVC_AUTH_USERNAME` | Seed username for the first admin user |
-| `RVC_AUTH_PASSWORD` | Seed password for the first admin user |
-| `RVC_AUTH_TOKEN` | Optional fixed token for the seeded user |
-| `RVC_DEV_DISABLE_AUTH` | Dev-only auth bypass for browser requests when set to `1` |
+当前 Cloudflare 集成支持：
 
-### Cloudflare
+- `cloudflared` quick tunnel
+- `~/.cloudflared/config.yml` 中已有的 named tunnel
+- 通过 `CLOUDFLARE_TUNNEL_TOKEN` 使用 managed tunnel
+- 在浏览器 UI 里直接执行 connect / disconnect
 
-| Variable | Purpose |
-| --- | --- |
-| `CLOUDFLARE_TUNNEL_TOKEN` | Use a managed tunnel instead of a quick tunnel |
-| `CLOUDFLARE_PUBLIC_URL` | Stable public URL to display in the UI |
-| `CLOUDFLARE_TARGET_URL` | Override the local target exposed by the tunnel |
+如果已经存在前端构建产物，Host 会以同源方式提供前端和 API；如果没有，Tunnel 也可以回退到本地 Vite 开发服务器。
 
-### Web
+## 仓库结构
 
-| Variable | Purpose |
-| --- | --- |
-| `VITE_API_BASE_URL` | Optional API base URL when running the web app separately |
+- `apps/host`：本地 Host，负责认证、会话状态、审批、Tunnel、持久化，以及对执行器的桥接。
+- `apps/web`：浏览器客户端，承载 Developer / Chat 两类体验。
+- `scripts/`：开发与生产启动脚本。
+- `docs/phase-1-architecture.md`：当前阶段的产品和技术蓝图。
+- `docs/ui-redesign-left-nav-wireframe.svg`：README 中引用的界面草图。
 
-## Cloudflare Support
+## 当前边界
 
-The current Cloudflare slice supports:
+这个仓库已经可用，但它仍然是一个刻意收敛范围的 phase-1 产品：
 
-- quick tunnels through `cloudflared`
-- named tunnels already defined in `~/.cloudflared/config.yml`
-- managed tunnels via `CLOUDFLARE_TUNNEL_TOKEN`
-- connect and disconnect actions directly from the browser UI
+- 当前重心是桌面 Web，不是移动端。
+- 远程访问依赖 Tunnel，暂未集成 Cloudflare Access。
+- workspace 是主上下文边界，不是完全硬隔离沙箱。
+- Flutter 客户端不在当前主线运行时范围内。
+- 真正的多执行器抽象还在演进中；目前以 `Codex` 为默认体验，`Claude Code` 为可选扩展。
 
-When a built web client exists, the host serves it from the same origin as the API. If the built client is missing, the tunnel logic can target the local Vite dev server instead.
+## 进一步阅读
 
-## Current Scope
-
-This repo is still intentionally narrow.
-
-Included now:
-
-- Codex-only execution
-- desktop web only
-- chat mode and developer mode in one browser shell
-- transcript-first session UX
-- explicit approval handling
-- Cloudflare tunnel integration
-- admin-managed users and chat role presets
-
-Not shipped yet:
-
-- mobile client
-- multi-executor abstraction
-- Cloudflare Access integration
-- full long-running orchestration layer beyond the current host/runtime model
+- [Phase 1 架构说明](./docs/phase-1-architecture.md)
+- [排队后续 turn 设计](./docs/queued-follow-up-turns.md)

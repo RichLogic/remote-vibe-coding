@@ -9,6 +9,7 @@ import { CodingWorkspaceServiceError } from '../app/coding-workspace-service.js'
 import { normalizeWorkspaceFilePath } from '../workspace-paths.js';
 import type {
   CodingBootstrapPayload,
+  CreateCodingTurnResponse,
   CodingWorkspaceDirectoryResponse,
   CodingWorkspaceFileEntry,
   CodingWorkspaceFileResponse,
@@ -23,6 +24,7 @@ import type {
   ApprovalMode,
   CreateTurnRequest,
   ModelOption,
+  QueuedTurnSummary,
   ReasoningEffort,
   ResolveApprovalRequest,
   SecurityProfile,
@@ -108,6 +110,18 @@ interface CodingRoutesDependencies {
   codingAttachmentSummary: (attachment: SessionAttachmentRecord) => SessionAttachmentSummary;
   getAttachment: (sessionId: string, attachmentId: string) => SessionAttachmentRecord | null;
   removeAttachment: (sessionId: string, attachmentId: string) => Promise<boolean>;
+  isAttachmentQueued: (sessionId: string, attachmentId: string) => Promise<boolean>;
+  listQueuedTurns: (sessionId: string) => Promise<QueuedTurnSummary[]>;
+  queueCodingTurn: (
+    session: SessionRecord,
+    prompt: string | null,
+    attachmentIds: string[],
+  ) => Promise<QueuedTurnSummary>;
+  getQueuedTurn: (sessionId: string, queuedTurnId: string) => Promise<{
+    id: string;
+    status: 'queued' | 'starting';
+  } | null>;
+  removeQueuedTurn: (sessionId: string, queuedTurnId: string) => Promise<boolean>;
   deleteStoredAttachments: (attachments: SessionAttachmentRecord[]) => Promise<void>;
   trimOptional: (value: unknown) => string | null;
   normalizeWorkspaceFolderName: (value: unknown) => string | null;
@@ -827,9 +841,45 @@ export function registerCodingRoutes(app: FastifyInstance, deps: CodingRoutesDep
       return { error: 'This attachment is already part of a sent turn.' };
     }
 
+    if (await deps.isAttachmentQueued(sessionId, attachmentId)) {
+      reply.code(409);
+      return { error: 'This attachment is already part of a queued turn.' };
+    }
+
     await deps.removeAttachment(sessionId, attachmentId);
     await deps.deleteStoredAttachments([attachment]);
     return { ok: true };
+  });
+
+  app.delete('/api/coding/sessions/:sessionId/queued-turns/:queuedTurnId', async (request, reply) => {
+    const currentUser = deps.getRequestUser(request);
+    const { sessionId, queuedTurnId } = request.params as { sessionId: string; queuedTurnId: string };
+    const session = await deps.getOwnedCodingSessionOrReply(currentUser.id, sessionId, reply);
+    if (!session) {
+      return { error: 'Session not found' };
+    }
+
+    const queuedTurn = await deps.getQueuedTurn(sessionId, queuedTurnId);
+    if (!queuedTurn) {
+      reply.code(404);
+      return { error: 'Queued turn not found.' };
+    }
+
+    if (queuedTurn.status !== 'queued') {
+      reply.code(409);
+      return { error: 'This queued turn is already starting.' };
+    }
+
+    const removed = await deps.removeQueuedTurn(sessionId, queuedTurnId);
+    if (!removed) {
+      reply.code(409);
+      return { error: 'Could not remove the queued turn.' };
+    }
+
+    return {
+      ok: true,
+      queuedTurns: await deps.listQueuedTurns(sessionId),
+    };
   });
 
   app.patch('/api/coding/sessions/:sessionId', async (request, reply) => {
@@ -1085,13 +1135,36 @@ export function registerCodingRoutes(app: FastifyInstance, deps: CodingRoutesDep
       return { error: 'One or more attachments are missing or already used.' };
     }
 
+    if (session.activeTurnId || session.status === 'running') {
+      const queuedTurn = await deps.queueCodingTurn(session, prompt || null, attachmentIds);
+      const response: CreateCodingTurnResponse = {
+        status: 'queued',
+        queuedTurn,
+        session,
+        queuedTurns: await deps.listQueuedTurns(session.id),
+      };
+      reply.code(202);
+      return response;
+    }
+
+    if (session.status === 'needs-approval') {
+      reply.code(409);
+      return { error: 'Resolve the pending approval before starting another turn.' };
+    }
+
     try {
       const result = await deps.startTurnWithAutoRestart(
         session,
         prompt || null,
         attachments.filter((attachment): attachment is SessionAttachmentRecord => Boolean(attachment)),
       );
-      return { turn: result.turn, session: result.session };
+      const response: CreateCodingTurnResponse = {
+        status: 'started',
+        turn: result.turn,
+        session: result.session,
+        queuedTurns: await deps.listQueuedTurns(session.id),
+      };
+      return response;
     } catch (error) {
       const message = deps.errorMessage(error);
       await deps.updateCodingSession(session.id, {

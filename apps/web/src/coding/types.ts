@@ -6,6 +6,7 @@ import type {
   ExecutorModelCatalog,
   ModelOption,
   PendingApproval,
+  QueuedTurnSummary,
   ReasoningEffort,
   ResolveApprovalRequest,
   SecurityProfile,
@@ -106,3 +107,16 @@ export interface CodingBootstrapResponse {
 }
 
 export type CodingBootstrapPayload = CodingBootstrapResponse;
+export type CreateCodingTurnResponse =
+  | {
+      status: 'started';
+      turn: unknown;
+      session: CodingSessionRecord;
+      queuedTurns: QueuedTurnSummary[];
+    }
+  | {
+      status: 'queued';
+      queuedTurn: QueuedTurnSummary;
+      session: CodingSessionRecord;
+      queuedTurns: QueuedTurnSummary[];
+    };

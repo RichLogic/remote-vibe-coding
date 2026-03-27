@@ -95,6 +95,16 @@ export interface ChatTranscriptPageResponse {
   liveEvents: SessionEvent[];
 }
 
+export type ChatBodyLinkResolveResponse =
+  | {
+      kind: 'attachment';
+      attachment: SessionAttachmentSummary;
+    }
+  | {
+      kind: 'external';
+      href: string;
+    };
+
 export interface CreateChatConversationRequest {
   title?: string;
   executor?: AgentExecutor;

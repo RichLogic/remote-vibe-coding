@@ -37,7 +37,7 @@ function buildChatSession(): ConversationRecord {
   };
 }
 
-function buildCodeSession(): SessionRecord {
+function buildCodeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
   return {
     id: 'code-1',
     ownerUserId: 'owner-1',
@@ -62,6 +62,7 @@ function buildCodeSession(): SessionRecord {
     reasoningEffort: 'high',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -79,6 +80,7 @@ function createHarness(session: TurnRecord | null, overrides?: {
   };
   const syncedConversations: Array<{ sessionId: string; thread: CodexThread | null }> = [];
   const syncedCodingSessions: Array<{ sessionId: string; thread: CodexThread | null }> = [];
+  const drainedQueuedTurns: string[] = [];
   const thread = { id: session?.threadId ?? 'thread-missing', items: [] } as unknown as CodexThread;
 
   const handler = createCodexNotificationHandler({
@@ -115,6 +117,9 @@ function createHarness(session: TurnRecord | null, overrides?: {
     async syncCodingHistoryFromThread(codingSession, currentThread) {
       syncedCodingSessions.push({ sessionId: codingSession.id, thread: currentThread });
     },
+    async maybeStartQueuedCodingTurn(codingSession) {
+      drainedQueuedTurns.push(codingSession.id);
+    },
     latestMeaningfulChatReplyFromTurn() {
       return Object.prototype.hasOwnProperty.call(overrides ?? {}, 'latestReply')
         ? overrides?.latestReply ?? null
@@ -131,7 +136,15 @@ function createHarness(session: TurnRecord | null, overrides?: {
     now: () => '2026-01-02T00:00:00.000Z',
   });
 
-  return { handler, liveEvents, updatedRecords, autoTitles, syncedConversations, syncedCodingSessions };
+  return {
+    handler,
+    liveEvents,
+    updatedRecords,
+    autoTitles,
+    syncedConversations,
+    syncedCodingSessions,
+    drainedQueuedTurns,
+  };
 }
 
 test('Codex notification handler updates session status on thread status changes', async () => {
@@ -172,6 +185,26 @@ test('Codex notification handler marks coding sessions as needing approval after
     sessionId: 'code-1',
     thread: { id: 'thread-code', items: [] } as unknown as CodexThread,
   }]);
+  assert.deepEqual(harness.drainedQueuedTurns, []);
+});
+
+test('Codex notification handler drains queued coding turns after idle completion', async () => {
+  const session = buildCodeSession({
+    activeTurnId: 'turn-2',
+    status: 'running',
+  });
+  const harness = createHarness(session, {
+    currentRecord: buildCodeSession({
+      activeTurnId: null,
+      status: 'idle',
+    }),
+  });
+  await harness.handler({
+    method: 'turn/completed',
+    params: { threadId: 'thread-code' },
+  } satisfies JsonRpcNotification);
+
+  assert.deepEqual(harness.drainedQueuedTurns, ['code-1']);
 });
 
 test('Codex notification handler syncs chat history and flags empty replies', async () => {

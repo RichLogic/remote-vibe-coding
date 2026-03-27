@@ -22,6 +22,7 @@ import {
   fetchChatConversationTranscript,
   fetchChatRolePresets,
   forkChatConversation,
+  resolveChatBodyLink,
   sendChatMessage,
   stopChatConversation,
   updateChatRolePreset,
@@ -33,6 +34,7 @@ import {
   codingWorkspaceFileContentHref,
   createCodingWorkspace,
   createCodingWorkspaceSession,
+  deleteQueuedCodingTurn,
   deleteCodingAttachment,
   deleteCodingSession,
   fetchCodingWorkspaceFile,
@@ -260,6 +262,10 @@ const COPY = {
     attachComment: 'Attach files to your next prompt.',
     stopComment: 'Stop the active turn.',
     sendComment: 'Send the current prompt.',
+    queueTurn: 'Queue next turn',
+    queuedTurnsLabel: 'Queued turns',
+    queuedTurnsHint: 'These prompts will start automatically after the current turn finishes.',
+    removeQueuedTurn: 'Remove queued turn',
     moreActions: 'More actions',
     copyCode: 'Copy',
     copiedCode: 'Copied',
@@ -474,6 +480,7 @@ const COPY = {
     filesTitle: 'Files',
     loadingFiles: 'Loading files…',
     loadingFile: 'Loading file…',
+    loadingSession: 'Loading session…',
     selectFileHint: 'Choose a file from the sidebar to preview it.',
     emptyWorkspaceFiles: 'No files found in this workspace.',
     emptyDirectory: 'This folder is empty.',
@@ -539,6 +546,10 @@ const COPY = {
     attachComment: '给下一条 prompt 附加文件。',
     stopComment: '停止当前正在运行的 turn。',
     sendComment: '发送当前 prompt。',
+    queueTurn: '加入下一轮',
+    queuedTurnsLabel: '排队中的 turn',
+    queuedTurnsHint: '当前 turn 结束后，这些 prompt 会自动开始下一轮。',
+    removeQueuedTurn: '移除排队 turn',
     moreActions: '更多操作',
     copyCode: '复制',
     copiedCode: '已复制',
@@ -753,6 +764,7 @@ const COPY = {
     filesTitle: '文件',
     loadingFiles: '正在加载文件…',
     loadingFile: '正在加载文件…',
+    loadingSession: '正在加载会话…',
     selectFileHint: '从侧边栏选择一个文件查看内容。',
     emptyWorkspaceFiles: '这个 workspace 里还没有可显示的文件。',
     emptyDirectory: '这个文件夹是空的。',
@@ -1147,6 +1159,7 @@ function chatDetailToSessionDetail(detail: ChatConversationDetailResponse): Sess
     commands: [],
     changes: [],
     draftAttachments: detail.draftAttachments,
+    queuedTurns: [],
   };
 }
 
@@ -1160,6 +1173,7 @@ function optimisticDetail(session: SessionDetailResponse['session']): SessionDet
     commands: [],
     changes: [],
     draftAttachments: [],
+    queuedTurns: [],
   };
 }
 
@@ -1295,6 +1309,21 @@ function formatAttachmentSize(sizeBytes: number) {
   return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function formatQueuedTurnMeta(
+  queuedTurn: { attachmentCount: number; createdAt: string },
+  language: Language,
+) {
+  const parts = [formatTimestamp(queuedTurn.createdAt, language)];
+  if (queuedTurn.attachmentCount > 0) {
+    parts.push(
+      language === 'zh'
+        ? `${queuedTurn.attachmentCount} 个附件`
+        : `${queuedTurn.attachmentCount} attachment${queuedTurn.attachmentCount === 1 ? '' : 's'}`,
+    );
+  }
+  return parts.join(' · ');
+}
+
 function codingFileTreeKey(workspaceId: string, path: string) {
   return `${workspaceId}:${path}`;
 }
@@ -1417,6 +1446,32 @@ function attachmentDownloadHref(attachment: SessionAttachmentSummary) {
     ? `${attachment.url}&download=1`
     : `${attachment.url}?download=1`;
   return apiHref(url);
+}
+
+function isModifiedPrimaryClick(event: ReactMouseEvent<HTMLAnchorElement>) {
+  return event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+}
+
+function shouldResolveChatMarkdownLink(href: string) {
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith('#') || /^(mailto|tel|javascript):/i.test(trimmed)) {
+    return false;
+  }
+  if (/^file:/i.test(trimmed) || /^https?:\/\//i.test(trimmed)) {
+    return true;
+  }
+  if (/^\/api\/chat\/conversations\/[^/]+\/attachments\/[^/]+\/content(?:[?#].*)?$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\/.+\.[a-z0-9]{1,8}(?:[?#].*)?$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\/(Users|Volumes|private|tmp|var)\//.test(trimmed)) {
+    return true;
+  }
+  return trimmed.startsWith('./')
+    || trimmed.startsWith('../')
+    || (!trimmed.startsWith('/') && /(?:\/|\\|\.[a-z0-9]{1,8})(?:[?#].*)?$/i.test(trimmed));
 }
 
 function isTextLikeMimeType(mimeType: string) {
@@ -2440,6 +2495,7 @@ export function App() {
   const currentUserRoles = deriveRolesFromLegacy(bootstrap?.currentUser);
   const selectedPromptDraftKey = composerDraftKey(activeMode, selectedSessionId);
   const prompt = selectedPromptDraftKey ? (promptDrafts[selectedPromptDraftKey] ?? '') : '';
+  const hasSelectedSession = selectedSessionId !== null;
   const availableModes = derivedAvailableModes(bootstrap);
   const chatBootstrapEnabled = Boolean(bootstrap && availableModes.includes('chat'));
   const bootstrapWorkspaces = normalizedWorkspaces(bootstrap);
@@ -2455,6 +2511,7 @@ export function App() {
   const availableModels = codingModelsForExecutor(bootstrap, currentSessionExecutor);
   const availableChatRolePresets = chatBootstrap?.rolePresets ?? [];
   const canManageChatRolePresets = Boolean(bootstrap?.currentUser.isAdmin && derivedAvailableModes(bootstrap).includes('chat'));
+  const showSessionLoadingState = hasSelectedSession && !detail;
   const selectedChatTranscriptShouldPoll = activeMode === 'chat'
     && detail?.session.sessionType === 'chat'
     && detail.session.id === selectedSessionId
@@ -3504,10 +3561,12 @@ export function App() {
   const inlineRenameBusy = Boolean(detail && busy === `rename-${detail.session.id}`);
   const sessionHasActiveTurn = Boolean(detail?.session.activeTurnId);
   const draftAttachments = detail?.draftAttachments ?? [];
+  const queuedTurns = detail?.queuedTurns ?? [];
   const pendingApprovals = detail?.session.sessionType === 'code'
     ? (bootstrap?.approvals.filter((approval) => approval.sessionId === detail.session.id) ?? [])
     : (detail?.approvals ?? []);
   const activeApproval = pendingApprovals[0] ?? null;
+  const canQueueCodingFollowUpTurn = Boolean(detail && !sessionIsChat && sessionHasActiveTurn && !activeApproval);
   const developerModeEnabled = availableModes.includes('developer');
   const chatModeEnabled = availableModes.includes('chat');
   const developerFilesView = activeMode === 'developer' && developerSubview === 'files';
@@ -3595,6 +3654,7 @@ export function App() {
   const latestTranscriptFileChangeToken = detail?.session.sessionType === 'code' && latestTranscriptFileChangeEntry && latestTranscriptFileChange
     ? `${detail.session.id}:${latestTranscriptFileChangeEntry.id}:${latestTranscriptFileChange.path}`
     : null;
+  const showChatAttachmentInlinePreview = sessionIsChat && Boolean(attachmentPreviewTarget);
   const detailSessionState = deriveDetailSessionState(detail?.session ?? null, {
     activeApproval,
     busy,
@@ -3727,6 +3787,7 @@ export function App() {
     value: executor,
     label: executorOptionLabel(language, executor),
   }));
+  const showDraftExecutorSelector = executorSelectOptions.length > 1 && !hasSelectedSession;
   const effortSelectOptions: SelectOption[] = currentSessionEfforts.map((effort) => ({
     value: effort,
     label: effort,
@@ -4500,7 +4561,7 @@ export function App() {
     if (
       !selectedSessionId
       || files.length === 0
-      || sessionHasActiveTurn
+      || (sessionHasActiveTurn && (activeMode === 'chat' || detail?.session.sessionType !== 'code'))
       || busy === 'upload-attachment'
       || busy === 'start-turn'
       || Boolean(activeApproval)
@@ -4557,6 +4618,20 @@ export function App() {
       setError(null);
     } catch (removeError) {
       setError(removeError instanceof Error ? removeError.message : copy.removeAttachment);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRemoveQueuedTurn(queuedTurnId: string) {
+    if (!selectedSessionId || activeMode !== 'developer') return;
+    setBusy(`remove-queued-turn-${queuedTurnId}`);
+    try {
+      await deleteQueuedCodingTurn(selectedSessionId, queuedTurnId);
+      await refreshCurrentSelection(selectedSessionId);
+      setError(null);
+    } catch (removeError) {
+      setError(removeError instanceof Error ? removeError.message : copy.removeQueuedTurn);
     } finally {
       setBusy(null);
     }
@@ -4621,8 +4696,72 @@ export function App() {
     }
   }
 
+  async function handleChatMarkdownLinkClick(rawHref: string) {
+    if (detail?.session.sessionType !== 'chat' || !selectedSessionId) {
+      return;
+    }
+
+    try {
+      const conversationId = await materializeOptimisticChatConversation(selectedSessionId);
+      const resolution = await resolveChatBodyLink(conversationId, rawHref);
+      if (resolution.kind === 'attachment') {
+        await handleOpenAttachmentPreview(resolution.attachment);
+        return;
+      }
+
+      const externalHref = resolution.href.startsWith('/api/')
+        ? apiHref(resolution.href)
+        : resolution.href;
+      window.open(externalHref, '_blank', 'noopener,noreferrer');
+    } catch (resolveError) {
+      setError(resolveError instanceof Error ? resolveError.message : copy.unknownError);
+    }
+  }
+
+  function renderMarkdown(
+    body: string,
+    options?: {
+      onLinkClick?: (href: string) => void | Promise<void>;
+    },
+  ) {
+    return (
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          pre: ({ children }) => (
+            <MarkdownCodeBlock language={language}>
+              {children}
+            </MarkdownCodeBlock>
+          ),
+          a: ({ node: _node, href, children, ...props }) => {
+            const rawHref = typeof href === 'string' ? href : '';
+            const shouldIntercept = Boolean(options?.onLinkClick && rawHref && shouldResolveChatMarkdownLink(rawHref));
+            return (
+              <a
+                {...props}
+                href={href}
+                onClick={(event) => {
+                  if (!shouldIntercept || isModifiedPrimaryClick(event)) {
+                    return;
+                  }
+                  event.preventDefault();
+                  void options?.onLinkClick?.(rawHref);
+                }}
+              >
+                {children}
+              </a>
+            );
+          },
+        }}
+      >
+        {body}
+      </ReactMarkdown>
+    );
+  }
+
   async function submitPrompt() {
-    if (!selectedSessionId || sessionHasActiveTurn || busy === 'stop-session') return;
+    if (!selectedSessionId || busy === 'stop-session') return;
+    if (sessionHasActiveTurn && (activeMode === 'chat' || detail?.session.sessionType !== 'code')) return;
     const trimmedPrompt = prompt.trim();
     if (!trimmedPrompt && draftAttachments.length === 0) return;
 
@@ -4655,7 +4794,7 @@ export function App() {
 
   async function handleStartTurn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (sessionHasActiveTurn) return;
+    if (sessionHasActiveTurn && (activeMode === 'chat' || detail?.session.sessionType !== 'code')) return;
     await submitPrompt();
   }
 
@@ -4663,7 +4802,13 @@ export function App() {
     if (shouldIgnorePromptEnter(event)) return;
     if (event.key !== 'Enter' || event.shiftKey) return;
     event.preventDefault();
-    if (busy === 'start-turn' || busy === 'stop-session' || detail?.session.activeTurnId) return;
+    if (
+      busy === 'start-turn'
+      || busy === 'stop-session'
+      || (detail?.session.activeTurnId && (activeMode === 'chat' || detail.session.sessionType !== 'code'))
+    ) {
+      return;
+    }
     void submitPrompt();
   }
 
@@ -6236,7 +6381,12 @@ export function App() {
     return renderResolvedFilePreviewContent(workspacePreviewResource(selectedFilePreview, selectedFileWorkspace.id));
   }
 
-  function renderResolvedFilePreviewContent(preview: InlinePreviewResource) {
+  function renderResolvedFilePreviewContent(
+    preview: InlinePreviewResource,
+    options?: {
+      onMarkdownLinkClick?: (href: string) => void | Promise<void>;
+    },
+  ) {
     const imagePreview = isImageFilePreview(preview);
     const markdownPreview = isMarkdownFilePreview(preview);
     const pdfPreview = isPdfFilePreview(preview);
@@ -6271,18 +6421,10 @@ export function App() {
           </div>
         ) : markdownPreview ? (
           <div className="file-preview-rich-surface file-preview-markdown markdown-body">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                pre: ({ children }) => (
-                  <MarkdownCodeBlock language={language}>
-                    {children}
-                  </MarkdownCodeBlock>
-                ),
-              }}
-            >
-              {preview.content ?? ''}
-            </ReactMarkdown>
+            {renderMarkdown(
+              preview.content ?? '',
+              options?.onMarkdownLinkClick ? { onLinkClick: options.onMarkdownLinkClick } : undefined,
+            )}
           </div>
         ) : pdfPreview ? (
           <div className="file-preview-rich-surface file-preview-pdf-wrap">
@@ -6486,6 +6628,9 @@ export function App() {
     if (!attachmentPreviewTarget) {
       return null;
     }
+    if (detail?.session.sessionType === 'chat') {
+      return null;
+    }
 
     return (
       <div className="modal-overlay" onClick={closeAttachmentPreview}>
@@ -6533,6 +6678,56 @@ export function App() {
           </div>
         </aside>
       </div>
+    );
+  }
+
+  function renderChatAttachmentPreviewPane() {
+    if (!attachmentPreviewTarget || detail?.session.sessionType !== 'chat') {
+      return null;
+    }
+
+    return (
+      <aside className="chat-inline-preview-pane">
+        <div className="chat-inline-preview-header">
+          <div className="file-preview-title-block">
+            <h3>{attachmentPreviewTarget.filename}</h3>
+            <p className="file-preview-title-path">{attachmentPreviewTarget.mimeType}</p>
+          </div>
+          <div className="inspector-header-actions">
+            <a
+              className="button-secondary file-preview-download"
+              href={attachmentDownloadHref(attachmentPreviewTarget)}
+              download={attachmentPreviewTarget.filename}
+            >
+              {copy.downloadFile}
+            </a>
+            <button
+              type="button"
+              className="button-secondary"
+              onClick={closeAttachmentPreview}
+            >
+              {copy.close}
+            </button>
+          </div>
+        </div>
+        <div className="chat-inline-preview-body">
+          {attachmentPreviewError ? (
+            <div className="file-preview-empty file-preview-empty-error">
+              <strong>{copy.filesTitle}</strong>
+              <p>{attachmentPreviewError}</p>
+            </div>
+          ) : attachmentPreviewLoading || !attachmentPreviewResourceState ? (
+            <div className="file-preview-empty">
+              <strong>{copy.loadingFile}</strong>
+            </div>
+          ) : (
+            renderResolvedFilePreviewContent(
+              attachmentPreviewResourceState,
+              { onMarkdownLinkClick: handleChatMarkdownLinkClick },
+            )
+          )}
+        </div>
+      </aside>
     );
   }
 
@@ -6902,7 +7097,7 @@ export function App() {
                           </button>
                         </div>
                       ) : null
-                    ) : executorSelectOptions.length > 1 && !detail ? (
+                    ) : showDraftExecutorSelector ? (
                       <div className="rail-header-controls">
                         <AppSelect
                           value={draftCodingExecutor}
@@ -7067,7 +7262,7 @@ export function App() {
                     </button>
                   )
                 ) : (
-                  <h2>{copy.selectOrCreate}</h2>
+                  <h2>{showSessionLoadingState ? copy.loadingSession : copy.selectOrCreate}</h2>
                 )}
                 {detail && !inlineRenameActive && (detailSessionStatusLabel || !sessionIsChat) ? (
                   <div className="session-title-actions">
@@ -7103,117 +7298,117 @@ export function App() {
 
             {detail ? (
               <div className="transcript-layout">
-                <div className="transcript-scroll" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
-                  <div className="chat-list">
-                    {transcriptLoadingOlder ? (
-                      <div className="chat-loading-older">{copy.loadingOlderMessages}</div>
-                    ) : null}
-                    {transcriptItems.length === 0 ? null : (
-                      transcriptItems.map((event) => {
-                        if (event.kind === 'tool') {
-                          return (
-                            <TranscriptToolCard
-                              key={event.id}
-                              entry={event}
-                              badgeLabel={toolLabel(event, language)}
-                              language={language}
-                              noInlineDiffLabel={copy.noInlineDiff}
-                              onSelectFileChange={!sessionIsChat ? handleTranscriptFileChangeSelect : undefined}
-                            />
-                          );
-                        }
+                <div className={`transcript-main-shell ${showChatAttachmentInlinePreview ? 'transcript-main-shell-with-preview' : ''}`}>
+                  <div className="transcript-scroll" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
+                    <div className="chat-list">
+                      {transcriptLoadingOlder ? (
+                        <div className="chat-loading-older">{copy.loadingOlderMessages}</div>
+                      ) : null}
+                      {transcriptItems.length === 0 ? null : (
+                        transcriptItems.map((event) => {
+                          if (event.kind === 'tool') {
+                            return (
+                              <TranscriptToolCard
+                                key={event.id}
+                                entry={event}
+                                badgeLabel={toolLabel(event, language)}
+                                language={language}
+                                noInlineDiffLabel={copy.noInlineDiff}
+                                onSelectFileChange={!sessionIsChat ? handleTranscriptFileChangeSelect : undefined}
+                              />
+                            );
+                          }
 
-                        if (event.kind === 'status') {
+                          if (event.kind === 'status') {
+                            return (
+                              <article key={event.id} className="event-card event-status">
+                                <div className="event-meta">
+                                  <span>{copy.sessionState}</span>
+                                  <strong>{event.title ?? copy.activity}</strong>
+                                </div>
+                                <p>{event.body}</p>
+                              </article>
+                            );
+                          }
+
                           return (
-                            <article key={event.id} className="event-card event-status">
-                              <div className="event-meta">
-                                <span>{copy.sessionState}</span>
-                                <strong>{event.title ?? copy.activity}</strong>
+                            <article key={event.id} className={`chat-message chat-${event.kind}`}>
+                              <div className="chat-message-main">
+                                {event.kind === 'assistant' && (sessionIsChat || codingAnswerLabelEntryIds.has(event.id)) ? (
+                                  <div className="chat-message-head">
+                                    <strong>{copy.answerLabel}</strong>
+                                  </div>
+                                ) : null}
+                                {event.attachments.length > 0 ? (
+                                  <div className="chat-attachments">
+                                    {event.attachments.map((attachment) => (
+                                      <button
+                                        key={attachment.id}
+                                        type="button"
+                                        className={`chat-attachment-card chat-attachment-card-${attachment.kind}`}
+                                        onClick={() => {
+                                          void handleOpenAttachmentPreview(attachment);
+                                        }}
+                                      >
+                                        {attachment.kind === 'image' ? (
+                                          <div className="chat-attachment-media">
+                                            <img src={attachmentInlineHref(attachment)} alt={attachment.filename} className="chat-attachment-image" />
+                                          </div>
+                                        ) : null}
+                                        <div className="chat-attachment-copy">
+                                          <strong>{attachment.filename}</strong>
+                                          <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
+                                {event.body && event.markdown ? (
+                                  <div className="markdown-body chat-body">
+                                    {renderMarkdown(
+                                      event.body,
+                                      sessionIsChat ? { onLinkClick: handleChatMarkdownLinkClick } : undefined,
+                                    )}
+                                  </div>
+                                ) : event.body ? (
+                                  <pre className="event-body">{event.body}</pre>
+                                ) : null}
                               </div>
-                              <p>{event.body}</p>
                             </article>
                           );
-                        }
-
-                        return (
-                          <article key={event.id} className={`chat-message chat-${event.kind}`}>
-                            <div className="chat-message-main">
-                              {event.kind === 'assistant' && (sessionIsChat || codingAnswerLabelEntryIds.has(event.id)) ? (
-                                <div className="chat-message-head">
-                                  <strong>{copy.answerLabel}</strong>
-                                </div>
+                        })
+                      )}
+                      {detailSessionState === 'processing' && (visibleSessionActivityLabel || departingSessionActivityLabel) ? (
+                        <article className="chat-message chat-assistant chat-activity-message">
+                          <div className="chat-message-main chat-activity-message-main">
+                            <div className="chat-activity-message-copy">
+                              <span>{copy.processingStatus}</span>
+                            </div>
+                            <div className="chat-activity-ticker" aria-live="polite" aria-atomic="true">
+                              {departingSessionActivityLabel ? (
+                                <span className="chat-activity-ticker-item chat-activity-ticker-item-leaving">
+                                  {departingSessionActivityLabel}
+                                </span>
                               ) : null}
-                              {event.attachments.length > 0 ? (
-                                <div className="chat-attachments">
-                                  {event.attachments.map((attachment) => (
-                                    <button
-                                      key={attachment.id}
-                                      type="button"
-                                      className={`chat-attachment-card chat-attachment-card-${attachment.kind}`}
-                                      onClick={() => {
-                                        void handleOpenAttachmentPreview(attachment);
-                                      }}
-                                    >
-                                      {attachment.kind === 'image' ? (
-                                        <div className="chat-attachment-media">
-                                          <img src={attachmentInlineHref(attachment)} alt={attachment.filename} className="chat-attachment-image" />
-                                        </div>
-                                      ) : null}
-                                      <div className="chat-attachment-copy">
-                                        <strong>{attachment.filename}</strong>
-                                        <span>{formatAttachmentSize(attachment.sizeBytes)}</span>
-                                      </div>
-                                    </button>
-                                  ))}
-                                </div>
-                              ) : null}
-                              {event.body && event.markdown ? (
-                                <div className="markdown-body chat-body">
-                                  <ReactMarkdown
-                                    remarkPlugins={[remarkGfm]}
-                                    components={{
-                                      pre: ({ children }) => (
-                                        <MarkdownCodeBlock language={language}>
-                                          {children}
-                                        </MarkdownCodeBlock>
-                                      ),
-                                    }}
-                                  >
-                                    {event.body}
-                                  </ReactMarkdown>
-                                </div>
-                              ) : event.body ? (
-                                <pre className="event-body">{event.body}</pre>
+                              {visibleSessionActivityLabel ? (
+                                <span
+                                  className={`chat-activity-ticker-item ${departingSessionActivityLabel ? 'chat-activity-ticker-item-entering' : 'chat-activity-ticker-item-current'}`}
+                                >
+                                  {visibleSessionActivityLabel}
+                                </span>
                               ) : null}
                             </div>
-                          </article>
-                        );
-                      })
-                    )}
-                    {detailSessionState === 'processing' && (visibleSessionActivityLabel || departingSessionActivityLabel) ? (
-                      <article className="chat-message chat-assistant chat-activity-message">
-                        <div className="chat-message-main chat-activity-message-main">
-                          <div className="chat-activity-message-copy">
-                            <span>{copy.processingStatus}</span>
                           </div>
-                          <div className="chat-activity-ticker" aria-live="polite" aria-atomic="true">
-                            {departingSessionActivityLabel ? (
-                              <span className="chat-activity-ticker-item chat-activity-ticker-item-leaving">
-                                {departingSessionActivityLabel}
-                              </span>
-                            ) : null}
-                            {visibleSessionActivityLabel ? (
-                              <span
-                                className={`chat-activity-ticker-item ${departingSessionActivityLabel ? 'chat-activity-ticker-item-entering' : 'chat-activity-ticker-item-current'}`}
-                              >
-                                {visibleSessionActivityLabel}
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                      </article>
-                    ) : null}
+                        </article>
+                      ) : null}
+                    </div>
                   </div>
+                  {showChatAttachmentInlinePreview ? (
+                    <>
+                      <div className="transcript-main-divider" aria-hidden="true" />
+                      {renderChatAttachmentPreviewPane()}
+                    </>
+                  ) : null}
                 </div>
                 {detailSessionState === 'pending' && activeApproval ? (
                   <section
@@ -7263,7 +7458,7 @@ export function App() {
                     />
                     {detail ? (
                       <div className="composer-config-row">
-                        {currentSessionExecutor && executorSelectOptions.length > 1 ? (
+                        {executorSelectOptions.length > 1 ? (
                           <label className="composer-config-field">
                             <span>{copy.executorLabel}</span>
                             <AppSelect
@@ -7352,6 +7547,34 @@ export function App() {
                         ))}
                       </div>
                     ) : null}
+                    {!sessionIsChat && queuedTurns.length > 0 ? (
+                      <div className="queued-turns">
+                        <div className="queued-turns-head">
+                          <strong>{copy.queuedTurnsLabel}</strong>
+                          <span>{copy.queuedTurnsHint}</span>
+                        </div>
+                        <div className="queued-turn-list">
+                          {queuedTurns.map((queuedTurn) => (
+                            <div key={queuedTurn.id} className="queued-turn-card">
+                              <div className="queued-turn-copy">
+                                <strong>{queuedTurn.promptPreview}</strong>
+                                <span>{formatQueuedTurnMeta(queuedTurn, language)}</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="button-secondary icon-button queued-turn-remove"
+                                onClick={() => void handleRemoveQueuedTurn(queuedTurn.id)}
+                                disabled={busy === `remove-queued-turn-${queuedTurn.id}`}
+                                title={copy.removeQueuedTurn}
+                                aria-label={copy.removeQueuedTurn}
+                              >
+                                <RemoveIcon />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="composer-row">
                       <textarea
                         ref={promptTextareaRef}
@@ -7370,7 +7593,13 @@ export function App() {
                           type="button"
                           className="button-secondary icon-button attach-button"
                           onClick={() => attachmentInputRef.current?.click()}
-                          disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'upload-attachment' || busy === 'start-turn' || sessionHasActiveTurn || Boolean(activeApproval)}
+                          disabled={
+                            (selectedSessionIsOptimistic && !sessionIsChat)
+                            || busy === 'upload-attachment'
+                            || busy === 'start-turn'
+                            || (sessionHasActiveTurn && !canQueueCodingFollowUpTurn)
+                            || Boolean(activeApproval)
+                          }
                           title={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
                           aria-label={busy === 'upload-attachment' ? copy.uploadingFiles : copy.attachFiles}
                         >
@@ -7391,9 +7620,17 @@ export function App() {
                         <button
                           type="submit"
                           className="send-button"
-                          disabled={(selectedSessionIsOptimistic && !sessionIsChat) || busy === 'start-turn' || busy === 'stop-session' || busy === 'upload-attachment' || sessionHasActiveTurn || Boolean(activeApproval) || (!prompt.trim() && draftAttachments.length === 0)}
-                          title={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
-                          aria-label={sessionHasActiveTurn ? copy.stop : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                          disabled={
+                            (selectedSessionIsOptimistic && !sessionIsChat)
+                            || busy === 'start-turn'
+                            || busy === 'stop-session'
+                            || busy === 'upload-attachment'
+                            || (sessionHasActiveTurn && !canQueueCodingFollowUpTurn)
+                            || Boolean(activeApproval)
+                            || (!prompt.trim() && draftAttachments.length === 0)
+                          }
+                          title={canQueueCodingFollowUpTurn ? copy.queueTurn : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
+                          aria-label={canQueueCodingFollowUpTurn ? copy.queueTurn : busy === 'start-turn' ? copy.sending : copy.sendPrompt}
                         >
                           <SendIcon />
                         </button>
@@ -7402,6 +7639,11 @@ export function App() {
                   </div>
                 </form>
               </div>
+            ) : showSessionLoadingState ? (
+              <section className="empty-state">
+                <p className="eyebrow">{copy.currentSession}</p>
+                <h2>{copy.loadingSession}</h2>
+              </section>
             ) : (
               <section className="empty-state">
                 <p className="eyebrow">{copy.noActiveSelection}</p>

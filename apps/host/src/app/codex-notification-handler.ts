@@ -25,6 +25,7 @@ interface CreateRuntimeNotificationHandlerOptions {
   maybeAutoTitleCodingSession: (session: SessionRecord, threadOverride?: CodexThread | null) => Promise<unknown>;
   syncConversationHistoryFromThread: (conversation: ConversationRecord, thread: CodexThread | null) => Promise<unknown>;
   syncCodingHistoryFromThread: (session: SessionRecord, thread: CodexThread | null) => Promise<unknown>;
+  maybeStartQueuedCodingTurn?: (session: SessionRecord) => Promise<unknown>;
   latestMeaningfulChatReplyFromTurn: (thread: CodexThread, turnId: string) => string | null;
   isTransitionOnlyChatReply: (text: string) => boolean;
   summarizeNotification: (method: string, params: Record<string, unknown>) => string;
@@ -206,11 +207,17 @@ export function createRuntimeNotificationHandler(options: CreateRuntimeNotificat
       if (isDeveloperSession(threadState.session)) {
         await options.syncCodingHistoryFromThread(threadState.session, threadState.thread);
         await options.maybeAutoTitleCodingSession(threadState.session, threadState.thread);
+        if (threadState.session.status === 'idle') {
+          await options.maybeStartQueuedCodingTurn?.(threadState.session);
+        }
         return;
       }
     }
 
     await options.maybeAutoTitleCodingSession(nextSession);
+    if (nextSession.status === 'idle') {
+      await options.maybeStartQueuedCodingTurn?.(nextSession);
+    }
   };
 }
 
