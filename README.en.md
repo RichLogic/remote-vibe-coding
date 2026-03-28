@@ -26,47 +26,47 @@ flowchart LR
   B --> G[Cloudflare Tunnel]
 ```
 
-## UI Sketch
-
-> This image comes from the early layout sketch already in the repo. It shows the basic UI center of gravity: sessions on the left, transcript in the middle, approvals and context on the right.
-
-![UI Layout Sketch](./docs/ui-redesign-left-nav-wireframe.svg)
-
 ## UI Preview
 
-> Current screenshots live under `docs/screenshots/` and cover sign-in, Developer mode, Chat mode, file browsing, and admin configuration.
+> Current screenshots live under `docs/screenshots/` and cover login, Developer sessions, audit flow, chat attachments, file browsing, and admin configuration.
 
-### 1. Login And Main Workspace
+### 1. Login Overview
 
-![Login And Main Workspace](./docs/screenshots/01-login-overview.png)
+![Login Overview](./docs/screenshots/01-login-overview.png)
 
-After sign-in, the main workspace brings the mode rail, session list, transcript center pane, and detail / approval context into one screen.
+Overall post-login layout.
 
-### 2. Developer Mode
+### 2. Developer Session
 
-![Developer Mode](./docs/screenshots/02-developer-session.png)
+![Developer Session](./docs/screenshots/02-developer-session.png)
 
-Developer mode keeps the coding session, prompt composer, runtime state, file-change cards, and approvals in the same workspace.
+Primary Developer session view.
 
-### 3. Chat Mode And Attachment Context
+### 3. Developer Audit
 
-![Chat Mode And Attachment Context](./docs/screenshots/03-chat-attachments.png)
+![Developer Audit](./docs/screenshots/02-developer-audit.png)
 
-Chat mode supports image, PDF, and text attachments, with shared chat-workspace context and inline preview in the UI.
+Developer approval and audit view.
 
-### 4. Workspace File Browser
+### 4. Chat Attachments
 
-![Workspace File Browser](./docs/screenshots/04-workspace-browser.png)
+![Chat Attachments](./docs/screenshots/03-chat-attachments.png)
 
-The file browser places the workspace tree, preview pane, and active session context side by side so you can verify where changes land.
+Chat attachment view.
 
-### 5. Admin / Users And Roles
+### 5. Files Browser
 
-![Admin / Users And Roles](./docs/screenshots/05-admin-roles-presets.png)
+![Files Browser](./docs/screenshots/04-files-browser.png)
 
-Admins can manage users, roles, preferred mode, and chat role presets from one place.
+File browser view.
 
-### 6. Public Access / Cloudflare Tunnel
+### 6. Admin Roles Presets
+
+![Admin Roles Presets](./docs/screenshots/05-admin-roles-presets.png)
+
+Admin roles and presets view.
+
+### 7. Public Access / Cloudflare Tunnel
 
 This section no longer depends on a dedicated screenshot, because the public domain itself is stronger proof.
 

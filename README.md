@@ -26,53 +26,50 @@ flowchart LR
   B --> G[Cloudflare Tunnel]
 ```
 
-## 界面草图
-
-> 这张图来自仓库里的早期布局草图，用来先说明 UI 重心：左侧会话，中间 transcript，右侧审批与上下文。
-
-![UI 布局草图](./docs/ui-redesign-left-nav-wireframe.svg)
-
 ## 界面预览
 
-> 当前截图统一放在 `docs/screenshots/`，下面这组预览覆盖登录、Developer、Chat、文件浏览和管理员配置。
+> 当前截图统一放在 `docs/screenshots/`，下面这组预览覆盖登录总览、Developer 会话、审批流、Chat 附件、文件浏览和管理员配置。
 
-### 1. 登录与主工作台
+### 1. 登录总览
 
-![登录与主工作台](./docs/screenshots/01-login-overview.png)
+![登录总览](./docs/screenshots/01-login-overview.png)
 
-登录后可以直接进入主工作台：左侧是模式和会话栏，中间是 transcript，右侧承接会话详情、审批和上下文。
+登录后的整体总览图。
 
-### 2. Developer 模式
+### 2. Developer 会话
 
-![Developer 模式](./docs/screenshots/02-developer-session.png)
+![Developer 会话](./docs/screenshots/02-developer-session.png)
 
-Developer 模式把编码会话放进完整工作台里，便于同时查看 prompt、运行状态、文件改动和审批流。
+Developer 会话主视图。
 
-### 3. Chat 模式与附件上下文
+### 3. Developer 审批与审计
 
-![Chat 模式与附件上下文](./docs/screenshots/03-chat-attachments.png)
+![Developer 审批与审计](./docs/screenshots/02-developer-audit.png)
 
-Chat 模式支持图片、PDF 和文本附件，附件会进入共享 chat workspace，并可在界面里直接预览上下文。
+Developer 审批与审计视图。
 
-### 4. Workspace 文件浏览
+### 4. Chat 附件
 
-![Workspace 文件浏览](./docs/screenshots/04-workspace-browser.png)
+![Chat 附件](./docs/screenshots/03-chat-attachments.png)
 
-文件浏览视图把 workspace 文件树、文件预览和当前会话上下文并排放在一起，便于快速核对改动落点。
+Chat 模式附件视图。
 
-### 5. Admin / 用户与角色管理
+### 5. 文件浏览
 
-![Admin / 用户与角色管理](./docs/screenshots/05-admin-roles-presets.png)
+![文件浏览](./docs/screenshots/04-files-browser.png)
 
-管理员可以在同一个界面里维护用户、角色、默认模式，以及 Chat 角色预设。
+文件浏览视图。
 
-### 6. 公网访问 / Cloudflare Tunnel
+### 6. 管理员角色预设
 
-这部分不再依赖单独截图，因为公网域名本身就是更直接的证明。
+![管理员角色预设](./docs/screenshots/05-admin-roles-presets.png)
 
-当前这套部署已经可以通过 Cloudflare Tunnel 从公网访问，例如：
+管理员角色预设与配置视图。
 
-- `https://codex.richlogic.blog`
+### 7. 公网访问 / Cloudflare Tunnel
+
+
+当前这套部署已经可以通过 Cloudflare Tunnel 从公网访问，
 
 相比“状态页截图”，真实可访问的域名更能说明这套远程访问链路已经跑通：浏览器入口、登录流程和 Host 服务都已经可以从外网正面访问。
 
