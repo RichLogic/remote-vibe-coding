@@ -34,44 +34,47 @@ flowchart LR
 
 ## 界面预览
 
-> 建议把后续截图统一放到 `docs/screenshots/`。  
-> 补图时，把对应占位替换成 `![说明](./docs/screenshots/xx.png)` 即可。
+> 当前截图统一放在 `docs/screenshots/`，下面这组预览覆盖登录、Developer、Chat、文件浏览和管理员配置。
 
 ### 1. 登录与主工作台
 
-> 截图占位：`docs/screenshots/01-login-overview.png`
->
-> 建议画面：登录页，或登录后首页总览。最好同时带出左侧会话栏、中间 transcript、右侧审批/信息面板。
+![登录与主工作台](./docs/screenshots/01-login-overview.png)
+
+登录后可以直接进入主工作台：左侧是模式和会话栏，中间是 transcript，右侧承接会话详情、审批和上下文。
 
 ### 2. Developer 模式
 
-> 截图占位：`docs/screenshots/02-developer-session.png`
->
-> 建议画面：创建 workspace 后进入编码会话，展示 prompt 输入区、运行状态、文件改动卡片和审批状态。
+![Developer 模式](./docs/screenshots/02-developer-session.png)
+
+Developer 模式把编码会话放进完整工作台里，便于同时查看 prompt、运行状态、文件改动和审批流。
 
 ### 3. Chat 模式与附件上下文
 
-> 截图占位：`docs/screenshots/03-chat-attachments.png`
->
-> 建议画面：聊天会话、图片 / PDF / 文本附件、内联预览，以及角色预设选择。
+![Chat 模式与附件上下文](./docs/screenshots/03-chat-attachments.png)
+
+Chat 模式支持图片、PDF 和文本附件，附件会进入共享 chat workspace，并可在界面里直接预览上下文。
 
 ### 4. Workspace 文件浏览
 
-> 截图占位：`docs/screenshots/04-workspace-browser.png`
->
-> 建议画面：文件树、文件预览、会话与 workspace 之间的对应关系。
+![Workspace 文件浏览](./docs/screenshots/04-workspace-browser.png)
+
+文件浏览视图把 workspace 文件树、文件预览和当前会话上下文并排放在一起，便于快速核对改动落点。
 
 ### 5. Admin / 用户与角色管理
 
-> 截图占位：`docs/screenshots/05-admin-roles-presets.png`
->
-> 建议画面：用户管理、角色分配、默认模式、Chat 角色预设管理。
+![Admin / 用户与角色管理](./docs/screenshots/05-admin-roles-presets.png)
 
-### 6. Cloudflare 远程访问
+管理员可以在同一个界面里维护用户、角色、默认模式，以及 Chat 角色预设。
 
-> 截图占位：`docs/screenshots/06-cloudflare-status.png`
->
-> 建议画面：Tunnel 状态、Connect / Disconnect 操作、稳定公网地址展示。
+### 6. 公网访问 / Cloudflare Tunnel
+
+这部分不再依赖单独截图，因为公网域名本身就是更直接的证明。
+
+当前这套部署已经可以通过 Cloudflare Tunnel 从公网访问，例如：
+
+- `https://codex.richlogic.blog`
+
+相比“状态页截图”，真实可访问的域名更能说明这套远程访问链路已经跑通：浏览器入口、登录流程和 Host 服务都已经可以从外网正面访问。
 
 ## 适合谁
 

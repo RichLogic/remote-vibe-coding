@@ -167,6 +167,16 @@ const THEME_STORAGE_KEY = 'rvc-theme';
 const CHAT_COMPLETION_MARKERS_STORAGE_KEY = 'rvc-chat-completion-markers';
 const DEVELOPER_RAIL_HIDDEN_STORAGE_KEY = 'rvc-developer-rail-hidden';
 const CHAT_RAIL_HIDDEN_STORAGE_KEY = 'rvc-chat-rail-hidden';
+const DEVELOPER_INSPECTOR_WIDTH_STORAGE_KEY = 'rvc-developer-inspector-width';
+const CHAT_INLINE_PREVIEW_WIDTH_STORAGE_KEY = 'rvc-chat-inline-preview-width';
+const DEFAULT_DEVELOPER_INSPECTOR_WIDTH = 460;
+const MIN_DEVELOPER_INSPECTOR_WIDTH = 280;
+const MAX_DEVELOPER_INSPECTOR_WIDTH = 820;
+const MIN_DEVELOPER_TRANSCRIPT_WIDTH = 280;
+const DEFAULT_CHAT_INLINE_PREVIEW_WIDTH = 460;
+const MIN_CHAT_INLINE_PREVIEW_WIDTH = 280;
+const MAX_CHAT_INLINE_PREVIEW_WIDTH = 820;
+const MIN_CHAT_TRANSCRIPT_WIDTH = 280;
 
 const UI_SESSION_STATE_LABELS: Record<Language, Record<UiSessionState, string>> = {
   en: {
@@ -490,6 +500,8 @@ const COPY = {
     previewTab: 'Preview',
     diffTab: 'Diff',
     hideInspector: 'Hide',
+    resizeInspector: 'Resize inspector',
+    resizePreview: 'Resize preview',
     noDiffSelected: 'No diff selected yet.',
     sessionInfoTitle: 'Session info',
     archived: 'Archived',
@@ -774,6 +786,8 @@ const COPY = {
     previewTab: '预览',
     diffTab: '改动',
     hideInspector: '隐藏',
+    resizeInspector: '调整检查面板宽度',
+    resizePreview: '调整预览宽度',
     noDiffSelected: '还没有选中的改动。',
     sessionInfoTitle: '会话信息',
     archived: '归档',
@@ -1558,6 +1572,11 @@ function attachmentPreviewResource(
     inlineUrl: attachmentInlineHref(attachment),
     downloadUrl: attachmentDownloadHref(attachment),
   };
+}
+
+function formatFilePreviewMeta(sizeBytes: number, mimeType: string) {
+  const sizeLabel = formatAttachmentSize(sizeBytes);
+  return mimeType ? `${sizeLabel} · ${mimeType}` : sizeLabel;
 }
 
 function composerDraftKey(mode: AppMode, sessionId: string | null) {
@@ -2419,6 +2438,24 @@ export function App() {
     const stored = Number(window.localStorage.getItem('rvc-rail-width') ?? '320');
     return Number.isFinite(stored) ? Math.min(520, Math.max(260, stored)) : 320;
   });
+  const [developerInspectorWidth, setDeveloperInspectorWidth] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_DEVELOPER_INSPECTOR_WIDTH;
+    const stored = Number(
+      window.localStorage.getItem(DEVELOPER_INSPECTOR_WIDTH_STORAGE_KEY) ?? String(DEFAULT_DEVELOPER_INSPECTOR_WIDTH),
+    );
+    return Number.isFinite(stored)
+      ? Math.min(MAX_DEVELOPER_INSPECTOR_WIDTH, Math.max(MIN_DEVELOPER_INSPECTOR_WIDTH, stored))
+      : DEFAULT_DEVELOPER_INSPECTOR_WIDTH;
+  });
+  const [chatInlinePreviewWidth, setChatInlinePreviewWidth] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_CHAT_INLINE_PREVIEW_WIDTH;
+    const stored = Number(
+      window.localStorage.getItem(CHAT_INLINE_PREVIEW_WIDTH_STORAGE_KEY) ?? String(DEFAULT_CHAT_INLINE_PREVIEW_WIDTH),
+    );
+    return Number.isFinite(stored)
+      ? Math.min(MAX_CHAT_INLINE_PREVIEW_WIDTH, Math.max(MIN_CHAT_INLINE_PREVIEW_WIDTH, stored))
+      : DEFAULT_CHAT_INLINE_PREVIEW_WIDTH;
+  });
   const [error, setError] = useState<string | null>(null);
   const [promptDrafts, setPromptDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -2473,7 +2510,9 @@ export function App() {
   const activityTickerTimerRef = useRef<number | null>(null);
   const lastPromptCompositionEndAtRef = useRef(0);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
+  const transcriptMainShellRef = useRef<HTMLDivElement | null>(null);
   const workspaceRailBodyRef = useRef<HTMLDivElement | null>(null);
+  const developerContentShellRef = useRef<HTMLDivElement | null>(null);
   const shouldStickTranscriptToBottomRef = useRef(false);
   const restoreTranscriptScrollHeightRef = useRef<number | null>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2495,12 +2534,28 @@ export function App() {
   const currentUserRoles = deriveRolesFromLegacy(bootstrap?.currentUser);
   const selectedPromptDraftKey = composerDraftKey(activeMode, selectedSessionId);
   const prompt = selectedPromptDraftKey ? (promptDrafts[selectedPromptDraftKey] ?? '') : '';
-  const hasSelectedSession = selectedSessionId !== null;
   const availableModes = derivedAvailableModes(bootstrap);
   const chatBootstrapEnabled = Boolean(bootstrap && availableModes.includes('chat'));
   const bootstrapWorkspaces = normalizedWorkspaces(bootstrap);
   const bootstrapSessions = normalizedDeveloperSessions(bootstrap);
   const bootstrapConversations = normalizedChatConversations(chatBootstrap);
+  const availableDeveloperWorkspaceIds = new Set(visibleDeveloperWorkspaces([
+    ...optimisticWorkspaces,
+    ...bootstrapWorkspaces,
+  ]).map((workspace) => workspace.id));
+  const availableDeveloperSessionIds = new Set(
+    [...optimisticSessions, ...bootstrapSessions]
+      .filter((session) => availableDeveloperWorkspaceIds.has(session.workspaceId))
+      .map((session) => session.id),
+  );
+  const availableChatConversationIds = new Set(
+    [...optimisticConversations, ...bootstrapConversations].map((conversation) => conversation.id),
+  );
+  const hasSelectedSession = selectedSessionId !== null && (
+    activeMode === 'chat'
+      ? availableChatConversationIds.has(selectedSessionId)
+      : availableDeveloperSessionIds.has(selectedSessionId)
+  );
   const availableCodingExecutors: AgentExecutor[] = bootstrap?.defaults.availableExecutors.length
     ? bootstrap.defaults.availableExecutors
     : (bootstrap?.defaults.executor ? [bootstrap.defaults.executor] : ['codex']);
@@ -2722,6 +2777,14 @@ export function App() {
   }, [railWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem(DEVELOPER_INSPECTOR_WIDTH_STORAGE_KEY, String(developerInspectorWidth));
+  }, [developerInspectorWidth]);
+
+  useEffect(() => {
+    window.localStorage.setItem(CHAT_INLINE_PREVIEW_WIDTH_STORAGE_KEY, String(chatInlinePreviewWidth));
+  }, [chatInlinePreviewWidth]);
+
+  useEffect(() => {
     window.localStorage.setItem(
       CHAT_COMPLETION_MARKERS_STORAGE_KEY,
       JSON.stringify(chatCompletionMarkers),
@@ -2804,9 +2867,6 @@ export function App() {
       setChatBootstrap(null);
       return;
     }
-    if (activeMode !== 'chat') {
-      return;
-    }
 
     let cancelled = false;
 
@@ -2815,7 +2875,9 @@ export function App() {
         const next = await fetchChatBootstrap();
         if (cancelled) return;
         setChatBootstrap(next);
-        setError(null);
+        if (activeMode === 'chat') {
+          setError(null);
+        }
       } catch (loadError) {
         if (!cancelled && activeMode === 'chat') {
           setError(loadError instanceof Error ? loadError.message : copy.unknownError);
@@ -2930,6 +2992,14 @@ export function App() {
     }
 
     const currentSessionId = selectedSessionId;
+    if (!hasSelectedSession) {
+      setDetail(null);
+      setTranscriptItems([]);
+      setTranscriptNextCursor(null);
+      setTranscriptLoadedOlder(false);
+      setChatLiveEvents([]);
+      return;
+    }
     if (isOptimisticSessionId(currentSessionId)) {
       const optimisticSession = activeMode === 'developer'
         ? optimisticSessions.find((session) => session.id === currentSessionId)
@@ -2973,7 +3043,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedSessionId, activeMode, optimisticSessions, optimisticConversations, copy.unknownError]);
+  }, [selectedSessionId, hasSelectedSession, activeMode, optimisticSessions, optimisticConversations, copy.unknownError]);
 
   useEffect(() => {
     if (activeMode !== 'chat') {
@@ -3080,6 +3150,13 @@ export function App() {
     }
 
     const currentSessionId = selectedSessionId;
+    if (!hasSelectedSession) {
+      setTranscriptItems([]);
+      setTranscriptNextCursor(null);
+      setTranscriptLoadedOlder(false);
+      setChatLiveEvents([]);
+      return;
+    }
     if (isOptimisticSessionId(currentSessionId)) {
       setTranscriptItems([]);
       setTranscriptNextCursor(null);
@@ -3141,7 +3218,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [selectedSessionId, activeMode, selectedChatTranscriptShouldPoll, transcriptLoadedOlder, copy.unknownError]);
+  }, [selectedSessionId, hasSelectedSession, activeMode, selectedChatTranscriptShouldPoll, transcriptLoadedOlder, copy.unknownError]);
 
   useEffect(() => {
     const currentConversations = new Map<string, ChatStatusRecord>();
@@ -3655,6 +3732,9 @@ export function App() {
     ? `${detail.session.id}:${latestTranscriptFileChangeEntry.id}:${latestTranscriptFileChange.path}`
     : null;
   const showChatAttachmentInlinePreview = sessionIsChat && Boolean(attachmentPreviewTarget);
+  const transcriptMainShellStyle = showChatAttachmentInlinePreview
+    ? ({ '--chat-inline-preview-width': `${chatInlinePreviewWidth}px` } as CSSProperties)
+    : undefined;
   const detailSessionState = deriveDetailSessionState(detail?.session ?? null, {
     activeApproval,
     busy,
@@ -3689,6 +3769,9 @@ export function App() {
     && !developerFilesView
     && developerInspectorOpen
     && Boolean(developerInspectorWorkspaceId && developerInspectorFilePath);
+  const developerContentShellStyle = showDeveloperInspector
+    ? ({ '--developer-inspector-width': `${developerInspectorWidth}px` } as CSSProperties)
+    : undefined;
   const codingAnswerLabelEntryIds = new Set<string>();
   if (!sessionIsChat) {
     let hasAssistantReplyInCurrentTurn = false;
@@ -6398,16 +6481,6 @@ export function App() {
 
     return (
       <div className="file-preview-pane">
-        <div className="file-preview-toolbar">
-          <div className="file-preview-meta">
-            <strong>{relativeFileLabel(preview.path)}</strong>
-            <span>{formatAttachmentSize(preview.sizeBytes)}</span>
-            <span>{preview.mimeType}</span>
-          </div>
-          <a className="button-secondary file-preview-download" href={preview.downloadUrl} download={preview.name}>
-            {copy.downloadFile}
-          </a>
-        </div>
         {preview.truncated && textPreview ? (
           <p className="file-preview-note">{copy.filePreviewTruncated}</p>
         ) : null}
@@ -6484,6 +6557,12 @@ export function App() {
     const selectedFileLabel = selectedFilePath
       ? relativeFileLabel(selectedFilePath)
       : selectedFileWorkspace?.name ?? copy.selectFileHint;
+    const selectedFileMeta = selectedFilePreview
+      ? formatFilePreviewMeta(selectedFilePreview.sizeBytes, selectedFilePreview.mimeType)
+      : null;
+    const selectedFileDownloadUrl = selectedFileWorkspace && selectedFilePath
+      ? codingWorkspaceFileContentHref(selectedFileWorkspace.id, selectedFilePath)
+      : null;
 
     return (
       <section className="panel transcript file-browser-panel">
@@ -6492,9 +6571,17 @@ export function App() {
             <div className="file-preview-title-block">
               <h2>{selectedFileName}</h2>
               <p className="file-preview-title-path">{selectedFileLabel}</p>
+              {selectedFileMeta ? (
+                <p className="file-preview-title-path">{selectedFileMeta}</p>
+              ) : null}
             </div>
             {selectedFilePath ? (
               <div className="inspector-header-actions">
+                {selectedFileDownloadUrl ? (
+                  <a className="button-secondary file-preview-download" href={selectedFileDownloadUrl} download={selectedFileName}>
+                    {copy.downloadFile}
+                  </a>
+                ) : null}
                 <div className="inspector-tabs" role="tablist" aria-label={copy.filesTitle}>
                   <button
                     type="button"
@@ -6552,16 +6639,30 @@ export function App() {
 
     const canShowDiff = Boolean(developerInspectorDiffChange);
     const canShowPreview = developerInspectorDiffChange?.kind.toLowerCase() !== 'delete';
+    const developerInspectorMeta = developerInspectorPreview
+      ? formatFilePreviewMeta(developerInspectorPreview.sizeBytes, developerInspectorPreview.mimeType)
+      : null;
+    const developerInspectorDownloadUrl = codingWorkspaceFileContentHref(
+      developerInspectorWorkspace.id,
+      developerInspectorFilePath,
+    );
+    const developerInspectorFileName = developerInspectorFilePath.split('/').pop() ?? developerInspectorFilePath;
 
     return (
       <section className="panel transcript transcript-inspector">
         <div className="panel-header panel-header-file-browser">
           <div className="session-title-row">
             <div className="file-preview-title-block">
-              <h2>{developerInspectorFilePath.split('/').pop() ?? developerInspectorFilePath}</h2>
+              <h2>{developerInspectorFileName}</h2>
               <p className="file-preview-title-path">{relativeFileLabel(developerInspectorFilePath)}</p>
+              {developerInspectorMeta ? (
+                <p className="file-preview-title-path">{developerInspectorMeta}</p>
+              ) : null}
             </div>
             <div className="inspector-header-actions">
+              <a className="button-secondary file-preview-download" href={developerInspectorDownloadUrl} download={developerInspectorFileName}>
+                {copy.downloadFile}
+              </a>
               <div className="inspector-tabs" role="tablist" aria-label={copy.filesTitle}>
                 <button
                   type="button"
@@ -6642,7 +6743,9 @@ export function App() {
             <div className="session-title-row">
               <div className="file-preview-title-block">
                 <h2>{attachmentPreviewTarget.filename}</h2>
-                <p className="file-preview-title-path">{attachmentPreviewTarget.mimeType}</p>
+                <p className="file-preview-title-path">
+                  {formatFilePreviewMeta(attachmentPreviewTarget.sizeBytes, attachmentPreviewTarget.mimeType)}
+                </p>
               </div>
               <div className="inspector-header-actions">
                 <a
@@ -6691,7 +6794,9 @@ export function App() {
         <div className="chat-inline-preview-header">
           <div className="file-preview-title-block">
             <h3>{attachmentPreviewTarget.filename}</h3>
-            <p className="file-preview-title-path">{attachmentPreviewTarget.mimeType}</p>
+            <p className="file-preview-title-path">
+              {formatFilePreviewMeta(attachmentPreviewTarget.sizeBytes, attachmentPreviewTarget.mimeType)}
+            </p>
           </div>
           <div className="inspector-header-actions">
             <a
@@ -6914,6 +7019,80 @@ export function App() {
     function handlePointerMove(moveEvent: MouseEvent) {
       const nextWidth = startWidth + (moveEvent.clientX - startX);
       setRailWidth(Math.min(520, Math.max(260, nextWidth)));
+    }
+
+    function handlePointerUp() {
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+    }
+
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerUp);
+  }
+
+  function clampChatInlinePreviewWidth(nextWidth: number) {
+    const shellWidth = transcriptMainShellRef.current?.getBoundingClientRect().width ?? 0;
+    const maxWidth = shellWidth > 0
+      ? Math.max(
+          MIN_CHAT_INLINE_PREVIEW_WIDTH,
+          Math.min(
+            MAX_CHAT_INLINE_PREVIEW_WIDTH,
+            shellWidth - MIN_CHAT_TRANSCRIPT_WIDTH - 6,
+          ),
+        )
+      : MAX_CHAT_INLINE_PREVIEW_WIDTH;
+    return Math.min(maxWidth, Math.max(MIN_CHAT_INLINE_PREVIEW_WIDTH, nextWidth));
+  }
+
+  function handleTranscriptMainResizeStart(event: ReactMouseEvent<HTMLDivElement>) {
+    if (window.matchMedia('(max-width: 700px)').matches) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = chatInlinePreviewWidth;
+
+    function handlePointerMove(moveEvent: MouseEvent) {
+      const nextWidth = startWidth - (moveEvent.clientX - startX);
+      setChatInlinePreviewWidth(clampChatInlinePreviewWidth(nextWidth));
+    }
+
+    function handlePointerUp() {
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+    }
+
+    window.addEventListener('mousemove', handlePointerMove);
+    window.addEventListener('mouseup', handlePointerUp);
+  }
+
+  function clampDeveloperInspectorWidth(nextWidth: number) {
+    const shellWidth = developerContentShellRef.current?.getBoundingClientRect().width ?? 0;
+    const maxWidth = shellWidth > 0
+      ? Math.max(
+          MIN_DEVELOPER_INSPECTOR_WIDTH,
+          Math.min(
+            MAX_DEVELOPER_INSPECTOR_WIDTH,
+            shellWidth - MIN_DEVELOPER_TRANSCRIPT_WIDTH - 6,
+          ),
+        )
+      : MAX_DEVELOPER_INSPECTOR_WIDTH;
+    return Math.min(maxWidth, Math.max(MIN_DEVELOPER_INSPECTOR_WIDTH, nextWidth));
+  }
+
+  function handleDeveloperInspectorResizeStart(event: ReactMouseEvent<HTMLDivElement>) {
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = developerInspectorWidth;
+
+    function handlePointerMove(moveEvent: MouseEvent) {
+      const nextWidth = startWidth - (moveEvent.clientX - startX);
+      setDeveloperInspectorWidth(clampDeveloperInspectorWidth(nextWidth));
     }
 
     function handlePointerUp() {
@@ -7212,7 +7391,11 @@ export function App() {
             <div className="rail-resizer" onMouseDown={handleRailResizeStart} role="separator" aria-orientation="vertical" aria-label={copy.hideSidebar} />
           ) : null}
 
-          <div className={`developer-content-shell ${showDeveloperInspector ? 'developer-content-shell-with-inspector' : ''}`}>
+          <div
+            ref={developerContentShellRef}
+            className={`developer-content-shell ${showDeveloperInspector ? 'developer-content-shell-with-inspector' : ''}`}
+            style={developerContentShellStyle}
+          >
             {developerFilesView ? renderFileBrowserPane() : (
           <section className="panel transcript">
                 <div className="panel-header">
@@ -7298,7 +7481,11 @@ export function App() {
 
             {detail ? (
               <div className="transcript-layout">
-                <div className={`transcript-main-shell ${showChatAttachmentInlinePreview ? 'transcript-main-shell-with-preview' : ''}`}>
+                <div
+                  ref={transcriptMainShellRef}
+                  className={`transcript-main-shell ${showChatAttachmentInlinePreview ? 'transcript-main-shell-with-preview' : ''}`}
+                  style={transcriptMainShellStyle}
+                >
                   <div className="transcript-scroll" ref={transcriptScrollRef} onScroll={handleTranscriptScroll}>
                     <div className="chat-list">
                       {transcriptLoadingOlder ? (
@@ -7405,7 +7592,13 @@ export function App() {
                   </div>
                   {showChatAttachmentInlinePreview ? (
                     <>
-                      <div className="transcript-main-divider" aria-hidden="true" />
+                      <div
+                        className="transcript-main-divider"
+                        onMouseDown={handleTranscriptMainResizeStart}
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={copy.resizePreview}
+                      />
                       {renderChatAttachmentPreviewPane()}
                     </>
                   ) : null}
@@ -7654,7 +7847,13 @@ export function App() {
             )}
           {showDeveloperInspector ? (
             <>
-              <div className="developer-content-divider" aria-hidden="true" />
+              <div
+                className="developer-content-divider"
+                onMouseDown={handleDeveloperInspectorResizeStart}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label={copy.resizeInspector}
+              />
               {renderDeveloperInspectorPane()}
             </>
           ) : null}

@@ -34,44 +34,47 @@ flowchart LR
 
 ## UI Preview
 
-> Put future screenshots under `docs/screenshots/`.  
-> When you add one, replace the matching placeholder block with `![Description](./docs/screenshots/xx.png)`.
+> Current screenshots live under `docs/screenshots/` and cover sign-in, Developer mode, Chat mode, file browsing, and admin configuration.
 
 ### 1. Login And Main Workspace
 
-> Screenshot placeholder: `docs/screenshots/01-login-overview.png`
->
-> Suggested frame: the login page, or the post-login home screen. Ideally show the session rail, the transcript center pane, and the approval / info panel together.
+![Login And Main Workspace](./docs/screenshots/01-login-overview.png)
+
+After sign-in, the main workspace brings the mode rail, session list, transcript center pane, and detail / approval context into one screen.
 
 ### 2. Developer Mode
 
-> Screenshot placeholder: `docs/screenshots/02-developer-session.png`
->
-> Suggested frame: a coding session after creating a workspace, including the prompt composer, running state, file change cards, and approval state.
+![Developer Mode](./docs/screenshots/02-developer-session.png)
+
+Developer mode keeps the coding session, prompt composer, runtime state, file-change cards, and approvals in the same workspace.
 
 ### 3. Chat Mode And Attachment Context
 
-> Screenshot placeholder: `docs/screenshots/03-chat-attachments.png`
->
-> Suggested frame: a chat conversation with image / PDF / text attachments, inline preview, and role preset selection.
+![Chat Mode And Attachment Context](./docs/screenshots/03-chat-attachments.png)
+
+Chat mode supports image, PDF, and text attachments, with shared chat-workspace context and inline preview in the UI.
 
 ### 4. Workspace File Browser
 
-> Screenshot placeholder: `docs/screenshots/04-workspace-browser.png`
->
-> Suggested frame: the file tree, file preview, and how a session maps to its workspace.
+![Workspace File Browser](./docs/screenshots/04-workspace-browser.png)
+
+The file browser places the workspace tree, preview pane, and active session context side by side so you can verify where changes land.
 
 ### 5. Admin / Users And Roles
 
-> Screenshot placeholder: `docs/screenshots/05-admin-roles-presets.png`
->
-> Suggested frame: user management, role assignment, default mode, and chat role preset management.
+![Admin / Users And Roles](./docs/screenshots/05-admin-roles-presets.png)
 
-### 6. Cloudflare Remote Access
+Admins can manage users, roles, preferred mode, and chat role presets from one place.
 
-> Screenshot placeholder: `docs/screenshots/06-cloudflare-status.png`
->
-> Suggested frame: tunnel status, connect / disconnect actions, and the stable public URL display.
+### 6. Public Access / Cloudflare Tunnel
+
+This section no longer depends on a dedicated screenshot, because the public domain itself is stronger proof.
+
+The current deployment is already reachable through Cloudflare Tunnel, for example:
+
+- `https://codex.richlogic.blog`
+
+That proves more than a status screenshot would: the browser entrypoint, sign-in flow, and host service are all reachable from the public internet.
 
 ## Who It Is For
 
