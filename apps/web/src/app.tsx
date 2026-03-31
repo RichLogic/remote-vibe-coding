@@ -2,6 +2,7 @@ import { Children, Fragment, isValidElement, useEffect, useLayoutEffect, useRef,
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+import { resolveApiBaseUrl } from './api-base-url';
 import { FileChangeList, TranscriptToolCard } from './transcript-tool-card';
 import {
   createAdminUser,
@@ -1447,7 +1448,7 @@ function apiHref(path: string) {
   if (/^https?:\/\//i.test(path)) {
     return path;
   }
-  const baseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+  const baseUrl = resolveApiBaseUrl();
   return `${baseUrl}${path}`;
 }
 

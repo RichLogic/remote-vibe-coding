@@ -1,4 +1,5 @@
 import type { SessionAttachmentSummary } from '../types';
+import { resolveApiBaseUrl } from '../api-base-url';
 import type {
   CodingBootstrapPayload,
   CodingWorkspaceDirectoryResponse,
@@ -18,7 +19,7 @@ import type {
   UpdateCodingSessionRequest,
 } from './types';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+const API_BASE_URL = resolveApiBaseUrl();
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? {});

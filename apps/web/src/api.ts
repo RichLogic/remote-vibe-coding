@@ -18,8 +18,9 @@ import type {
   UpdateUserRequest,
   WorkspaceSummary,
 } from './types';
+import { resolveApiBaseUrl } from './api-base-url';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/$/, '');
+const API_BASE_URL = resolveApiBaseUrl();
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers ?? {});
